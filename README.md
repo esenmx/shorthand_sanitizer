@@ -1,0 +1,64 @@
+# shorthand_sanitizer
+
+Batch codemod: rewrites `Type.member` to Dart 3.10 [dot-shorthand](https://dart.dev/language/dot-shorthands) `.member` — **only** where the rewrite provably resolves to the same element.
+
+Covers enum values, static getters/fields/methods, and named (incl. `factory`/`const`) constructors. Unnamed constructors stay: `.new(...)` saves nothing over `Type(...)`.
+
+## Install
+
+```bash
+dart pub global activate shorthand_sanitizer   # installs the `dotsan` command
+```
+
+For large repos, an AOT build starts instantly:
+
+```bash
+dart compile exe bin/dotsan.dart -o ~/bin/dotsan
+```
+
+## Use
+
+```bash
+dotsan                              # sanitize lib/
+dotsan lib test --dry-run           # report only
+dotsan --skip=AsyncValue.error      # keep listed members prefixed
+dotsan --exclude=**/legacy/**       # leave matching files alone
+dotsan --include-generated          # also rewrite generated-marked files
+```
+
+`--skip` takes `Type.member` or bare `member` names; `--exclude` takes globs, matched against the CWD-relative path when the pattern contains `/`, else the basename (both comma-separated).
+
+Generated files are detected by their **leading comment**, not filename shape: build_runner's `GENERATED CODE - DO NOT MODIFY BY HAND`, FlutterFire's `firebase_options.dart`, pigeon, protoc, and slang outputs are all skipped, while a handwritten `page.preview.dart` is sanitized like any other source.
+
+## The guarantee
+
+Each file is resolved with the analyzer, every syntactic candidate is rewritten speculatively, and the result is resolved again. A rewrite survives only if its shorthand node resolved back to the **same element** with **no new diagnostics**. Everything else reverts:
+
+```dart
+final Object o = Fit.cover;    // unwitnessed context — kept
+const Color c = Colors.red;    // member lives on Colors, context is Color — kept
+const Base x = Sub.a;          // .a would silently rebind to Base.a — kept
+final l = Fit.values;          // context is List<Fit>, never the enum — kept
+padding: EdgeInsets.all(8),    // .all here binds EdgeInsetsGeometry.all — a
+                               // different (forwarding) element — kept
+```
+
+The rebind cases compile either way — text-based converters ship them as silent element changes. Element identity is the only check that catches them. (Corollary: in geometry slots, write `.all(8)` directly in new code; the sanitizer won't migrate old prefixes into forwarders.)
+
+Operator expressions split correctly: `Pad.all(1) + Pad.only(2)` becomes `Pad.all(1) + .only(2)` — the left operand has no shorthand context, the right one is a typed argument. Reverting one candidate can make a neighbor valid, so failed sites near a co-failure are retried individually before the file is finalized.
+
+## Why not …
+
+|Alternative|Why not|
+|--|--|
+|regex converters|no type resolution — aggressive by design, silent rebinds possible|
+|IDE assist (`ConvertToDotShorthand`)|per-site, interactive; driving it over a repo costs one server RPC per candidate|
+|analyzer plugins (`prefer_shorthands`, or a custom `analysis_server_plugin` lint)|plugin fixes are single-site by design — the SDK forbids bulk applicability, so no `dart fix --apply` sweep|
+|`dart fix`|no SDK lint backs the conversion, so it has nothing to apply|
+
+Benchmark, 40 files / 640 sites (M-series, Dart 3.11): analysis-server-driven script 6.2 s → this tool (AOT) **0.8 s**, byte-identical output plus the `== .value` sites the assist skips.
+
+## Notes
+
+- Requires the target package's language version ≥ 3.10; below that the run is a clean no-op.
+- AOT builds locate the SDK via `DART_SDK`, then the `dart` on `PATH` (Flutter shim included).
