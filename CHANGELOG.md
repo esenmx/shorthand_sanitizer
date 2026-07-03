@@ -1,3 +1,8 @@
+# 0.2.0
+
+- Prune imports the rewrite orphans: dropping a `Type` prefix can leave the import that supplied `Type` with no remaining referent. The final verified resolve is the oracle — any `unused_import`/`unnecessary_import` it reports that the original file did not is a self-inflicted orphan whose directive is removed. Imports the file already left unused are untouched.
+- `dotsan` reports pruned imports in its summary; `SanitizeResult.removedImportCount` / `FileResult.removedImports` expose the count.
+
 # 0.1.0
 
 - Initial release: type-resolved `Type.member` → `.member` batch codemod, shipped as the `dotsan` executable.

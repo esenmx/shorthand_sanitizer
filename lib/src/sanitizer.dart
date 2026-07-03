@@ -73,7 +73,12 @@ final class Candidate {
 /// Per-file outcome of a sanitize run.
 final class FileResult {
   /// Creates a result for [path].
-  FileResult(this.path, this.converted, this.reverted);
+  FileResult(
+    this.path,
+    this.converted,
+    this.reverted, {
+    this.removedImports = 0,
+  });
 
   /// Canonical path of the rewritten file.
   final String path;
@@ -83,6 +88,9 @@ final class FileResult {
 
   /// Candidates that failed verification and were left prefixed.
   final int reverted;
+
+  /// Imports the conversion orphaned and this run pruned (see [Sanitizer]).
+  final int removedImports;
 }
 
 /// Aggregate outcome across all files of a run.
@@ -98,6 +106,9 @@ final class SanitizeResult {
 
   /// Total reverted sites.
   int get revertedCount => files.fold(0, (n, f) => n + f.reverted);
+
+  /// Total imports pruned because the conversion orphaned them.
+  int get removedImportCount => files.fold(0, (n, f) => n + f.removedImports);
 }
 
 /// Rewrites `Type.member` to dot-shorthand `.member` (enum values, static
@@ -110,6 +121,12 @@ final class SanitizeResult {
 /// else — unwitnessed context (`Object`, generics), members living on a
 /// sibling namespace (`Colors.red` in a `Color` slot, `Curves.easeIn` in a
 /// `Curve` slot), silent rebinds to a same-named static — is reverted.
+///
+/// Dropping a `Type` prefix can leave the import that supplied `Type` with no
+/// remaining referent. The final verified resolve is the oracle: any
+/// `unused_import`/`unnecessary_import` it reports that the original file did
+/// not is a self-inflicted orphan, and its directive is pruned. Imports the
+/// file already left unused are the user's, not ours — they stay.
 final class Sanitizer {
   /// Creates a sanitizer; see [run].
   Sanitizer({
@@ -204,6 +221,9 @@ final class Sanitizer {
     if (candidates.isEmpty) return null;
 
     final baseline = _errorKeys(original.diagnostics);
+    // Imports already unused before we touched the file are the user's to
+    // keep; only orphans we newly create get pruned.
+    final baselineImports = _importIssueKeys(original.diagnostics);
     final content = original.content;
 
     // Element-mismatch failures are deterministic — banned for good. An
@@ -215,6 +235,8 @@ final class Sanitizer {
     final retryQueue = <Candidate>[];
     Candidate? pendingRetry;
     (_Rewritten, List<Candidate>)? lastClean;
+    // Directive ranges (in the clean rewrite's coordinates) to strip on write.
+    var orphanCuts = const <(int, int)>[];
 
     for (
       var round = 0;
@@ -235,6 +257,7 @@ final class Sanitizer {
       final failed = _failedCandidates(check, rewritten, baseline);
       if (failed.mismatched.isEmpty && failed.errorAttributed.isEmpty) {
         lastClean = (rewritten, active);
+        orphanCuts = _orphanRanges(check, baselineImports);
         if (retryQueue.isEmpty) break;
         pendingRetry = retryQueue.removeAt(0);
         active = [...active, pendingRetry]
@@ -267,12 +290,22 @@ final class Sanitizer {
     if (lastClean == null) return null; // nothing verifiable — file untouched
 
     final (rewritten, converted) = lastClean;
-    if (!dryRun) File(file).writeAsStringSync(rewritten.text);
+    if (!dryRun) {
+      final text = orphanCuts.isEmpty
+          ? rewritten.text
+          : _stripRanges(rewritten.text, orphanCuts);
+      File(file).writeAsStringSync(text);
+    }
     final lines = _lineStarts(content);
-    return FileResult(file, [
-      for (final c in converted)
-        '${_lineOf(lines, c.deleteStart)}: ${c.display} -> .${c.memberName}',
-    ], candidates.length - converted.length);
+    return FileResult(
+      file,
+      [
+        for (final c in converted)
+          '${_lineOf(lines, c.deleteStart)}: ${c.display} -> .${c.memberName}',
+      ],
+      candidates.length - converted.length,
+      removedImports: orphanCuts.length,
+    );
   }
 
   /// Splits failed candidates by fate. `mismatched` — the shorthand resolved
@@ -349,6 +382,64 @@ final class Sanitizer {
   /// Offsets shift across rewrites — key errors by code + message instead.
   static String _errorKey(Diagnostic d) =>
       '${d.diagnosticCode.lowerCaseName}:${d.message}';
+
+  /// Import-scoped diagnostics whose fix is to drop the whole directive.
+  static const _removableImportCodes = {
+    'unused_import',
+    'unnecessary_import',
+    'duplicate_import',
+  };
+
+  static Set<String> _importIssueKeys(List<Diagnostic> diagnostics) => {
+    for (final d in diagnostics)
+      if (_removableImportCodes.contains(d.diagnosticCode.lowerCaseName))
+        _errorKey(d),
+  };
+
+  /// Directive ranges (each spanning `import … ;` plus its line ending) for
+  /// imports the rewrite orphaned — those [check] now flags removable that
+  /// weren't in [baseline]. Coordinates are [check]'s content, i.e. the
+  /// rewritten text about to be written.
+  static List<(int, int)> _orphanRanges(
+    ResolvedUnitResult check,
+    Set<String> baseline,
+  ) {
+    final text = check.content;
+    final imports = [
+      for (final directive in check.unit.directives)
+        if (directive is ImportDirective) directive,
+    ];
+    if (imports.isEmpty) return const [];
+
+    final seen = <int>{};
+    final ranges = <(int, int)>[];
+    for (final d in check.diagnostics) {
+      if (!_removableImportCodes.contains(d.diagnosticCode.lowerCaseName)) {
+        continue;
+      }
+      if (baseline.contains(_errorKey(d))) continue;
+      for (final directive in imports) {
+        if (d.offset < directive.offset || d.offset >= directive.end) continue;
+        if (!seen.add(directive.offset)) break;
+        var end = directive.end;
+        if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
+        if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
+        ranges.add((directive.offset, end));
+        break;
+      }
+    }
+    return ranges;
+  }
+
+  /// Splices [ranges] out of [text], back-to-front so earlier offsets hold.
+  static String _stripRanges(String text, List<(int, int)> ranges) {
+    final sorted = [...ranges]..sort((a, b) => b.$1.compareTo(a.$1));
+    var out = text;
+    for (final (start, end) in sorted) {
+      out = out.substring(0, start) + out.substring(end);
+    }
+    return out;
+  }
 
   List<String> _collectFiles(List<String> paths) {
     final globs = [for (final e in excludes) Glob(e)];

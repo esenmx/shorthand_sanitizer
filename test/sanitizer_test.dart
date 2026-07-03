@@ -222,6 +222,63 @@ void main() {
     expect(out, contains('final Fit b = .contain'));
   });
 
+  test('prunes an import the dropped prefix orphaned', () async {
+    // `Dep` is supplied only by dep.dart and appears only as the prefix of
+    // `Dep.instance`, whose slot is witnessed by Sink's constructor param
+    // (from sink.dart). Collapsing to `.instance` leaves dep.dart's import
+    // with no referent — it must be pruned; sink.dart's stays.
+    File(p.join(pkg.path, 'lib', 'dep.dart')).writeAsStringSync('''
+class Dep {
+  const Dep._();
+  static const Dep instance = Dep._();
+}
+''');
+    File(p.join(pkg.path, 'lib', 'sink.dart')).writeAsStringSync('''
+import 'dep.dart';
+class Sink {
+  Sink(this.d);
+  final Dep d;
+}
+''');
+    final file = File(p.join(pkg.path, 'lib', 'consumer.dart'))
+      ..writeAsStringSync('''
+import 'dep.dart';
+import 'sink.dart';
+final sink = Sink(Dep.instance);
+''');
+    final result = await Sanitizer().run([file.path]);
+    final out = file.readAsStringSync();
+    expect(out, contains('Sink(.instance)'));
+    expect(out, isNot(contains("import 'dep.dart';")));
+    expect(out, contains("import 'sink.dart';")); // still used, kept
+    expect(result.removedImportCount, 1);
+  });
+
+  test('leaves a pre-existing unused import alone', () async {
+    // dep2.dart stays used (Box), so nothing is orphaned; dart:async is unused
+    // before we touch anything (the user's, not ours) — it must survive.
+    File(p.join(pkg.path, 'lib', 'dep2.dart')).writeAsStringSync('''
+class Dep2 {
+  const Dep2._();
+  static const Dep2 instance = Dep2._();
+}
+class Box {
+  Box(this.d);
+  final Dep2 d;
+}
+''');
+    final file = File(p.join(pkg.path, 'lib', 'consumer2.dart'))
+      ..writeAsStringSync('''
+import 'dart:async';
+import 'dep2.dart';
+final box = Box(Dep2.instance);
+''');
+    await Sanitizer().run([file.path]);
+    final out = file.readAsStringSync();
+    expect(out, contains('Box(.instance)'));
+    expect(out, contains("import 'dart:async';")); // pre-existing unused, kept
+  });
+
   test('dry run reports without writing', () async {
     const source = '''
 enum Fit { cover }

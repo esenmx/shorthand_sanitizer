@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.1.0';
+const _version = '0.2.0';
 
 const _usage =
     'Usage: dotsan [paths...] [options]\n'
@@ -13,8 +13,9 @@ const _usage =
     '  --include-generated         also rewrite generated-marked files\n'
     '  --version                   print version\n'
     'Rewrites Type.member to dot-shorthand .member wherever the rewrite\n'
-    'provably resolves to the same element. Files whose leading comment\n'
-    'declares them generated are skipped. Default path: lib';
+    'provably resolves to the same element, then prunes any import the\n'
+    'dropped Type prefix orphaned. Files whose leading comment declares\n'
+    'them generated are skipped. Default path: lib';
 
 Future<void> main(List<String> args) async {
   final paths = <String>[];
@@ -59,9 +60,12 @@ Future<void> main(List<String> args) async {
     }
   }
   final skipped = result.skippedByList;
+  final removed = result.removedImportCount;
   final verb = dryRun ? 'would convert' : 'converted';
+  final pruneVerb = dryRun ? 'would prune' : 'pruned';
   stdout.writeln(
     '$verb ${result.convertedCount} site(s) in ${result.files.length} file(s)'
-    '${skipped > 0 ? ', $skipped skip-listed' : ''}',
+    '${skipped > 0 ? ', $skipped skip-listed' : ''}'
+    '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
   );
 }
