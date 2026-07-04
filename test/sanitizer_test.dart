@@ -448,4 +448,35 @@ void main() {
 ''');
     expect(out, contains('const Scaler ts = .noScaling;'));
   });
+
+  test(
+    'receiver-position static access on a further member stays prefixed',
+    () async {
+      final out = await sanitize('''
+class Scaler {
+  const Scaler.all();
+  static const Scaler noScaling = Scaler.all();
+  int get pixels => 3;
+}
+void main() {
+  final int px = Scaler.noScaling.pixels;
+  print(px);
+}
+''');
+      // `Scaler.noScaling` is the receiver of `.pixels` — dropping the prefix
+      // would yield `.noScaling.pixels`, an illegal shorthand position.
+      expect(out, contains('Scaler.noScaling.pixels'));
+    },
+  );
+
+  test('CLI --version constant matches pubspec version', () {
+    final pubspecVersion = RegExp(
+      r'^version:\s*(.+)$',
+      multiLine: true,
+    ).firstMatch(File('pubspec.yaml').readAsStringSync())?.group(1)?.trim();
+    final cliVersion = RegExp(r"_version\s*=\s*'([^']+)'")
+        .firstMatch(File(p.join('bin', 'dotsan.dart')).readAsStringSync())
+        ?.group(1);
+    expect(cliVersion, equals(pubspecVersion));
+  });
 }

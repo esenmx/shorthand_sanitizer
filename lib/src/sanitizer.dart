@@ -581,7 +581,7 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
     final interface = _getTargetInterface(node.prefix);
     if (interface != null) {
       final member = node.identifier.element;
-      if (_isStaticMember(member) && !_isPrefixPosition(node)) {
+      if (_isStaticMember(member) && !_isReceiverPosition(node)) {
         _add(
           deleteStart: node.prefix.offset,
           deleteEnd: node.period.offset,
@@ -603,7 +603,7 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
       final interface = _getTargetInterface(target);
       if (interface != null) {
         final member = node.propertyName.element;
-        if (_isStaticMember(member)) {
+        if (_isStaticMember(member) && !_isReceiverPosition(node)) {
           _add(
             deleteStart: target.offset,
             deleteEnd: node.operator.offset,
@@ -686,9 +686,9 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
     _ => false,
   };
 
-  /// `Foo.bar.baz` / `Foo.bar()` — the prefixed identifier is itself a
-  /// receiver; `.bar.baz` is not a legal shorthand position.
-  static bool _isPrefixPosition(PrefixedIdentifier node) {
+  /// `Foo.bar.baz` / `Foo.bar()` — the node is itself a receiver; `.bar.baz`
+  /// is not a legal shorthand position.
+  static bool _isReceiverPosition(Expression node) {
     final parent = node.parent;
     return (parent is PropertyAccess && identical(parent.target, node)) ||
         (parent is MethodInvocation && identical(parent.target, node));

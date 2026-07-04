@@ -1,3 +1,8 @@
+# 0.3.1
+
+- Fix `dotsan --version` reporting a stale version — the hardcoded CLI constant had drifted from `pubspec.yaml`. A test now pins the two together so it cannot drift again.
+- Harden `PropertyAccess` collection with the receiver-position guard `PrefixedIdentifier` already had: `Type.staticGetter.member` keeps its prefix instead of being collected and reverted downstream.
+
 # 0.3.0
 
 - Convert statics reached through an import prefix (`p.Type.member`) and through a type alias (`typedef Alias = Type; Alias.member`) — the target's element is resolved past the prefix/alias to the underlying `InterfaceElement` before collecting.
