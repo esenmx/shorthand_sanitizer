@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.2.0';
+const _version = '0.3.0';
 
 const _usage =
     'Usage: dotsan [paths...] [options]\n'
