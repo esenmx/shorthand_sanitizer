@@ -383,4 +383,69 @@ void main() => print(render());
     expect(after.exitCode, 0, reason: '${after.stderr}');
     expect(after.stdout, before.stdout);
   });
+
+  test('abstract interface class static const converts', () async {
+    final out = await sanitize('''
+abstract interface class TextScaler {
+  static const TextScaler noScaling = _NoScalingTextScaler();
+}
+class _NoScalingTextScaler implements TextScaler {
+  const _NoScalingTextScaler();
+}
+void main() {
+  const TextScaler ts = TextScaler.noScaling;
+  print(ts);
+}
+''');
+    expect(out, contains('const TextScaler ts = .noScaling;'));
+  });
+
+  test('static const on prefixed-imported class converts', () async {
+    File(p.join(pkg.path, 'lib', 'dep_class.dart')).writeAsStringSync('''
+class Scaler {
+  const Scaler.all();
+  static const Scaler noScaling = Scaler.all();
+}
+''');
+    final out = await sanitize('''
+import 'dep_class.dart' as p;
+void main() {
+  const p.Scaler ts = p.Scaler.noScaling;
+  print(ts);
+}
+''');
+    expect(out, contains('const p.Scaler ts = .noScaling;'));
+  });
+
+  test('static method on prefixed-imported class converts', () async {
+    File(p.join(pkg.path, 'lib', 'dep_class2.dart')).writeAsStringSync('''
+class Scaler {
+  const Scaler.all();
+  static Scaler scale(double v) => Scaler.all();
+}
+''');
+    final out = await sanitize('''
+import 'dep_class2.dart' as p;
+void main() {
+  const p.Scaler ts = p.Scaler.scale(5);
+  print(ts);
+}
+''');
+    expect(out, contains('const p.Scaler ts = .scale(5);'));
+  });
+
+  test('static const on type alias / typedef converts', () async {
+    final out = await sanitize('''
+class BaseScaler {
+  const BaseScaler.all();
+  static const BaseScaler noScaling = BaseScaler.all();
+}
+typedef Scaler = BaseScaler;
+void main() {
+  const Scaler ts = Scaler.noScaling;
+  print(ts);
+}
+''');
+    expect(out, contains('const Scaler ts = .noScaling;'));
+  });
 }

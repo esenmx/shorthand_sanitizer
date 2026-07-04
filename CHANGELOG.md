@@ -1,3 +1,9 @@
+# 0.3.0
+
+- Convert statics reached through an import prefix (`p.Type.member`) and through a type alias (`typedef Alias = Type; Alias.member`) — the target's element is resolved past the prefix/alias to the underlying `InterfaceElement` before collecting.
+- Convert static getters and fields accessed as a `PropertyAccess` (`prefix.Type.staticGetter`), not just `PrefixedIdentifier` and method-invocation forms.
+- Static-method collection accepts any resolvable target expression, not only a bare `SimpleIdentifier`, so prefixed and aliased receivers (`p.Type.staticMethod(...)`) convert.
+
 # 0.2.0
 
 - Prune imports the rewrite orphans: dropping a `Type` prefix can leave the import that supplied `Type` with no remaining referent. The final verified resolve is the oracle — any `unused_import`/`unnecessary_import` it reports that the original file did not is a self-inflicted orphan whose directive is removed. Imports the file already left unused are untouched.

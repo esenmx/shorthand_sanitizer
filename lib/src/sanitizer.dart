@@ -5,6 +5,7 @@ import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/element/element.dart';
+import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:analyzer/file_system/overlay_file_system.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
@@ -163,7 +164,7 @@ final class Sanitizer {
     final raf = file.openSync();
     try {
       return _generatedMarker.hasMatch(
-        String.fromCharCodes(raf.readSync(300)),
+        .fromCharCodes(raf.readSync(300)),
       );
     } finally {
       raf.closeSync();
@@ -577,7 +578,8 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
   /// `Enum.value`, `Type.staticGetterOrField`.
   @override
   void visitPrefixedIdentifier(PrefixedIdentifier node) {
-    if (node.prefix.element is InterfaceElement) {
+    final interface = _getTargetInterface(node.prefix);
+    if (interface != null) {
       final member = node.identifier.element;
       if (_isStaticMember(member) && !_isPrefixPosition(node)) {
         _add(
@@ -593,24 +595,49 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
     super.visitPrefixedIdentifier(node);
   }
 
-  /// `Type.staticMethod(...)`.
+  /// `prefix.Type.staticGetterOrField`.
+  @override
+  void visitPropertyAccess(PropertyAccess node) {
+    final target = node.target;
+    if (target != null) {
+      final interface = _getTargetInterface(target);
+      if (interface != null) {
+        final member = node.propertyName.element;
+        if (_isStaticMember(member)) {
+          _add(
+            deleteStart: target.offset,
+            deleteEnd: node.operator.offset,
+            dotOffset: node.operator.offset,
+            display: '${target.toSource()}.${node.propertyName.name}',
+            memberName: node.propertyName.name,
+            memberElement: member,
+          );
+        }
+      }
+    }
+    super.visitPropertyAccess(node);
+  }
+
+  /// `Type.staticMethod(...)` or `prefix.Type.staticMethod(...)`.
   @override
   void visitMethodInvocation(MethodInvocation node) {
     final target = node.target;
-    if (target is SimpleIdentifier &&
-        target.element is InterfaceElement &&
-        node.typeArguments == null &&
-        _isStaticMember(node.methodName.element)) {
-      final dot = node.operator;
-      if (dot != null) {
-        _add(
-          deleteStart: target.offset,
-          deleteEnd: dot.offset,
-          dotOffset: dot.offset,
-          display: '${target.name}.${node.methodName.name}',
-          memberName: node.methodName.name,
-          memberElement: node.methodName.element,
-        );
+    if (target != null) {
+      final interface = _getTargetInterface(target);
+      if (interface != null &&
+          node.typeArguments == null &&
+          _isStaticMember(node.methodName.element)) {
+        final dot = node.operator;
+        if (dot != null) {
+          _add(
+            deleteStart: target.offset,
+            deleteEnd: dot.offset,
+            dotOffset: dot.offset,
+            display: '${target.toSource()}.${node.methodName.name}',
+            memberName: node.methodName.name,
+            memberElement: node.methodName.element,
+          );
+        }
       }
     }
     super.visitMethodInvocation(node);
@@ -633,6 +660,24 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
       );
     }
     super.visitInstanceCreationExpression(node);
+  }
+
+  static InterfaceElement? _getInterfaceElement(Element? element) {
+    if (element is InterfaceElement) return element;
+    if (element is TypeAliasElement) {
+      final aliasedType = element.aliasedType;
+      if (aliasedType is InterfaceType) {
+        return aliasedType.element;
+      }
+    }
+    return null;
+  }
+
+  static InterfaceElement? _getTargetInterface(Expression? target) {
+    if (target is Identifier) {
+      return _getInterfaceElement(target.element);
+    }
+    return null;
   }
 
   static bool _isStaticMember(Element? element) => switch (element) {
