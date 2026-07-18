@@ -39,11 +39,35 @@ final Object o = Fit.cover;    // unwitnessed context — kept
 const Color c = Colors.red;    // member lives on Colors, context is Color — kept
 const Base x = Sub.a;          // .a would silently rebind to Base.a — kept
 final l = Fit.values;          // context is List<Fit>, never the enum — kept
-padding: EdgeInsets.all(8),    // .all here binds EdgeInsetsGeometry.all — a
-                               // different (forwarding) element — kept
+padding: EdgeInsets.all(8),    // .all binds EdgeInsetsGeometry.all, which
+                               // allocates a fresh instance — kept
 ```
 
 The rebind cases compile either way — text-based converters ship them as silent element changes. Element identity is the only check that catches them. (Corollary: in geometry slots, write `.all(8)` directly in new code; the sanitizer won't migrate old prefixes into forwarders.)
+
+### The one licensed rebind
+
+A base class often re-declares its subtype's constants as its own:
+
+```dart
+// flutter/painting: alignment.dart
+abstract class AlignmentGeometry {
+  static const AlignmentGeometry topCenter = Alignment.topCenter;
+}
+```
+
+`Alignment.topCenter` in an `AlignmentGeometry` slot binds `.topCenter` to a *different* element — but to the identical canonicalized constant, so `identical()` still holds and the rewrite is observably a no-op. Those convert. Const-value identity is the oracle, and it is stricter than it sounds:
+
+```dart
+alignment: Alignment.topCenter,          // AlignmentGeometry.topCenter is the
+                                         // same canonical constant — converts
+padding: EdgeInsets.all(8),              // .all is a method: no constant to
+                                         // compare — kept
+alignment: AlignmentDirectional.center,  // same (0.0, 0.0) as Alignment.center,
+                                         // different type — kept
+```
+
+An alias declared in the file being rewritten is also kept: its value would be read back out of the speculative text, letting the rewrite judge itself.
 
 Operator expressions split correctly: `Pad.all(1) + Pad.only(2)` becomes `Pad.all(1) + .only(2)` — the left operand has no shorthand context, the right one is a typed argument. Reverting one candidate can make a neighbor valid, so failed sites near a co-failure are retried individually before the file is finalized.
 

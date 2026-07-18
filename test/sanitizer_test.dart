@@ -449,6 +449,129 @@ void main() {
     expect(out, contains('const Scaler ts = .noScaling;'));
   });
 
+  group('rebind onto a const alias', () {
+    // `Geo` mirrors Flutter's AlignmentGeometry: it re-declares its subtype's
+    // constants as its own (`topCenter`, `center`) and forwards a factory
+    // (`all`). A `Geo` slot therefore binds every shorthand to `Geo`, never to
+    // the `Align`/`Directional` the source names.
+    setUpAll(() {
+      File(p.join(pkg.path, 'lib', 'geometry.dart')).writeAsStringSync('''
+abstract class Geo {
+  static const Geo topCenter = Align.topCenter;
+  static const Geo center = Align.center;
+  static final Geo lazy = Align.lazy;
+  static Geo all(double v) => Align.all(v);
+}
+class Align implements Geo {
+  const Align(this.v);
+  final double v;
+  static const Align topCenter = Align(0);
+  static const Align center = Align(5);
+  static const Align lazy = Align(7);
+  static Align all(double v) => Align(v);
+}
+class Directional implements Geo {
+  const Directional(this.v);
+  final double v;
+  static const Directional center = Directional(5);
+}
+''');
+    });
+
+    test(
+      'const alias converts — canonicalization makes it the same object',
+      () async {
+        final out = await sanitize('''
+import 'geometry.dart';
+void main() {
+  const Geo g = Align.topCenter;
+  print(g);
+}
+''');
+        expect(out, contains('const Geo g = .topCenter;'));
+      },
+    );
+
+    test('non-const forwarder stays prefixed', () async {
+      final out = await sanitize('''
+import 'geometry.dart';
+void main() {
+  final Geo g = Align.all(3);
+  print(g);
+}
+''');
+      // `.all(3)` binds Geo.all, which allocates a fresh instance — no
+      // constant value, so nothing proves the two equivalent.
+      expect(out, contains('final Geo g = Align.all(3);'));
+    });
+
+    test('non-const `static final` alias stays prefixed', () async {
+      final out = await sanitize('''
+import 'geometry.dart';
+void main() {
+  final Geo g = Align.lazy;
+  print(g);
+}
+''');
+      // Geo.lazy is `final`, not `const` — no compile-time value, so both
+      // sides being the same object is unprovable even though they are.
+      expect(out, contains('final Geo g = Align.lazy;'));
+    });
+
+    test('same-valued constant of another type stays prefixed', () async {
+      final out = await sanitize('''
+import 'geometry.dart';
+void main() {
+  const Geo g = Directional.center;
+  print(g);
+}
+''');
+      // Directional(5) and Geo.center's Align(5) carry identical field state;
+      // only their type tells them apart, and it must.
+      expect(out, contains('const Geo g = Directional.center;'));
+    });
+
+    test('alias declared in the file under rewrite stays prefixed', () async {
+      // Its value would be read out of the speculative text — circular, since
+      // the rewrite could be what changed the value being judged.
+      final out = await sanitize('''
+abstract class Box {
+  static const Box wide = Fixed.wide;
+}
+class Fixed implements Box {
+  const Fixed(this.v);
+  final int v;
+  static const Fixed wide = Fixed(1);
+}
+void main() {
+  const Box b = Fixed.wide;
+  print(b);
+}
+''');
+      expect(out, contains('static const Box wide = Fixed.wide;'));
+      expect(out, contains('const Box b = Fixed.wide;'));
+    });
+
+    test('converted alias stays identical to what the source named', () async {
+      final file = File(p.join(pkg.path, 'lib', 'alias_roundtrip.dart'))
+        ..writeAsStringSync('''
+import 'geometry.dart';
+void main() {
+  const Geo g = Align.topCenter;
+  print(identical(g, Align.topCenter));
+}
+''');
+      await Sanitizer().run([file.path]);
+      expect(file.readAsStringSync(), contains('const Geo g = .topCenter;'));
+      final run = Process.runSync('dart', [
+        'run',
+        file.path,
+      ], workingDirectory: pkg.path);
+      expect(run.exitCode, 0, reason: '${run.stderr}');
+      expect(run.stdout.toString().trim(), 'true');
+    });
+  });
+
   test(
     'receiver-position static access on a further member stays prefixed',
     () async {

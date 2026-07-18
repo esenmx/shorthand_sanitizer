@@ -19,10 +19,12 @@ Missing binary → `dart pub global activate shorthand_sanitizer`.
 
 ## What it guarantees
 
-A site converts only when the shorthand resolves to the **same element** with no new diagnostics — verified by re-resolving the rewritten file. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace statics (`Colors.red` in a `Color` slot), `Enum.values`, and forwarder rebinds (`EdgeInsets.all` in a `padding:` slot → would bind `EdgeInsetsGeometry.all`) all stay prefixed. Operator expressions split correctly: `Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`.
+A site converts only when the shorthand resolves to the **same element** with no new diagnostics — verified by re-resolving the rewritten file. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace statics (`Colors.red` in a `Color` slot), `Enum.values`, and forwarder rebinds (`EdgeInsets.all` in a `padding:` slot → would bind `EdgeInsetsGeometry.all`, which allocates) all stay prefixed. Operator expressions split correctly: `Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`.
+
+One rebind is licensed: a `static const` **alias** of the original (`AlignmentGeometry.topCenter = Alignment.topCenter`) is a different element but the identical canonicalized constant, so `alignment: Alignment.topCenter` converts. Const-value identity decides it — a same-valued constant of another type (`AlignmentDirectional.center`) still stays prefixed.
 
 ## After a run
 
 - Kept prefixes are deliberate — do not "finish the job" by hand.
-- Geometry slots (`padding:`, `alignment:`): write `.all(8)` / `.center` directly in new code; the sanitizer will not migrate old prefixes into forwarders.
+- Geometry slots (`padding:`): write `.all(8)` directly in new code; the sanitizer will not migrate old prefixes into forwarders. `alignment:` constants need no such care — they are const aliases and convert.
 - Generated files are skipped by their leading comment marker (build_runner, FlutterFire's `firebase_options.dart`, pigeon, protoc, slang) — NOT by filename, so handwritten `*.preview.dart` previews are sanitized too.

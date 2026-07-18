@@ -1,3 +1,7 @@
+# 0.4.0
+
+- Convert a rebind onto a `static const` **alias** of the original — `Alignment.topCenter` in an `AlignmentGeometry` slot now becomes `.topCenter`. The shorthand binds a different element (`AlignmentGeometry.topCenter`), but const canonicalization makes it the identical object, so the rewrite is observably a no-op. Const-value identity is the oracle; it still refuses non-const forwarders (`EdgeInsetsGeometry.all` allocates), same-valued constants of a different type (`AlignmentDirectional.center` vs `Alignment.center`), and aliases declared in the file being rewritten.
+
 # 0.3.1
 
 - Fix `dotsan --version` reporting a stale version — the hardcoded CLI constant had drifted from `pubspec.yaml`. A test now pins the two together so it cannot drift again.

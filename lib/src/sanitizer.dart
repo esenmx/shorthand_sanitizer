@@ -2,8 +2,10 @@ import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
+import 'package:analyzer/dart/analysis/session.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
+import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
@@ -122,6 +124,12 @@ final class SanitizeResult {
 /// else — unwitnessed context (`Object`, generics), members living on a
 /// sibling namespace (`Colors.red` in a `Color` slot, `Curves.easeIn` in a
 /// `Curve` slot), silent rebinds to a same-named static — is reverted.
+///
+/// One rebind is licensed: a shorthand that lands on a `static const` alias
+/// of the original (`AlignmentGeometry.topCenter = Alignment.topCenter`) is a
+/// different element but the identical canonicalized constant, so the rewrite
+/// is observably a no-op. Const-value identity, not element identity, decides
+/// that case — see `_isConstAlias` for what it still refuses.
 ///
 /// Dropping a `Type` prefix can leave the import that supplied `Type` with no
 /// remaining referent. The final verified resolve is the oracle: any
@@ -255,7 +263,7 @@ final class Sanitizer {
       final check = await context.currentSession.getResolvedUnit(file);
       if (check is! ResolvedUnitResult) return null;
 
-      final failed = _failedCandidates(check, rewritten, baseline);
+      final failed = await _failedCandidates(check, rewritten, baseline);
       if (failed.mismatched.isEmpty && failed.errorAttributed.isEmpty) {
         lastClean = (rewritten, active);
         orphanCuts = _orphanRanges(check, baselineImports);
@@ -310,16 +318,16 @@ final class Sanitizer {
   }
 
   /// Splits failed candidates by fate. `mismatched` — the shorthand resolved
-  /// to a *different* element: deterministic rebind, never retry.
-  /// `errorAttributed`
+  /// to a *different* element that is not a const alias of the original:
+  /// deterministic rebind, never retry. `errorAttributed`
   /// — node missing/unresolved or nearest to a new diagnostic: possibly
   /// collateral from a neighbor, worth one retry.
-  ({Set<Candidate> mismatched, Set<Candidate> errorAttributed})
+  Future<({Set<Candidate> mismatched, Set<Candidate> errorAttributed})>
   _failedCandidates(
     ResolvedUnitResult check,
     _Rewritten rewritten,
     Set<String> baseline,
-  ) {
+  ) async {
     final mismatched = <Candidate>{};
     final errorAttributed = <Candidate>{};
     final shorthands = _ShorthandIndex();
@@ -332,7 +340,14 @@ final class Sanitizer {
       } else if (resolved.memberName != entry.key.memberName ||
           resolved.containerName != entry.key.containerName ||
           resolved.libraryUri != entry.key.libraryUri) {
-        mismatched.add(entry.key);
+        if (!await _isConstAlias(
+          check.session,
+          entry.key,
+          resolved,
+          check.libraryElement.uri.toString(),
+        )) {
+          mismatched.add(entry.key);
+        }
       }
     }
 
@@ -343,6 +358,78 @@ final class Sanitizer {
     }
     errorAttributed.removeAll(mismatched);
     return (mismatched: mismatched, errorAttributed: errorAttributed);
+  }
+
+  /// Whether a rebind landed on a `static const` **alias** of the original —
+  /// a distinct element declaring the identical canonicalized constant, as
+  /// `AlignmentGeometry.topCenter = Alignment.topCenter` does. Const
+  /// canonicalization makes the two `identical` at runtime, so the rewrite is
+  /// observably a no-op and the rebind is safe.
+  ///
+  /// Value identity, not element identity, is the oracle here, and it is the
+  /// narrower of the two: it rescues the alias while still refusing every
+  /// forwarder that *computes* an equivalent (`EdgeInsetsGeometry.all(8)`
+  /// allocates a fresh, non-const instance — no constant value, no rescue)
+  /// and every same-named sibling constant holding a different value
+  /// (`Base.a` vs `Sub.a`, `AlignmentDirectional.center` in an
+  /// `AlignmentGeometry` slot — the value's type differs).
+  ///
+  /// Both sides are looked up fresh through [session] rather than reusing the
+  /// elements the two resolves handed back: a constant only evaluates on an
+  /// element whose library is the session's current one, and the two values
+  /// must come from a single element model for their types to compare equal.
+  ///
+  /// A constant declared in [selfUri] — the library under rewrite — is read
+  /// out of the speculative text, which would make the check circular: the
+  /// rewrite could be what changed the value it is being judged against.
+  /// Every other library is untouched by the overlay, so its constants are
+  /// the pristine ones. Same-library aliases therefore never rescue.
+  static Future<bool> _isConstAlias(
+    AnalysisSession session,
+    Candidate candidate,
+    _ResolvedShorthand resolved,
+    String? selfUri,
+  ) async {
+    if (candidate.libraryUri == selfUri || resolved.libraryUri == selfUri) {
+      return false;
+    }
+
+    final before = await _constantOf(
+      session,
+      candidate.libraryUri,
+      candidate.containerName,
+      candidate.memberName,
+    );
+    if (before == null || !before.hasKnownValue) return false;
+
+    final after = await _constantOf(
+      session,
+      resolved.libraryUri,
+      resolved.containerName,
+      resolved.memberName,
+    );
+    return after != null && after.hasKnownValue && before == after;
+  }
+
+  /// The compile-time value of `container.member` in library [uri], or null
+  /// when any link is missing or the member is not a constant — a static
+  /// method (`EdgeInsetsGeometry.all`) or a plain getter has no constant, so
+  /// it can never satisfy [_isConstAlias].
+  static Future<DartObject?> _constantOf(
+    AnalysisSession session,
+    String? uri,
+    String? container,
+    String member,
+  ) async {
+    if (uri == null || container == null) return null;
+    final library = await session.getLibraryByUri(uri);
+    if (library is! LibraryElementResult) return null;
+    final holder =
+        library.element.getClass(container) ??
+        library.element.getEnum(container) ??
+        library.element.getMixin(container) ??
+        library.element.getExtensionType(container);
+    return holder?.getField(member)?.computeConstantValue();
   }
 
   Candidate _nearest(Map<Candidate, int> offsets, int errorOffset) {
