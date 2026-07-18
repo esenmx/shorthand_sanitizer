@@ -10,11 +10,21 @@ Covers enum values, static getters/fields/methods, and named (incl. `factory`/`c
 dart pub global activate shorthand_sanitizer   # installs the `dotsan` command
 ```
 
-For large repos, an AOT build starts instantly:
+That installs a snapshot the `dart` VM loads on every run (~160 ms of startup). For large repos, compile it AOT into a directory already on your `PATH` — same tool, ~20 ms:
 
 ```bash
-dart compile exe bin/dotsan.dart -o ~/bin/dotsan
+# from a clone
+dart compile exe bin/dotsan.dart -o ~/.local/bin/dotsan
+
+# from the published package, no clone — `dart compile exe` needs resolved
+# deps, and the hosted cache directory carries no package config of its own
+dart pub global activate shorthand_sanitizer
+dart compile exe ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-<version>/bin/dotsan.dart \
+  --packages ~/.pub-cache/global_packages/shorthand_sanitizer/.dart_tool/package_config.json \
+  -o ~/.local/bin/dotsan
 ```
+
+Re-running `dart pub global activate` later replaces `~/.pub-cache/bin/dotsan` with the snapshot shim again, so re-compile after each upgrade — a stale AOT binary is otherwise indistinguishable from a current one apart from `dotsan --version`.
 
 ## Use
 
