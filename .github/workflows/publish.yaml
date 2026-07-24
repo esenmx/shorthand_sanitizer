@@ -35,5 +35,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
-      - run: dart pub get
-      - run: dart pub publish --force
+      - name: Check pub.dev for this version
+        id: pub
+        run: |
+          V=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          if curl -fsS "https://pub.dev/api/packages/shorthand_sanitizer/versions/$V" >/dev/null; then
+            echo "::notice::$V already on pub.dev — nothing to publish"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.pub.outputs.exists == 'false'
+        run: dart pub get
+      - if: steps.pub.outputs.exists == 'false'
+        run: dart pub publish --force
