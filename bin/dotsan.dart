@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.5.0';
+const _version = '0.5.1';
 
 const _defaultRoots = [
   'lib',

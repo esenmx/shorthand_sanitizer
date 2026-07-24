@@ -1,3 +1,7 @@
+# 0.5.1
+
+- README: correct the AOT upgrade recipe — `pub global activate`/`deactivate` refuse a foreign binary at the shim path (`Failed to decode data using encoding 'utf-8'`), so upgrading requires `rm ~/.pub-cache/bin/dotsan` first; 0.5.0 wrongly claimed activate rewrites the shim in place.
+
 # 0.5.0
 
 - `dotsan` with no path arguments now scans every conventional root directory that exists — `lib`, `bin`, `test`, `example`, `tool`, `integration_test`, `benchmark` — instead of only `lib`, and exits 64 when none exist.

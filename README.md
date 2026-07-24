@@ -23,7 +23,15 @@ dart compile exe \
 - `--packages` is required: `dart compile exe` needs resolved dependencies, the hosted cache directory carries no package config of its own, and `global_packages/shorthand_sanitizer/` holds the resolution `activate` just made.
 - From a clone instead: `dart pub get && dart compile exe bin/dotsan.dart -o ~/.pub-cache/bin/dotsan`.
 
-**After every upgrade** (`dart pub global activate shorthand_sanitizer`), re-run the compile: activate rewrites `~/.pub-cache/bin/dotsan` back to the snapshot shim for the new version, so you drop to the slow path — never to stale code — until you do. That safety is why the AOT binary belongs at the shim path and not in some other `PATH` directory, where an old binary would keep shadowing every future upgrade. `dotsan --version` tells you what you're running.
+**Upgrading:** `pub global` refuses to touch the compiled binary occupying its shim path — `activate` and `deactivate` both fail with `Failed to decode data using encoding 'utf-8'`. Delete it first, then activate and recompile:
+
+```bash
+rm ~/.pub-cache/bin/dotsan
+dart pub global activate shorthand_sanitizer
+# ...then the compile command above
+```
+
+That refusal is the safety: an upgrade attempted over the binary fails loudly instead of leaving the old version silently shadowing the new one — which is exactly what a binary parked in some other `PATH` directory would do on every upgrade you forget to recompile. `dotsan --version` tells you what you're running.
 
 ## Use
 
