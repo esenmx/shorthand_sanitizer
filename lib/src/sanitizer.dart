@@ -712,10 +712,7 @@ Set<String> _importIssueKeys(List<Diagnostic> diagnostics) => {
 /// imports the rewrite orphaned — those [check] now flags removable that
 /// weren't in [baseline]. Coordinates are [check]'s content, i.e. the
 /// rewritten text about to be written.
-List<(int, int)> _orphanRanges(
-  ResolvedUnitResult check,
-  Set<String> baseline,
-) {
+List<(int, int)> _orphanRanges(ResolvedUnitResult check, Set<String> baseline) {
   final text = check.content;
   final imports = check.unit.directives.whereType<ImportDirective>().toList();
   if (imports.isEmpty) return const [];

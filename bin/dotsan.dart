@@ -40,18 +40,8 @@ ArgParser _buildParser() {
       negatable: false,
       help: 'Also rewrite generated-marked files.',
     )
-    ..addFlag(
-      'version',
-      abbr: 'v',
-      negatable: false,
-      help: 'Print version.',
-    )
-    ..addFlag(
-      'help',
-      abbr: 'h',
-      negatable: false,
-      help: 'Print this usage.',
-    );
+    ..addFlag('version', abbr: 'v', negatable: false, help: 'Print version.')
+    ..addFlag('help', abbr: 'h', negatable: false, help: 'Print this usage.');
 }
 
 String _usage(ArgParser parser) {
