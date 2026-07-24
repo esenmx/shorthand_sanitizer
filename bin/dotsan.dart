@@ -31,7 +31,8 @@ ArgParser _buildParser() {
     ..addMultiOption(
       'exclude',
       valueHelp: 'glob,glob',
-      help: 'Leave matching files alone '
+      help:
+          'Leave matching files alone '
           '(firebase_options.dart, **/legacy/**).',
     )
     ..addFlag(
