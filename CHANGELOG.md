@@ -1,4 +1,10 @@
-# 0.4.0
+# 0.5.0
+
+- `dotsan` with no path arguments now scans every conventional root directory that exists — `lib`, `bin`, `test`, `example`, `tool`, `integration_test`, `benchmark` — instead of only `lib`, and exits 64 when none exist.
+- Warn when files are skipped because their package's language version predates 3.10 (dot shorthands' floor), counted per version. Previously such a run reported an ordinary "converted 0 site(s)", indistinguishable from having nothing to convert.
+- Generated-file detection now requires the marker inside the **leading comment block** (word-boundary match on `generated code/file/by`, `auto-generated`), instead of `generat` anywhere in the first 300 bytes — a file whose opening doc comment merely mentions generation is no longer skipped.
+- Recovery pass groups co-failed candidates by enclosing statement: type inference cannot cross a statement boundary, so one re-resolve now retries one candidate per group instead of one per round — fewer analyzer passes on files with many collisions.
+- README: the AOT install recipe now compiles over the `~/.pub-cache/bin/dotsan` shim (no `<version>` placeholder, no extra `PATH` directory), so a later `dart pub global activate` can never leave a stale binary shadowing the upgrade.
 
 - Convert a rebind onto a `static const` **alias** of the original — `Alignment.topCenter` in an `AlignmentGeometry` slot now becomes `.topCenter`. The shorthand binds a different element (`AlignmentGeometry.topCenter`), but const canonicalization makes it the identical object, so the rewrite is observably a no-op. Const-value identity is the oracle; it still refuses non-const forwarders (`EdgeInsetsGeometry.all` allocates), same-valued constants of a different type (`AlignmentDirectional.center` vs `Alignment.center`), and aliases declared in the file being rewritten.
 

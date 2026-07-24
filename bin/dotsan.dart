@@ -2,7 +2,17 @@ import 'dart:io';
 
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.4.0';
+const _version = '0.5.0';
+
+const _defaultRoots = [
+  'lib',
+  'bin',
+  'test',
+  'example',
+  'tool',
+  'integration_test',
+  'benchmark',
+];
 
 const _usage =
     'Usage: dotsan [paths...] [options]\n'
@@ -15,7 +25,9 @@ const _usage =
     'Rewrites Type.member to dot-shorthand .member wherever the rewrite\n'
     'provably resolves to the same element, then prunes any import the\n'
     'dropped Type prefix orphaned. Files whose leading comment declares\n'
-    'them generated are skipped. Default path: lib';
+    'them generated are skipped. Default paths: every conventional root\n'
+    'directory that exists (lib, bin, test, example, tool, integration_test,\n'
+    'benchmark)';
 
 Future<void> main(List<String> args) async {
   final paths = <String>[];
@@ -45,7 +57,13 @@ Future<void> main(List<String> args) async {
       paths.add(a);
     }
   }
-  if (paths.isEmpty) paths.add('lib');
+  if (paths.isEmpty) {
+    paths.addAll(_defaultRoots.where((d) => Directory(d).existsSync()));
+    if (paths.isEmpty) {
+      stderr.writeln('no conventional root directory found (see --help)');
+      exit(64);
+    }
+  }
 
   final result = await Sanitizer(
     skips: skips,
@@ -58,6 +76,13 @@ Future<void> main(List<String> args) async {
     for (final line in file.converted) {
       stdout.writeln('  $line');
     }
+  }
+  for (final entry in result.skippedBelowFloor.entries) {
+    stderr.writeln(
+      'warning: skipped ${entry.value} file(s) at language version '
+      '${entry.key} — dot shorthands need 3.10. Raise `environment: sdk:` in '
+      "that package's pubspec.yaml; the installed SDK does not decide this.",
+    );
   }
   final skipped = result.skippedByList;
   final removed = result.removedImportCount;

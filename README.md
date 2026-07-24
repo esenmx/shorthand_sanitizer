@@ -10,26 +10,25 @@ Covers enum values, static getters/fields/methods, and named (incl. `factory`/`c
 dart pub global activate shorthand_sanitizer   # installs the `dotsan` command
 ```
 
-That installs a snapshot the `dart` VM loads on every run (~160 ms of startup). For large repos, compile it AOT into a directory already on your `PATH` — same tool, ~20 ms:
+That installs a shim at `~/.pub-cache/bin/dotsan` that loads a VM snapshot on every run (~160 ms of startup). For large repos, compile the same tool AOT (~20 ms) **over that shim** — the `dotsan` on your `PATH` just gets fast, no new directory to wire up:
 
 ```bash
-# from a clone
-dart compile exe bin/dotsan.dart -o ~/.local/bin/dotsan
-
-# from the published package, no clone — `dart compile exe` needs resolved
-# deps, and the hosted cache directory carries no package config of its own
-dart pub global activate shorthand_sanitizer
-dart compile exe ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-<version>/bin/dotsan.dart \
+dart compile exe \
+  "$(ls -d ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-*/ | sort -V | tail -1)bin/dotsan.dart" \
   --packages ~/.pub-cache/global_packages/shorthand_sanitizer/.dart_tool/package_config.json \
-  -o ~/.local/bin/dotsan
+  -o ~/.pub-cache/bin/dotsan
 ```
 
-Re-running `dart pub global activate` later replaces `~/.pub-cache/bin/dotsan` with the snapshot shim again, so re-compile after each upgrade — a stale AOT binary is otherwise indistinguishable from a current one apart from `dotsan --version`.
+- The `$(ls … | sort -V | tail -1)` picks the newest cached copy of the package — no version to type.
+- `--packages` is required: `dart compile exe` needs resolved dependencies, the hosted cache directory carries no package config of its own, and `global_packages/shorthand_sanitizer/` holds the resolution `activate` just made.
+- From a clone instead: `dart pub get && dart compile exe bin/dotsan.dart -o ~/.pub-cache/bin/dotsan`.
+
+**After every upgrade** (`dart pub global activate shorthand_sanitizer`), re-run the compile: activate rewrites `~/.pub-cache/bin/dotsan` back to the snapshot shim for the new version, so you drop to the slow path — never to stale code — until you do. That safety is why the AOT binary belongs at the shim path and not in some other `PATH` directory, where an old binary would keep shadowing every future upgrade. `dotsan --version` tells you what you're running.
 
 ## Use
 
 ```bash
-dotsan                              # sanitize lib/
+dotsan                              # sanitize every existing root dir (lib, bin, test, ...)
 dotsan lib test --dry-run           # report only
 dotsan --skip=AsyncValue.error      # keep listed members prefixed
 dotsan --exclude=**/legacy/**       # leave matching files alone
