@@ -1,3 +1,7 @@
+# 0.6.0
+
+- CLI ported to `package:args`: short flags `-v` (`--version`), `-h` (`--help`), `-n` (`--dry-run`); generated, aligned usage; unknown options fail with exit 64 and the usage instead of a bare error. `--skip`/`--exclude` now also accept repeated occurrences in addition to comma lists.
+
 # 0.5.1
 
 - README: correct the AOT upgrade recipe — `pub global activate`/`deactivate` refuse a foreign binary at the shim path (`Failed to decode data using encoding 'utf-8'`), so upgrading requires `rm ~/.pub-cache/bin/dotsan` first; 0.5.0 wrongly claimed activate rewrites the shim in place.

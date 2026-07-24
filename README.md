@@ -31,16 +31,17 @@ dart pub global activate shorthand_sanitizer
 # ...then the compile command above
 ```
 
-That refusal is the safety: an upgrade attempted over the binary fails loudly instead of leaving the old version silently shadowing the new one — which is exactly what a binary parked in some other `PATH` directory would do on every upgrade you forget to recompile. `dotsan --version` tells you what you're running.
+That refusal is the safety: an upgrade attempted over the binary fails loudly instead of leaving the old version silently shadowing the new one — which is exactly what a binary parked in some other `PATH` directory would do on every upgrade you forget to recompile. If `dotsan --version` ever sticks to an old version that reinstalling doesn't fix, run `which -a dotsan`: it must list only `~/.pub-cache/bin/dotsan` — delete any other copy it finds.
 
 ## Use
 
 ```bash
 dotsan                              # sanitize every existing root dir (lib, bin, test, ...)
-dotsan lib test --dry-run           # report only
+dotsan lib test -n                  # --dry-run: report only
 dotsan --skip=AsyncValue.error      # keep listed members prefixed
 dotsan --exclude=**/legacy/**       # leave matching files alone
 dotsan --include-generated          # also rewrite generated-marked files
+dotsan -v                           # --version; -h/--help for full usage
 ```
 
 `--skip` takes `Type.member` or bare `member` names; `--exclude` takes globs, matched against the CWD-relative path when the pattern contains `/`, else the basename (both comma-separated).

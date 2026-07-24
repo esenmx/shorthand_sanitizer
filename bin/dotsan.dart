@@ -1,8 +1,9 @@
 import 'dart:io';
 
+import 'package:args/args.dart';
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.5.1';
+const _version = '0.6.0';
 
 const _defaultRoots = [
   'lib',
@@ -14,49 +15,77 @@ const _defaultRoots = [
   'benchmark',
 ];
 
-const _usage =
-    'Usage: dotsan [paths...] [options]\n'
-    '  --dry-run | -n              report without writing\n'
-    '  --skip=Type.member,member   keep listed members prefixed\n'
-    '  --exclude=glob,glob         leave matching files alone\n'
-    '                              (firebase_options.dart, **/legacy/**)\n'
-    '  --include-generated         also rewrite generated-marked files\n'
-    '  --version                   print version\n'
-    'Rewrites Type.member to dot-shorthand .member wherever the rewrite\n'
-    'provably resolves to the same element, then prunes any import the\n'
-    'dropped Type prefix orphaned. Files whose leading comment declares\n'
-    'them generated are skipped. Default paths: every conventional root\n'
-    'directory that exists (lib, bin, test, example, tool, integration_test,\n'
-    'benchmark)';
+ArgParser _buildParser() {
+  return ArgParser(usageLineLength: 80)
+    ..addFlag(
+      'dry-run',
+      abbr: 'n',
+      negatable: false,
+      help: 'Report what would change without writing.',
+    )
+    ..addMultiOption(
+      'skip',
+      valueHelp: 'Type.member,member',
+      help: 'Keep the listed members prefixed.',
+    )
+    ..addMultiOption(
+      'exclude',
+      valueHelp: 'glob,glob',
+      help: 'Leave matching files alone '
+          '(firebase_options.dart, **/legacy/**).',
+    )
+    ..addFlag(
+      'include-generated',
+      negatable: false,
+      help: 'Also rewrite generated-marked files.',
+    )
+    ..addFlag(
+      'version',
+      abbr: 'v',
+      negatable: false,
+      help: 'Print version.',
+    )
+    ..addFlag(
+      'help',
+      abbr: 'h',
+      negatable: false,
+      help: 'Print this usage.',
+    );
+}
+
+String _usage(ArgParser parser) {
+  return '''
+Usage: dotsan [paths...] [options]
+${parser.usage}
+Rewrites Type.member to dot-shorthand .member wherever the rewrite provably
+resolves to the same element, then prunes any import the dropped Type prefix
+orphaned. Files whose leading comment declares them generated are skipped.
+Default paths: every conventional root directory that exists
+(${_defaultRoots.join(', ')}).''';
+}
 
 Future<void> main(List<String> args) async {
-  final paths = <String>[];
-  var dryRun = false;
-  var skipGenerated = true;
-  final skips = <String>{};
-  final excludes = <String>[];
-  for (final a in args) {
-    if (a == '--dry-run' || a == '-n') {
-      dryRun = true;
-    } else if (a.startsWith('--skip=')) {
-      skips.addAll(a.substring(7).split(',').where((s) => s.isNotEmpty));
-    } else if (a.startsWith('--exclude=')) {
-      excludes.addAll(a.substring(10).split(',').where((s) => s.isNotEmpty));
-    } else if (a == '--include-generated') {
-      skipGenerated = false;
-    } else if (a == '--version') {
-      stdout.writeln('dotsan $_version');
-      return;
-    } else if (a == '--help' || a == '-h') {
-      stdout.writeln(_usage);
-      return;
-    } else if (a.startsWith('-')) {
-      stderr.writeln('unknown option: $a (see --help)');
-      exit(64);
-    } else {
-      paths.add(a);
-    }
+  final parser = _buildParser();
+  final ArgResults opts;
+  try {
+    opts = parser.parse(args);
+  } on FormatException catch (e) {
+    stderr
+      ..writeln(e.message)
+      ..writeln()
+      ..writeln(_usage(parser));
+    exit(64);
   }
+  if (opts.flag('help')) {
+    stdout.writeln(_usage(parser));
+    return;
+  }
+  if (opts.flag('version')) {
+    stdout.writeln('dotsan $_version');
+    return;
+  }
+
+  final paths = [...opts.rest];
   if (paths.isEmpty) {
     paths.addAll(_defaultRoots.where((d) => Directory(d).existsSync()));
     if (paths.isEmpty) {
@@ -65,11 +94,12 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  final dryRun = opts.flag('dry-run');
   final result = await Sanitizer(
-    skips: skips,
-    excludes: excludes,
+    skips: opts.multiOption('skip').toSet(),
+    excludes: opts.multiOption('exclude'),
     dryRun: dryRun,
-    skipGenerated: skipGenerated,
+    skipGenerated: !opts.flag('include-generated'),
   ).run(paths);
   for (final file in result.files) {
     stdout.writeln(file.path);
