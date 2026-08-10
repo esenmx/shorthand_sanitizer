@@ -1,3 +1,7 @@
+# Unreleased
+
+- Adopt `package:cli_util` (`cli_logging`): a TTY-only `analyzing` spinner with elapsed time while the analyzer resolves — piped stdout stays byte-identical, since the non-ANSI `Progress` fallback would print into the parseable report — and the language-version warning now renders its `warning:` token yellow when stderr is an ANSI terminal. Evaluated and declined the rest of the package: `sdkPath` is the resolvedExecutable step alone (would regress AOT and Flutter-shim runs the hand-rolled locator handles), `BaseDirectories` has no config to home, `cli_components` is interactive-only.
+
 # 0.6.0
 
 - CLI ported to `package:args`: short flags `-v` (`--version`), `-h` (`--help`), `-n` (`--dry-run`); generated, aligned usage; unknown options fail with exit 64 and the usage instead of a bare error. `--skip`/`--exclude` now also accept repeated occurrences in addition to comma lists.

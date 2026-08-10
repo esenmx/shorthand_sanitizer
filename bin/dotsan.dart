@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:args/args.dart';
+import 'package:cli_util/cli_logging.dart';
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
 const _version = '0.6.0';
@@ -86,23 +87,33 @@ Future<void> main(List<String> args) async {
   }
 
   final dryRun = opts.flag('dry-run');
+  // Piped stdout is the parseable report; the non-ANSI Progress fallback
+  // prints its message there, so the spinner is TTY-only.
+  final progress = stdout.hasTerminal
+      ? Logger.standard().progress('analyzing')
+      : null;
   final result = await Sanitizer(
     skips: opts.multiOption('skip').toSet(),
     excludes: opts.multiOption('exclude'),
     dryRun: dryRun,
     skipGenerated: !opts.flag('include-generated'),
   ).run(paths);
+  progress?.finish(showTiming: true);
   for (final file in result.files) {
     stdout.writeln(file.path);
     for (final line in file.converted) {
       stdout.writeln('  $line');
     }
   }
+  final ansi = Ansi(
+    stderr.supportsAnsiEscapes && stdioType(stderr) == StdioType.terminal,
+  );
   for (final entry in result.skippedBelowFloor.entries) {
     stderr.writeln(
-      'warning: skipped ${entry.value} file(s) at language version '
-      '${entry.key} — dot shorthands need 3.10. Raise `environment: sdk:` in '
-      "that package's pubspec.yaml; the installed SDK does not decide this.",
+      '${ansi.yellow}warning:${ansi.none} skipped ${entry.value} file(s) at '
+      'language version ${entry.key} — dot shorthands need 3.10. Raise '
+      "`environment: sdk:` in that package's pubspec.yaml; the installed SDK "
+      'does not decide this.',
     );
   }
   final skipped = result.skippedByList;

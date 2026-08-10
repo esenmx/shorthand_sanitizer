@@ -18,7 +18,9 @@ import 'package:path/path.dart' as p;
 /// Locates the Dart SDK for the analyzer. Inside a JIT run the executable
 /// lives in the SDK; an AOT-compiled binary does not, so fall back to
 /// `DART_SDK`, then to the `dart` on PATH (following the Flutter shim, whose
-/// SDK sits under `bin/cache/dart-sdk`).
+/// SDK sits under `bin/cache/dart-sdk`). `package:cli_util`'s `sdkPath` is
+/// the resolvedExecutable step alone — no validity check, no AOT or shim
+/// fallback — so it cannot replace this.
 String? sdkPath() {
   bool isSdk(String dir) =>
       File(p.join(dir, 'version')).existsSync() &&
