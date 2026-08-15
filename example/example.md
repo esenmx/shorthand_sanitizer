@@ -1,7 +1,7 @@
 ```bash
 dart pub global activate shorthand_sanitizer
 
-dotsan                          # sanitize lib/
+dotsan                          # sanitize every existing root dir (lib, bin, test, ...)
 dotsan lib test --dry-run       # report only
 dotsan --skip=AsyncValue.error  # keep listed members prefixed
 ```
@@ -9,17 +9,24 @@ dotsan --skip=AsyncValue.error  # keep listed members prefixed
 Before:
 
 ```dart
-Column(
-  mainAxisAlignment: MainAxisAlignment.start,
-  children: [Text('hi', overflow: TextOverflow.ellipsis)],
-)
+await SystemChrome.setPreferredOrientations([
+  DeviceOrientation.portraitUp,
+  DeviceOrientation.portraitDown,
+]);
+
+return Text(
+  label,
+  textAlign: TextAlign.center,
+  overflow: TextOverflow.ellipsis,
+);
 ```
 
-After `dotsan lib`:
+After `dotsan lib && dart format lib`:
 
 ```dart
-Column(
-  mainAxisAlignment: .start,
-  children: [Text('hi', overflow: .ellipsis)],
-)
+await SystemChrome.setPreferredOrientations([.portraitUp, .portraitDown]);
+
+return Text(label, textAlign: .center, overflow: .ellipsis);
 ```
+
+`dotsan` rewrites the prefixes; `dart format` then reflows what fits in 80 columns, which is where the line reduction comes from.
