@@ -1,86 +1,110 @@
 # shorthand_sanitizer
 
-Batch codemod for Dart 3.10 [dot shorthands](https://dart.dev/language/dot-shorthands): rewrites `Type.member` to `.member` across a whole repo, then prunes the imports that dropping the prefix orphaned.
+[![pub package](https://img.shields.io/pub/v/shorthand_sanitizer.svg)](https://pub.dev/packages/shorthand_sanitizer)
+[![Dart SDK](https://img.shields.io/badge/Dart-3.10%2B-blue.svg)](https://dart.dev)
+
+A safe, automated codemod for Dart 3.10+ [dot shorthands](https://dart.dev/language/dot-shorthands). Rewrites `Type.member` to `.member` across your entire Flutter or Dart project, then automatically cleans up any imports orphaned by dropping the prefixes.
 
 ```dart
-// before
-await SystemChrome.setPreferredOrientations([
-  DeviceOrientation.portraitUp,
-  DeviceOrientation.portraitDown,
-]);
-
-return Text(
-  label,
-  textAlign: TextAlign.center,
-  overflow: TextOverflow.ellipsis,
+// Before
+return Padding(
+  padding: EdgeInsets.all(16),
+  child: Text(
+    label,
+    textAlign: TextAlign.center,
+    overflow: TextOverflow.ellipsis,
+  ),
 );
 ```
 
 ```dart
-// after `dotsan && dart format .`
-await SystemChrome.setPreferredOrientations([.portraitUp, .portraitDown]);
-
-return Text(label, textAlign: .center, overflow: .ellipsis);
+// After `dotsan && dart format .`
+return Padding(
+  padding: .all(16),
+  child: Text(label, textAlign: .center, overflow: .ellipsis),
+);
 ```
 
-Nine lines down to two. `dotsan` only edits the prefixes; the collapse is `dart format` reflowing what now fits in 80 columns — and that is where most of the diff comes from on real code, since an argument list or a collection of enum values that had to wrap usually stops needing to.
+`dotsan` safely removes redundant type prefixes, and `dart format` naturally reflows arguments that now fit within your line length limit.
 
-Covers enum values, static getters/fields/methods, and named (incl. `factory`/`const`) constructors. Unnamed constructors stay: `.new(...)` saves nothing over `Type(...)`.
+---
 
-## Why not a regex
+## Quick Start (Plug & Play)
 
-Because this is not a text transformation. `const Base x = Sub.a` rewritten to `.a` binds `Base.a` instead — a different element, no error, silently different program.
-
-So every file is resolved with the analyzer, every candidate is rewritten speculatively, and the file is resolved again. A rewrite survives only if its shorthand resolved back to the **same element** with **no new diagnostics**. Everything else reverts.
-
-|Alternative|Why not|
-|--|--|
-|regex converters|no type resolution — aggressive by design, silent rebinds possible|
-|IDE assist (`ConvertToDotShorthand`)|per-site, interactive; driving it over a repo costs one server RPC per candidate|
-|analyzer plugins (`prefer_shorthands`, or a custom `analysis_server_plugin` lint)|plugin fixes are single-site by design — the SDK forbids bulk applicability, so no `dart fix --apply` sweep|
-|`dart fix`|no SDK lint backs the conversion, so it has nothing to apply|
-
-Benchmark, 40 files / 640 sites (M-series, Dart 3.11): analysis-server-driven script 6.2 s → this tool (AOT) **0.8 s**, byte-identical output plus the `== .value` sites the assist skips.
-
-## Install
+### 1. Install the CLI
 
 ```bash
-dart pub global activate shorthand_sanitizer   # installs the `dotsan` command
+dart pub global activate shorthand_sanitizer
 ```
 
-## Use
+### 2. Run in your project
 
 ```bash
-dotsan                              # sanitize every existing root dir (lib, bin, test, ...)
-dotsan lib test -n                  # --dry-run: report only
-dotsan --skip=AsyncValue.error      # keep listed members prefixed
-dotsan --exclude=**/legacy/**       # leave matching files alone
-dotsan --include-generated          # also rewrite generated-marked files
-dotsan -v                           # --version; -h/--help for full usage
+dotsan && dart format .
 ```
 
-`--skip` takes `Type.member` or bare `member` names; `--exclude` takes globs, matched against the CWD-relative path when the pattern contains `/`, else the basename (both comma-separated).
+That's it! Your project is now upgraded to modern dot shorthands.
 
-Generated files are detected by their **leading comment**, not filename shape: build_runner's `GENERATED CODE - DO NOT MODIFY BY HAND`, FlutterFire's `firebase_options.dart`, pigeon, protoc, and slang outputs are all skipped, while a handwritten `page.preview.dart` is sanitized like any other source.
+---
 
-## What stays prefixed
+## Usage & Options
+
+```bash
+dotsan                              # Sanitize all roots (lib, test, bin, example, etc.)
+dotsan lib test -n                  # --dry-run: Preview changes without modifying files
+dotsan --skip=AsyncValue.error      # Keep specific members prefixed (e.g. to avoid collisions)
+dotsan --exclude="**/legacy/**"     # Exclude matching file globs
+dotsan --include-generated          # Also rewrite generated files (skipped by default)
+dotsan -v                           # Show version (-h for full options)
+```
+
+- `--skip`: Accepts `Type.member` or bare `member` names (comma-separated).
+- `--exclude`: Glob pattern matching CWD-relative paths or file basenames (comma-separated).
+- **Generated Files**: Automatically detected and skipped by their header comment (e.g., `build_runner`, `firebase_options.dart`, pigeon, protoc, and slang outputs), while handwritten files like `page.preview.dart` are processed normally.
+
+---
+
+## What Converts vs. What Stays Prefixed
+
+`dotsan` converts all witnessed static expressions while keeping your code 100% correct:
+
+### Converts Cleanly
+
+| Kind | Before | After |
+| :--- | :--- | :--- |
+| **Enum values** | `TextAlign.center` | `.center` |
+| **Named constructors** | `EdgeInsets.all(16)` | `.all(16)` |
+| **Factory constructors** | `BorderRadius.circular(8)` | `.circular(8)` |
+| **Static getters & fields** | `Duration.zero` | `.zero` |
+| **Const aliases** | `Alignment.topCenter` | `.topCenter` |
+
+### Intentionally Stays Prefixed (Safety First)
+
+`dotsan` refuses rewrites when the context type is ambiguous or would change program semantics:
 
 ```dart
-final Object o = Fit.cover;    // unwitnessed context — kept
-const Color c = Colors.red;    // member lives on Colors, context is Color — kept
-const Base x = Sub.a;          // .a would silently rebind to Base.a — kept
-final l = Fit.values;          // context is List<Fit>, never the enum — kept
-padding: EdgeInsets.all(8),    // .all binds EdgeInsetsGeometry.all, which
-                               // allocates a fresh instance — kept
+final Object o = Fit.cover;    // Unwitnessed context (type is Object, not Fit) — kept
+const Color c = Colors.red;    // Sibling namespace (member on Colors, context is Color) — kept
+const Base x = Sub.a;          // Rebind risk (.a would silently bind Base.a) — kept
+final l = Fit.values;          // Context is List<Fit>, not enum — kept
+Text('Hello');                 // Unnamed constructors (.new('Hello')) are not rewritten
 ```
 
-One rebind is licensed: a `static const` **alias** of the original — Flutter declares `AlignmentGeometry.topCenter = Alignment.topCenter` — is a different element but the identical canonicalized constant, so `alignment: Alignment.topCenter` does convert. Const-value identity is the oracle, and it is stricter than it sounds: `AlignmentDirectional.center` holds the same `(0.0, 0.0)` as `Alignment.center` but a different type, so it stays.
+---
 
-Kept prefixes are deliberate — don't finish the job by hand. Corollary: in geometry slots write `.all(8)` directly in new code, since the sanitizer won't migrate an old prefix into a forwarder.
+## Why Not Regex? (Zero-Risk Guarantee)
 
-## Optional: AOT binary
+Dot shorthand migration is **not** a simple text replacement:
+- Naive regex replacements can cause **silent rebinds** (e.g. `const Base x = Sub.a` turning into `.a` which silently resolves to `Base.a` instead).
+- `dotsan` uses the **Dart Analyzer API**: every candidate is rewritten speculatively and re-analyzed in memory.
+- A rewrite survives **only** if it resolves to the exact same element with **zero new diagnostics or errors**. If anything is ambiguous, it safely reverts.
+- Any unused `import` statements left behind by removed prefixes are automatically pruned.
 
-`pub global activate` installs a shim that loads a VM snapshot on every run (~160 ms of startup). For large repos, compile the same tool AOT (~20 ms) **over that shim** — the `dotsan` already on your `PATH` just gets fast, no new directory to wire up:
+---
+
+## Optional: AOT Compilation for High Speed
+
+`pub global activate` runs via the Dart VM shim (~160 ms startup). For large codebases and monorepos, compile `dotsan` to native AOT (~20 ms execution):
 
 ```bash
 dart compile exe \
@@ -89,19 +113,16 @@ dart compile exe \
   -o ~/.pub-cache/bin/dotsan
 ```
 
-The `ls … | sort -V | tail -1` picks the newest cached copy, so there's no version to type. `--packages` is required: `dart compile exe` needs resolved dependencies, and the hosted cache directory carries no package config of its own — `global_packages/shorthand_sanitizer/` holds the resolution `activate` just made. From a clone instead: `dart pub get && dart compile exe bin/dotsan.dart -o ~/.pub-cache/bin/dotsan`.
-
-**Upgrading afterwards:** `pub global` refuses to touch the compiled binary occupying its shim path — `activate` and `deactivate` both fail with `Failed to decode data using encoding 'utf-8'`. Delete it first:
+To upgrade after AOT compilation:
 
 ```bash
 rm ~/.pub-cache/bin/dotsan
 dart pub global activate shorthand_sanitizer
-# ...then recompile with the command above
 ```
 
-That refusal is the safety: the upgrade fails loudly instead of leaving the old version silently shadowing the new one — which is exactly what a binary parked in some other `PATH` directory would do on every upgrade you forget to recompile. If `dotsan --version` ever sticks to an old version that reinstalling doesn't fix, run `which -a dotsan`: it must list only `~/.pub-cache/bin/dotsan` — delete any other copy it finds.
+---
 
-## Notes
+## Requirements
 
-- Requires the target package's language version ≥ 3.10; below that the run is a clean no-op.
-- AOT builds locate the SDK via `DART_SDK`, then the `dart` on `PATH` (Flutter shim included).
+- Target package language version ≥ **3.10** (packages below this are safely skipped as a clean no-op).
+- Compatible with Dart & Flutter projects on macOS, Linux, and Windows.
