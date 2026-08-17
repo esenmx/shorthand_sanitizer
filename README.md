@@ -29,21 +29,44 @@ return Padding(
 
 ---
 
-## Quick Start (Plug & Play)
+## Installation
 
-### 1. Install the CLI
+### 🚀 Recommended: AOT Native Binary (~10x Faster)
+
+One-time compile directly over the global pub cache shim. Replaces the VM startup (~160 ms) with instantaneous native AOT execution (~20 ms) on your existing `PATH`:
+
+```bash
+# 1. Activate package
+dart pub global activate shorthand_sanitizer
+
+# 2. Compile to native binary (one-time)
+dart compile exe \
+  "$(ls -d ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-*/ | sort -V | tail -1)bin/dotsan.dart" \
+  --packages ~/.pub-cache/global_packages/shorthand_sanitizer/.dart_tool/package_config.json \
+  -o ~/.pub-cache/bin/dotsan
+```
+
+<details>
+<summary>Standard VM Installation</summary>
+
+If you prefer standard JIT/VM execution without compiling:
 
 ```bash
 dart pub global activate shorthand_sanitizer
 ```
+</details>
 
-### 2. Run in your project
+---
+
+## Quick Start (Plug & Play)
+
+Run `dotsan` in any Dart or Flutter project root:
 
 ```bash
 dotsan && dart format .
 ```
 
-That's it! Your project is now upgraded to modern dot shorthands.
+That's it! Your project is now upgraded to modern dot shorthands with zero orphaned imports.
 
 ---
 
@@ -102,22 +125,14 @@ Dot shorthand migration is **not** a simple text replacement:
 
 ---
 
-## Optional: AOT Compilation for High Speed
+## Upgrading AOT Binary
 
-`pub global activate` runs via the Dart VM shim (~160 ms startup). For large codebases and monorepos, compile `dotsan` to native AOT (~20 ms execution):
-
-```bash
-dart compile exe \
-  "$(ls -d ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-*/ | sort -V | tail -1)bin/dotsan.dart" \
-  --packages ~/.pub-cache/global_packages/shorthand_sanitizer/.dart_tool/package_config.json \
-  -o ~/.pub-cache/bin/dotsan
-```
-
-To upgrade after AOT compilation:
+When upgrading a compiled AOT binary:
 
 ```bash
 rm ~/.pub-cache/bin/dotsan
 dart pub global activate shorthand_sanitizer
+# Then re-run the AOT compile step from above
 ```
 
 ---
