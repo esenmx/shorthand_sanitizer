@@ -1,8 +1,10 @@
-# Unreleased
+# 0.7.0
 
 - Fix nested arguments never converting in files where **every** outer call is context-less — e.g. a design-token file of inferred `static const brXs = BorderRadius.all(Radius.circular(xs));` fields reported 0 sites. Round one drops all candidates (the context-less outer starves its own argument of a context type), and the recovery pass refused to run without at least one verified conversion as a base. It now recovers from an empty base — the original file trivially resolves — so the inner `Radius.circular` sites convert while the outers correctly stay prefixed.
 
 - Adopt `package:cli_util` (`cli_logging`): a TTY-only `analyzing` spinner with elapsed time while the analyzer resolves — piped stdout stays byte-identical, since the non-ANSI `Progress` fallback would print into the parseable report — and the language-version warning now renders its `warning:` token yellow when stderr is an ANSI terminal. Evaluated and declined the rest of the package: `sdkPath` is the resolvedExecutable step alone (would regress AOT and Flutter-shim runs the hand-rolled locator handles), `BaseDirectories` has no config to home, `cli_components` is interactive-only.
+
+- Performance: directory traversal prunes hidden and `build/` trees instead of listing then filtering; recovery skips redundant analyzer resolves when a wave yields no winners; constant lookups are memoized and the resolved SDK path cached; synthetic `Enum.values` accesses are pre-filtered instead of collected and reverted.
 
 # 0.6.0
 
