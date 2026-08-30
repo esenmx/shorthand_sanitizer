@@ -31,25 +31,23 @@ return Padding(
 
 ## Installation
 
-### 🚀 Recommended: AOT Native Binary (~10x Faster)
+### 🚀 Recommended: One-Shot AOT Native Binary (~10x Faster)
 
-One-time compile directly over the global pub cache shim. Replaces the VM startup (~160 ms) with instantaneous native AOT execution (~20 ms) on your existing `PATH`:
+One-command install that compiles `dotsan` to a standalone native AOT binary directly inside your global pub binary cache. Replaces VM startup (~160 ms) with instantaneous native execution (~20 ms) on your existing `PATH`:
 
 ```bash
-# 1. Activate package
-dart pub global activate shorthand_sanitizer
-
-# 2. Compile to native binary (one-time)
+PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
+dart pub global activate shorthand_sanitizer && \
 dart compile exe \
-  "$(ls -d ~/.pub-cache/hosted/pub.dev/shorthand_sanitizer-*/ | sort -V | tail -1)bin/dotsan.dart" \
-  --packages ~/.pub-cache/global_packages/shorthand_sanitizer/.dart_tool/package_config.json \
-  -o ~/.pub-cache/bin/dotsan
+  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
+  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
+  -o "$PUB_CACHE/bin/dotsan"
 ```
 
 <details>
 <summary>Standard VM Installation</summary>
 
-If you prefer standard JIT/VM execution without compiling:
+If you prefer standard global activation without native AOT compilation:
 
 ```bash
 dart pub global activate shorthand_sanitizer
@@ -127,12 +125,15 @@ Dot shorthand migration is **not** a simple text replacement:
 
 ## Upgrading AOT Binary
 
-When upgrading a compiled AOT binary:
+Re-running the installation command above automatically updates the package and overwrites the binary with the latest compiled version:
 
 ```bash
-rm ~/.pub-cache/bin/dotsan
-dart pub global activate shorthand_sanitizer
-# Then re-run the AOT compile step from above
+PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
+dart pub global activate shorthand_sanitizer && \
+dart compile exe \
+  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
+  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
+  -o "$PUB_CACHE/bin/dotsan"
 ```
 
 ---
