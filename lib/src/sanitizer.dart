@@ -366,7 +366,9 @@ final class _FileSanitizer {
       await context.applyPendingFileChanges();
     }
 
-    if (_clean case final rewritten?) return _write(rewritten);
+    if (_clean case final rewritten? when _active.isNotEmpty) {
+      return _write(rewritten);
+    }
     return null; // nothing verifiable — file untouched
   }
 
@@ -439,9 +441,15 @@ final class _FileSanitizer {
   /// with it). Candidates under different [Candidate.groupKey]s cannot
   /// interact, so a whole wave is judged at once and the pass costs the
   /// largest statement's candidate count, not the number of dropped sites.
+  ///
+  /// Runs even when [_converge] accepted nothing: an empty verified base is
+  /// the original file, which trivially resolves. A file made entirely of
+  /// `static const x = Outer.all(Inner.of(1));` fields drops every candidate
+  /// in round one — the context-less outer takes its own argument down with
+  /// it — and only this pass can hand the inner sites back.
   Future<void> _recover() async {
     var pending = _dropped;
-    while (_clean != null && pending.isNotEmpty) {
+    while (pending.isNotEmpty) {
       final seen = <int>{};
       final wave = <Candidate>[];
       final rest = <Candidate>[];
