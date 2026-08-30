@@ -748,6 +748,38 @@ Fit f() => Fit.cover;
     expect(result.convertedCount, 0);
   });
 
+  test('skips hidden directories and build folder during traversal', () async {
+    final hiddenDir = Directory(p.join(pkg.path, '.hidden'))..createSync();
+    final buildDir = Directory(p.join(pkg.path, 'build'))..createSync();
+    final normalDir = Directory(p.join(pkg.path, 'src'))..createSync();
+
+    File(p.join(hiddenDir.path, 'ignored.dart')).writeAsStringSync('''
+enum Fit { cover }
+Fit f() => Fit.cover;
+''');
+    File(p.join(buildDir.path, 'ignored.dart')).writeAsStringSync('''
+enum Fit { cover }
+Fit f() => Fit.cover;
+''');
+    final normalFile = File(p.join(normalDir.path, 'converted.dart'))
+      ..writeAsStringSync('''
+enum Fit { cover }
+Fit f() => Fit.cover;
+''');
+
+    final result = await Sanitizer().run([pkg.path]);
+    expect(result.files.any((f) => f.path.contains('.hidden')), isFalse);
+    expect(result.files.any((f) => f.path.contains('build')), isFalse);
+    expect(result.files.any((f) => f.path == normalFile.path), isTrue);
+  });
+
+  test('sdkPath returns valid SDK path and caches result', () {
+    final path1 = sdkPath();
+    expect(path1, isNotNull);
+    final path2 = sdkPath();
+    expect(path2, equals(path1));
+  });
+
   test('CLI --version constant matches pubspec version', () {
     final pubspecVersion = RegExp(
       r'^version:\s*(.+)$',

@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context.dart';
 import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
-import 'package:analyzer/dart/analysis/session.dart';
 import 'package:analyzer/dart/ast/ast.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/constant/value.dart';
@@ -15,6 +14,8 @@ import 'package:analyzer/file_system/physical_file_system.dart';
 import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 
+String? _cachedSdkPath;
+
 /// Locates the Dart SDK for the analyzer. Inside a JIT run the executable
 /// lives in the SDK; an AOT-compiled binary does not, so fall back to
 /// `DART_SDK`, then to the `dart` on PATH (following the Flutter shim, whose
@@ -22,21 +23,23 @@ import 'package:path/path.dart' as p;
 /// the resolvedExecutable step alone — no validity check, no AOT or shim
 /// fallback — so it cannot replace this.
 String? sdkPath() {
+  if (_cachedSdkPath != null) return _cachedSdkPath;
+
   bool isSdk(String dir) =>
       File(p.join(dir, 'version')).existsSync() &&
       Directory(p.join(dir, 'lib', '_internal')).existsSync();
 
   final env = Platform.environment['DART_SDK'];
-  if (env != null && isSdk(env)) return env;
+  if (env != null && isSdk(env)) return _cachedSdkPath = env;
 
   final exeSdk = p.dirname(p.dirname(Platform.resolvedExecutable));
-  if (isSdk(exeSdk)) return exeSdk;
+  if (isSdk(exeSdk)) return _cachedSdkPath = exeSdk;
 
   final which = Process.runSync('which', ['dart']).stdout.toString().trim();
   if (which.isEmpty) return null;
   final bin = p.dirname(File(which).resolveSymbolicLinksSync());
   for (final candidate in [p.join(bin, 'cache', 'dart-sdk'), p.dirname(bin)]) {
-    if (isSdk(candidate)) return candidate;
+    if (isSdk(candidate)) return _cachedSdkPath = candidate;
   }
   return null;
 }
@@ -282,31 +285,47 @@ final class Sanitizer {
 
   List<String> _collectFiles(List<String> paths) {
     final globs = [for (final e in excludes) Glob(e)];
-    bool excluded(String path) {
-      if (skipGenerated && isGenerated(path)) return true;
+    bool isExcludedPath(String path) {
       final relative = p
           .relative(p.canonicalize(path))
           .replaceAll(p.separator, '/');
-      return globs.any(
-        (g) => g.matches(relative) || g.matches(p.basename(path)),
-      );
+      final base = p.basename(path);
+      return globs.any((g) => g.matches(relative) || g.matches(base));
     }
 
     final files = <String>[];
-    for (final path in paths) {
-      if (FileSystemEntity.isFileSync(path)) {
-        if (path.endsWith('.dart') && !excluded(path)) files.add(path);
+    for (final rootPath in paths) {
+      if (FileSystemEntity.isFileSync(rootPath)) {
+        if (rootPath.endsWith('.dart') &&
+            !isExcludedPath(rootPath) &&
+            (!skipGenerated || !isGenerated(rootPath))) {
+          files.add(rootPath);
+        }
         continue;
       }
-      if (!FileSystemEntity.isDirectorySync(path)) continue;
-      for (final entity in Directory(path).listSync(recursive: true)) {
-        if (entity is! File || !entity.path.endsWith('.dart')) continue;
-        if (entity.path.contains('${p.separator}.') ||
-            entity.path.contains('${p.separator}build${p.separator}')) {
+      if (!FileSystemEntity.isDirectorySync(rootPath)) continue;
+
+      final dirQueue = <Directory>[Directory(rootPath)];
+      while (dirQueue.isNotEmpty) {
+        final dir = dirQueue.removeLast();
+        final List<FileSystemEntity> entities;
+        try {
+          entities = dir.listSync(followLinks: false);
+        } on FileSystemException {
           continue;
         }
-        if (excluded(entity.path)) continue;
-        files.add(entity.path);
+
+        for (final entity in entities) {
+          final base = p.basename(entity.path);
+          if (entity is Directory) {
+            if (base.startsWith('.') || base == 'build') continue;
+            dirQueue.add(entity);
+          } else if (entity is File && entity.path.endsWith('.dart')) {
+            if (isExcludedPath(entity.path)) continue;
+            if (skipGenerated && isGenerated(entity.path)) continue;
+            files.add(entity.path);
+          }
+        }
       }
     }
     return files..sort();
@@ -324,7 +343,7 @@ final class _FileSanitizer {
     required this.file,
     required this.candidates,
     required this.dryRun,
-    required ResolvedUnitResult original,
+    required this.original,
   }) : content = original.content,
        baseline = _errorKeys(original.diagnostics),
        // Imports already unused before we touched the file are the user's to
@@ -338,8 +357,10 @@ final class _FileSanitizer {
   final String content;
   final List<Candidate> candidates;
   final bool dryRun;
+  final ResolvedUnitResult original;
   final Set<String> baseline;
   final Set<String> baselineImports;
+  final _constCache = <(String, String, String), DartObject?>{};
 
   /// Candidates still in the running; once [_clean] is set, exactly the ones
   /// it converts.
@@ -351,7 +372,6 @@ final class _FileSanitizer {
   var _orphanCuts = const <(int, int)>[];
 
   var _stamp = 0;
-  late final List<int> _lines = _lineStarts(content);
 
   Future<FileResult?> run() async {
     try {
@@ -464,10 +484,12 @@ final class _FileSanitizer {
         for (final c in trial)
           if (!a.culprits.contains(c)) c,
       ];
-      final settled = a.isClean ? a : await _attempt(regained);
-      if (settled != null && settled.isClean) {
-        _active = a.isClean ? trial : regained;
-        _accept(settled);
+      if (regained.length > _active.length) {
+        final settled = a.isClean ? a : await _attempt(regained);
+        if (settled != null && settled.isClean) {
+          _active = a.isClean ? trial : regained;
+          _accept(settled);
+        }
       }
       pending = rest;
     }
@@ -531,7 +553,7 @@ final class _FileSanitizer {
       if (resolved == null || resolved.libraryUri == null) {
         culprits.add(candidate);
       } else if (!resolved.matches(candidate) &&
-          !await _isConstAlias(check.session, candidate, resolved, selfUri)) {
+          !await _isConstAlias(candidate, resolved, selfUri)) {
         culprits.add(candidate);
       }
     }
@@ -558,7 +580,7 @@ final class _FileSanitizer {
   /// `AlignmentDirectional.center` in an `AlignmentGeometry` slot — the
   /// value's type differs).
   ///
-  /// Both sides are looked up fresh through [session] rather than reusing the
+  /// Both sides are looked up fresh through the session rather than reusing the
   /// elements the two resolves handed back: a constant only evaluates on an
   /// element whose library is the session's current one, and the two values
   /// must come from one element model for their types to compare equal.
@@ -568,8 +590,7 @@ final class _FileSanitizer {
   /// the value it is judged against. Every other library is untouched by the
   /// overlay, so its constants are pristine; same-library aliases never
   /// rescue.
-  static Future<bool> _isConstAlias(
-    AnalysisSession session,
+  Future<bool> _isConstAlias(
     Candidate candidate,
     _ResolvedShorthand resolved,
     String selfUri,
@@ -579,7 +600,6 @@ final class _FileSanitizer {
     }
 
     final before = await _constantOf(
-      session,
       candidate.libraryUri,
       candidate.containerName,
       candidate.memberName,
@@ -587,7 +607,6 @@ final class _FileSanitizer {
     if (before == null || !before.hasKnownValue) return false;
 
     final after = await _constantOf(
-      session,
       resolved.libraryUri,
       resolved.containerName,
       resolved.memberName,
@@ -599,21 +618,23 @@ final class _FileSanitizer {
   /// when any link is missing or the member is not a constant — a static
   /// method (`EdgeInsetsGeometry.all`) or a plain getter has no constant, so
   /// it can never satisfy [_isConstAlias].
-  static Future<DartObject?> _constantOf(
-    AnalysisSession session,
+  Future<DartObject?> _constantOf(
     String? uri,
     String? container,
     String member,
   ) async {
     if (uri == null || container == null) return null;
-    final library = await session.getLibraryByUri(uri);
-    if (library is! LibraryElementResult) return null;
+    final key = (uri, container, member);
+    if (_constCache.containsKey(key)) return _constCache[key];
+
+    final library = await context.currentSession.getLibraryByUri(uri);
+    if (library is! LibraryElementResult) return _constCache[key] = null;
     final holder =
         library.element.getClass(container) ??
         library.element.getEnum(container) ??
         library.element.getMixin(container) ??
         library.element.getExtensionType(container);
-    return holder?.getField(member)?.computeConstantValue();
+    return _constCache[key] = holder?.getField(member)?.computeConstantValue();
   }
 
   FileResult _write(_Rewritten rewritten) {
@@ -634,19 +655,7 @@ final class _FileSanitizer {
     );
   }
 
-  int _lineOf(int offset) {
-    var low = 0;
-    var high = _lines.length - 1;
-    while (low < high) {
-      final mid = (low + high + 1) >> 1;
-      if (_lines[mid] <= offset) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return low + 1;
-  }
+  int _lineOf(int offset) => original.lineInfo.getLocation(offset).lineNumber;
 }
 
 /// One verified rewrite of a candidate set: the text, its resolve, the
@@ -744,22 +753,17 @@ List<(int, int)> _orphanRanges(ResolvedUnitResult check, Set<String> baseline) {
   return ranges;
 }
 
-/// Splices [ranges] out of [text], back-to-front so earlier offsets hold.
+/// Splices [ranges] out of [text] in order.
 String _stripRanges(String text, List<(int, int)> ranges) {
-  final sorted = [...ranges]..sort((a, b) => b.$1.compareTo(a.$1));
-  var out = text;
+  final sorted = [...ranges]..sort((a, b) => a.$1.compareTo(b.$1));
+  final buffer = StringBuffer();
+  var cursor = 0;
   for (final (start, end) in sorted) {
-    out = out.substring(0, start) + out.substring(end);
+    buffer.write(text.substring(cursor, start));
+    cursor = end;
   }
-  return out;
-}
-
-List<int> _lineStarts(String content) {
-  final starts = [0];
-  for (var i = 0; i < content.length; i++) {
-    if (content.codeUnitAt(i) == 0x0A) starts.add(i + 1);
-  }
-  return starts;
+  buffer.write(text.substring(cursor));
+  return buffer.toString();
 }
 
 final class _ShorthandIndex extends RecursiveAstVisitor<void> {
@@ -813,10 +817,7 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
   }) {
     candidates.add(
       Candidate(
-        groupKey:
-            node.thisOrAncestorOfType<Statement>()?.offset ??
-            node.thisOrAncestorOfType<Declaration>()?.offset ??
-            -1,
+        groupKey: _groupKeyOf(node),
         deleteStart: deleteStart,
         deleteEnd: dotOffset,
         shorthandOffset: dotOffset,
@@ -826,6 +827,13 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
         libraryUri: memberElement?.library?.uri.toString(),
       ),
     );
+  }
+
+  static int _groupKeyOf(AstNode node) {
+    for (AstNode? cur = node; cur != null; cur = cur.parent) {
+      if (cur is Statement || cur is Declaration) return cur.offset;
+    }
+    return -1;
   }
 
   /// `Enum.value`, `Type.staticGetterOrField`.
@@ -918,11 +926,18 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
     return element is TypeAliasElement && element.aliasedType is InterfaceType;
   }
 
-  static bool _isStaticMember(Element? element) => switch (element) {
-    ExecutableElement(:final isStatic) => isStatic,
-    FieldElement(:final isStatic) => isStatic,
-    _ => false,
-  };
+  static bool _isStaticMember(Element? element) {
+    if (element is PropertyAccessorElement &&
+        element.name == 'values' &&
+        element.enclosingElement is EnumElement) {
+      return false;
+    }
+    return switch (element) {
+      ExecutableElement(:final isStatic) => isStatic,
+      FieldElement(:final isStatic) => isStatic,
+      _ => false,
+    };
+  }
 
   /// `Foo.bar.baz` / `Foo.bar()` — the node is itself a receiver; `.bar.baz`
   /// is not a legal shorthand position.
