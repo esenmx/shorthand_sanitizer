@@ -31,28 +31,13 @@ return Padding(
 
 ## Installation
 
-### 🚀 Recommended: One-Shot AOT Native Binary (~10x Faster)
-
-One-command install that compiles `dotsan` to a standalone native AOT binary directly inside your global pub binary cache. Replaces VM startup (~160 ms) with instantaneous native execution (~20 ms) on your existing `PATH`:
-
-```bash
-PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
-dart pub global activate shorthand_sanitizer && \
-dart compile exe \
-  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
-  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
-  -o "$PUB_CACHE/bin/dotsan"
-```
-
-<details>
-<summary>Standard VM Installation</summary>
-
-If you prefer standard global activation without native AOT compilation:
+Install `dotsan` globally:
 
 ```bash
 dart pub global activate shorthand_sanitizer
 ```
-</details>
+
+Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
 
 ---
 
@@ -120,21 +105,6 @@ Dot shorthand migration is **not** a simple text replacement:
 - `dotsan` uses the **Dart Analyzer API**: every candidate is rewritten speculatively and re-analyzed in memory.
 - A rewrite survives **only** if it resolves to the exact same element with **zero new diagnostics or errors**. If anything is ambiguous, it safely reverts.
 - Any unused `import` statements left behind by removed prefixes are automatically pruned.
-
----
-
-## Upgrading AOT Binary
-
-Re-running the installation command above automatically updates the package and overwrites the binary with the latest compiled version:
-
-```bash
-PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
-dart pub global activate shorthand_sanitizer && \
-dart compile exe \
-  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
-  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
-  -o "$PUB_CACHE/bin/dotsan"
-```
 
 ---
 
