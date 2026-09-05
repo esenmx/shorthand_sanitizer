@@ -14,7 +14,7 @@ topics:
   - developer-tools
 
 environment:
-  sdk: ^3.10.0
+  sdk: ^3.13.0
 
 executables:
   dotsan:
@@ -28,4 +28,4 @@ dependencies:
 
 dev_dependencies:
   test: ^1.31.2
-  very_good_analysis: ^10.2.0
+  very_good_analysis: ^11.0.0

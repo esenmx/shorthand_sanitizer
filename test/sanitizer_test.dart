@@ -87,14 +87,12 @@ void main() {
     },
   );
 
-  test(
-    'nested args convert when every outer ctor is context-less',
-    () async {
-      // Token-file shape: every declaration is an inferred `static const`
-      // wrapping a nested ctor. Round one drops all candidates — the
-      // context-less outer starves its own argument — so only a recovery
-      // pass that runs from an empty verified base can rescue the inners.
-      final out = await sanitize('''
+  test('nested args convert when every outer ctor is context-less', () async {
+    // Token-file shape: every declaration is an inferred `static const`
+    // wrapping a nested ctor. Round one drops all candidates — the
+    // context-less outer starves its own argument — so only a recovery
+    // pass that runs from an empty verified base can rescue the inners.
+    final out = await sanitize('''
 class Item {
   const Item.named(this.v);
   final int v;
@@ -108,10 +106,9 @@ class Tokens {
   static const b = Wrap.all(Item.named(2));
 }
 ''');
-      expect(out, contains('static const a = Wrap.all(.named(1))'));
-      expect(out, contains('static const b = Wrap.all(.named(2))'));
-    },
-  );
+    expect(out, contains('static const a = Wrap.all(.named(1))'));
+    expect(out, contains('static const b = Wrap.all(.named(2))'));
+  });
 
   test('unwitnessed contexts stay prefixed', () async {
     const source = r'''

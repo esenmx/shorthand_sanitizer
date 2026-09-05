@@ -45,68 +45,54 @@ String? sdkPath() {
 }
 
 /// One `Type.member` occurrence that may convert to `.member`.
-final class Candidate {
-  /// Creates a candidate; produced by the sanitizer's AST pass.
-  Candidate({
-    required this.deleteStart,
-    required this.deleteEnd,
-    required this.shorthandOffset,
-    required this.display,
-    required this.memberName,
-    required this.containerName,
-    required this.libraryUri,
-    this.groupKey = -1,
-  });
-
+final class Candidate({
   /// Start of the `Type` prefix to delete.
-  final int deleteStart;
+  required final int deleteStart,
 
   /// End (exclusive) of the deleted prefix — the char before the `.`.
-  final int deleteEnd;
+  required final int deleteEnd,
 
   /// Offset of the `.` — where the shorthand node begins after the rewrite.
-  final int shorthandOffset;
+  required final int shorthandOffset,
 
   /// `Type.member` as written, for reporting and skip-list matching.
-  final String display;
+  required final String display,
 
   /// The accessed member (`all` in `EdgeInsets.all`).
-  final String memberName;
+  required final String memberName,
 
   /// The declaring type's name — identity check anchor.
-  final String? containerName;
+  required final String? containerName,
 
   /// The declaring library's URI — identity check anchor.
-  final String? libraryUri;
+  required final String? libraryUri,
 
   /// Offset of the enclosing statement (or declaration, outside a body).
   /// Type inference does not cross that boundary, so two candidates with
   /// different keys cannot affect each other's resolution — which is what
   /// lets the recovery pass test one per key at a time in a single resolve.
-  final int groupKey;
+  final int groupKey = -1,
+}) {
+  /// Creates a candidate; produced by the sanitizer's AST pass.
+  this;
 }
 
 /// Per-file outcome of a sanitize run.
-final class FileResult {
-  /// Creates a result for [path].
-  FileResult(
-    this.path,
-    this.converted,
-    this.reverted, {
-    this.removedImports = 0,
-  });
-
+final class FileResult(
   /// Canonical path of the rewritten file.
-  final String path;
+  final String path,
 
   /// One `"line: Type.member -> .member"` entry per converted site.
-  final List<String> converted;
+  final List<String> converted,
 
   /// Candidates that failed verification and were left prefixed.
-  final int reverted;
+  final int reverted, {
 
   /// Imports the conversion orphaned and this run pruned (see [Sanitizer]).
-  final int removedImports;
+  final int removedImports = 0,
+}) {
+  /// Creates a result for [path].
+  this;
 }
 
 /// Aggregate outcome across all files of a run.
@@ -154,28 +140,23 @@ final class SanitizeResult {
 /// verified resolve is the oracle: an `unused_import`/`unnecessary_import` it
 /// reports that the original did not is self-inflicted, so its directive is
 /// pruned. Imports the file already left unused are the user's — they stay.
-final class Sanitizer {
-  /// Creates a sanitizer; see [run].
-  Sanitizer({
-    this.skips = const {},
-    this.excludes = const [],
-    this.dryRun = false,
-    this.skipGenerated = true,
-  });
-
+final class Sanitizer({
   /// `Type.member` or bare `member` names that must stay prefixed.
-  final Set<String> skips;
+  final Set<String> skips = const {},
 
   /// Glob patterns of files to leave alone — matched against the
   /// CWD-relative path when the pattern contains `/`, else the basename
   /// (`firebase_options.dart`, `**/legacy/**`).
-  final List<String> excludes;
+  final List<String> excludes = const [],
 
   /// Report what would convert without writing any file.
-  final bool dryRun;
+  final bool dryRun = false,
 
   /// Skip files whose leading comment declares them generated ([isGenerated]).
-  final bool skipGenerated;
+  final bool skipGenerated = true,
+}) {
+  /// Creates a sanitizer; see [run].
+  this;
 
   /// Language version that introduced dot shorthands.
   static const _floorMajor = 3;
@@ -273,7 +254,7 @@ final class Sanitizer {
     }
     if (candidates.isEmpty) return null;
 
-    return _FileSanitizer(
+    return await _FileSanitizer(
       context: context,
       overlay: overlay,
       file: file,
@@ -336,35 +317,25 @@ final class Sanitizer {
 /// the verdict off the rewritten resolve, drop what it convicts, then re-offer
 /// what a broken neighbour may merely have starved. Owns [file]'s overlay for
 /// the duration of [run].
-final class _FileSanitizer {
-  _FileSanitizer({
-    required this.context,
-    required this.overlay,
-    required this.file,
-    required this.candidates,
-    required this.dryRun,
-    required this.original,
-  }) : content = original.content,
-       baseline = _errorKeys(original.diagnostics),
-       // Imports already unused before we touched the file are the user's to
-       // keep; only orphans we newly create get pruned.
-       baselineImports = _importIssueKeys(original.diagnostics),
-       _active = [...candidates]..sort(_byOffset);
+final class _FileSanitizer({
+  required final AnalysisContext context,
+  required final OverlayResourceProvider overlay,
+  required final String file,
+  required final List<Candidate> candidates,
+  required final bool dryRun,
+  required final ResolvedUnitResult original,
+}) {
+  final String content = original.content;
+  final Set<String> baseline = _errorKeys(original.diagnostics);
 
-  final AnalysisContext context;
-  final OverlayResourceProvider overlay;
-  final String file;
-  final String content;
-  final List<Candidate> candidates;
-  final bool dryRun;
-  final ResolvedUnitResult original;
-  final Set<String> baseline;
-  final Set<String> baselineImports;
+  // Imports already unused before we touched the file are the user's to
+  // keep; only orphans we newly create get pruned.
+  final Set<String> baselineImports = _importIssueKeys(original.diagnostics);
   final _constCache = <(String, String, String), DartObject?>{};
 
   /// Candidates still in the running; once [_clean] is set, exactly the ones
   /// it converts.
-  List<Candidate> _active;
+  List<Candidate> _active = [...candidates]..sort(_byOffset);
   final _dropped = <Candidate>[];
   _Rewritten? _clean;
 
@@ -513,7 +484,7 @@ final class _FileSanitizer {
     await context.applyPendingFileChanges();
     final check = await context.currentSession.getResolvedUnit(file);
     if (check is! ResolvedUnitResult) return null;
-    return _verdict(rewritten, check);
+    return await _verdict(rewritten, check);
   }
 
   _Rewritten _apply(List<Candidate> set) {
@@ -661,39 +632,28 @@ final class _FileSanitizer {
 /// One verified rewrite of a candidate set: the text, its resolve, the
 /// candidates node-level evidence convicts, and whether unattributable errors
 /// remain (see [_FileSanitizer._verdict]).
-final class _Attempt {
-  _Attempt(
-    this.rewritten,
-    this.check,
-    this.culprits, {
-    required this.strayErrors,
-  });
-
-  final _Rewritten rewritten;
-  final ResolvedUnitResult check;
-  final Set<Candidate> culprits;
-  final bool strayErrors;
-
+final class _Attempt(
+  final _Rewritten rewritten,
+  final ResolvedUnitResult check,
+  final Set<Candidate> culprits, {
+  required final bool strayErrors,
+}) {
   bool get isClean => culprits.isEmpty && !strayErrors;
 }
 
-final class _Rewritten {
-  _Rewritten(this.text, this.newOffsets);
-
-  final String text;
+final class _Rewritten(
+  final String text,
 
   /// Where each candidate's shorthand `.` landed in [text].
-  final Map<Candidate, int> newOffsets;
-}
+  final Map<Candidate, int> newOffsets,
+);
 
 /// Identity of what a shorthand node resolved to, keyed by node offset.
-final class _ResolvedShorthand {
-  _ResolvedShorthand(this.memberName, this.containerName, this.libraryUri);
-
-  final String memberName;
-  final String? containerName;
-  final String? libraryUri;
-
+final class _ResolvedShorthand(
+  final String memberName,
+  final String? containerName,
+  final String? libraryUri,
+) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
       containerName == c.containerName &&
