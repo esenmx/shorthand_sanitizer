@@ -210,11 +210,82 @@ void main() {
   );
 
   test(
-    'redirecting-factory forwarder is refused (EdgeInsetsGeometry analog)',
+    'redirecting-factory forwarder is accepted (EdgeInsetsGeometry analog)',
     () async {
       const source = '''
 abstract class Geo {
   const factory Geo.all(double v) = Box.all;
+  const factory Geo.sym({double h, double v}) = Box.sym;
+}
+class Box implements Geo {
+  const Box.all(this.v) : h = 0;
+  const Box.sym({this.h = 0, this.v = 0});
+  final double h;
+  final double v;
+}
+class Pad {
+  const Pad(this.g);
+  final Geo g;
+}
+void take(Geo g) {}
+void main() {
+  take(Box.all(1));
+  take(const Box.sym(h: 4));
+  const Pad(Box.sym(v: 2));
+}
+''';
+      final out = await sanitize(source);
+      // `.all(1)` binds Geo.all, which forwards the call untouched to
+      // Box.all — same object, same defaults.
+      expect(out, contains('take(.all(1))'));
+      expect(out, contains('take(const .sym(h: 4))'));
+      expect(out, contains('const Pad(.sym(v: 2))'));
+    },
+  );
+
+  test(
+    'forwarder declaring named parameters in another order is accepted',
+    () async {
+      const source = '''
+abstract class Geo {
+  const factory Geo.only({double l, double r, double t, double b}) = Box.only;
+}
+class Box implements Geo {
+  const Box.only({this.l = 0, this.t = 0, this.r = 0, this.b = 0});
+  final double l;
+  final double t;
+  final double r;
+  final double b;
+}
+void take(Geo g) {}
+void main() => take(Box.only(l: 1));
+''';
+      final out = await sanitize(source);
+      expect(out, contains('take(.only(l: 1))'));
+    },
+  );
+
+  test('forwarder whose parameter types differ is refused', () async {
+    const source = '''
+abstract class Geo {
+  const factory Geo.all(double v) = Box.all;
+}
+class Box implements Geo {
+  const Box.all(this.v);
+  final num v;
+}
+void take(Geo g) {}
+void main() => take(Box.all(1));
+''';
+    final out = await sanitize(source);
+    // Through Geo.all the literal `1` is typed double, not int.
+    expect(out, contains('take(Box.all(1))'));
+  });
+
+  test('forwarder with a body, not a redirect, is refused', () async {
+    const source = '''
+abstract class Geo {
+  factory Geo.all(double v) => Box.all(v);
 }
 class Box implements Geo {
   const Box.all(this.v);
@@ -223,12 +294,26 @@ class Box implements Geo {
 void take(Geo g) {}
 void main() => take(Box.all(1));
 ''';
-      final out = await sanitize(source);
-      // `.all(1)` binds Geo.all — a different element, even if it
-      // redirects back.
-      expect(out, contains('take(Box.all(1))'));
-    },
-  );
+    final out = await sanitize(source);
+    expect(out, contains('take(Box.all(1))'));
+  });
+
+  test('forwarder onto a different constructor is refused', () async {
+    const source = '''
+abstract class Geo {
+  const factory Geo.all(double v) = Box.other;
+}
+class Box implements Geo {
+  const Box.all(this.v);
+  const Box.other(this.v);
+  final double v;
+}
+void take(Geo g) {}
+void main() => take(Box.all(1));
+''';
+    final out = await sanitize(source);
+    expect(out, contains('take(Box.all(1))'));
+  });
 
   test('skip list holds Type.member and bare member forms', () async {
     const source = r'''
@@ -768,6 +853,121 @@ Fit f() => Fit.cover;
     expect(result.files.any((f) => f.path.contains('.hidden')), isFalse);
     expect(result.files.any((f) => f.path.contains('build')), isFalse);
     expect(result.files.any((f) => f.path == normalFile.path), isTrue);
+  });
+
+  group('static pre-check', () {
+    // The check must never rule out a site the resolve would accept: every
+    // context-bearing position it reasons about is exercised here.
+    const box = '''
+import 'dart:async';
+class Box {
+  const Box.named(this.v);
+  final int v;
+  static const Box a = Box.named(1);
+  static Box make() => const Box.named(2);
+  static Box? maybe() => const Box.named(3);
+  static Future<Box> load() async => const Box.named(4);
+  Box get self => this;
+  Box operator +(Box o) => Box.named(v + o.v);
+}
+T id<T>(T x) => x;
+void take(Box p, {required Box n}) {}
+void dflt({Box b = Box.a}) {}
+''';
+
+    test('context-bearing positions all convert', () async {
+      final out = await sanitize('''
+$box
+Box ret() { return Box.a; }
+Box arrow() => Box.make();
+Future<Box> asyncRet() async { return Box.a; }
+Future<Box> awaited() async { Box b = await Box.load(); return b; }
+Box Function() closure() => () => Box.make();
+Box? nullable() => Box.maybe();
+FutureOr<Box> futureOr() => Box.a;
+Box switched(int x) => switch (x) { 1 => Box.a, _ => Box.make() };
+Box cond(bool c) => c ? Box.a : Box.make();
+Box coalesce(Box? p) => p ?? Box.a;
+Box bang() => Box.maybe()!;
+Box chain() => Box.make().self;
+Box cascade() => Box.a..v;
+Box generic() => id(Box.a);
+Box rhs() => Box.a + Box.make();
+List<Box> list(bool c) => [Box.a, if (c) Box.make()];
+Map<String, Box> map() => {'k': Box.a};
+void main() {
+  take(Box.a, n: Box.make());
+  Box typed = Box.a;
+  typed = Box.make();
+  if (typed == Box.a) return;
+}
+''');
+      for (final shorthand in [
+        '{ return .a; }',
+        'arrow() => .make();',
+        'async { return .a; }',
+        'await .load()',
+        '() => .make();',
+        'nullable() => .maybe();',
+        'futureOr() => .a;',
+        '1 => .a, _ => .make()',
+        'c ? .a : .make()',
+        'p ?? .a',
+        'bang() => .maybe()!',
+        'chain() => .make().self',
+        'cascade() => .a..v',
+        'generic() => id(.a)',
+        'rhs() => Box.a + .make()',
+        '[.a, if (c) .make()]',
+        "{'k': .a}",
+        'take(.a, n: .make())',
+        'Box typed = .a;',
+        'typed = .make();',
+        'typed == .a',
+        'dflt({Box b = .a})',
+        'static const Box a = .named(1)',
+      ]) {
+        expect(out, contains(shorthand));
+      }
+    });
+
+    test('positions without a context type stay prefixed', () async {
+      final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
+        ..writeAsStringSync('''
+$box
+class Err implements Exception { const Err.code(this.c); final int c; }
+/// Prose about [Box.a] is not a site.
+Future<void> main() async {
+  Box.make();
+  await Box.load();
+  final untyped = Box.a;
+  final Object cast = Box.a as Object;
+  final String interp = '\${Box.a}';
+  final Box lhs = Box.a + Box.a;
+  final int other = Box.make().v;
+  if (untyped.v > 9) throw Err.code(1);
+  print('\$cast \$interp \$lhs \$other');
+}
+''');
+      final result = await Sanitizer().run([file.path]);
+      final out = file.readAsStringSync();
+      for (final kept in [
+        '[Box.a] is not a site',
+        '  Box.make();',
+        'await Box.load();',
+        'final untyped = Box.a;',
+        'Box.a as Object',
+        r"'${Box.a}'",
+        'Box.a + .a;',
+        'int other = Box.make().v;',
+        'throw Err.code(1)',
+      ]) {
+        expect(out, contains(kept));
+      }
+      // Sites the check rules out are reported as reverted like any other;
+      // the doc-comment reference is prose, not a ninth.
+      expect(result.files.single.reverted, 8);
+    });
   });
 
   test('sdkPath returns valid SDK path and caches result', () {

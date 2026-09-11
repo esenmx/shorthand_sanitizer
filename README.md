@@ -83,6 +83,7 @@ dotsan -v                           # Show version (-h for full options)
 | **Factory constructors** | `BorderRadius.circular(8)` | `.circular(8)` |
 | **Static getters & fields** | `Duration.zero` | `.zero` |
 | **Const aliases** | `Alignment.topCenter` | `.topCenter` |
+| **Redirecting-factory forwarders** | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
 
 ### Intentionally Stays Prefixed (Safety First)
 
@@ -105,6 +106,12 @@ Dot shorthand migration is **not** a simple text replacement:
 - `dotsan` uses the **Dart Analyzer API**: every candidate is rewritten speculatively and re-analyzed in memory.
 - A rewrite survives **only** if it resolves to the exact same element with **zero new diagnostics or errors**. If anything is ambiguous, it safely reverts.
 - Any unused `import` statements left behind by removed prefixes are automatically pruned.
+
+---
+
+## Speed & Cache
+
+Every candidate costs an analyzer resolve, so `dotsan` first rules out sites that can never verify — `Theme.of(context).x`, `Colors.red` in a `Color` slot, `final size = MediaQuery.sizeOf(context)` — without one. The linked element models of the SDK, your packages and your own libraries are cached under the user cache home (`~/Library/Caches/dotsan`, `$XDG_CACHE_HOME/dotsan`, `%LOCALAPPDATA%\dotsan`; capped at 1 GiB), so the run after a `--dry-run`, or the next project on the same SDK, skips the linking that dominates a first run. The cache is keyed by content and safe to delete.
 
 ---
 

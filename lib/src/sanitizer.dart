@@ -1,16 +1,25 @@
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context.dart';
-import 'package:analyzer/dart/analysis/analysis_context_collection.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
 import 'package:analyzer/dart/element/type.dart';
+import 'package:analyzer/dart/element/type_provider.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:analyzer/file_system/overlay_file_system.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
+// The public `AnalysisContextCollection` factory takes neither a byte store
+// nor an options hook; `dart analyze` and the analysis server build on these
+// same classes.
+// ignore_for_file: implementation_imports
+import 'package:analyzer/src/dart/analysis/analysis_context_collection.dart';
+import 'package:analyzer/src/dart/analysis/byte_store.dart';
+import 'package:analyzer/src/dart/analysis/file_byte_store.dart';
+import 'package:cli_util/cli_util.dart';
 import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 
@@ -66,6 +75,11 @@ final class Candidate({
 
   /// The declaring library's URI — identity check anchor.
   required final String? libraryUri,
+
+  /// For constructors, the instantiated return type and formal parameter
+  /// list (see `_constructorSignature`); null for every other member. A
+  /// redirecting-factory forwarder is accepted only against an identical one.
+  final String? signature,
 
   /// Offset of the enclosing statement (or declaration, outside a body).
   /// Type inference does not cross that boundary, so two candidates with
@@ -130,11 +144,16 @@ final class SanitizeResult {
 /// sibling namespace (`Colors.red` in a `Color` slot, `Curves.easeIn` in a
 /// `Curve` slot), silent rebinds to a same-named static — is reverted.
 ///
-/// One rebind is licensed: a shorthand landing on a `static const` alias of
-/// the original (`AlignmentGeometry.topCenter = Alignment.topCenter`) is a
-/// different element holding the identical canonicalized constant, so the
-/// rewrite is observably a no-op. Const-value identity, not element identity,
-/// decides that case — see `_isConstAlias` for what it still refuses.
+/// Two rebinds are licensed, both observably no-ops:
+/// - a `static const` alias of the original
+///   (`AlignmentGeometry.topCenter = Alignment.topCenter`) — a different
+///   element holding the identical canonicalized constant. Const-value
+///   identity, not element identity, decides — see `_isConstAlias`.
+/// - a redirecting factory whose chain ends at the original constructor with
+///   the same formal parameters (`const factory EdgeInsetsGeometry.all(double
+///   value) = EdgeInsets.all`) — the language forwards the arguments
+///   untouched, so `.all(8)` in an `EdgeInsetsGeometry` slot constructs the
+///   very `EdgeInsets` the prefix did. See `_ResolvedShorthand.forwardsTo`.
 ///
 /// Dropping a `Type` prefix can orphan the import that supplied it. The
 /// verified resolve is the oracle: an `unused_import`/`unnecessary_import` it
@@ -204,26 +223,72 @@ final class Sanitizer({
     if (files.isEmpty) return result;
 
     final overlay = OverlayResourceProvider(PhysicalResourceProvider.INSTANCE);
-    final collection = AnalysisContextCollection(
-      includedPaths: files.map(p.canonicalize).toList(),
+    // Roots, not files: the locator spends ~2ms per included path, a second
+    // per 500 files. An `analyzer: exclude:` in the package's options then
+    // hides those files from `contextFor`, so contexts are picked by root
+    // below — every collected file is analyzed, as before.
+    final collection = AnalysisContextCollectionImpl(
+      includedPaths: paths.map(p.canonicalize).toSet().toList(),
       resourceProvider: overlay,
       sdkPath: sdkPath(),
+      byteStore: _byteStore(),
+      // Lint rules run on every speculative resolve and inform no verdict —
+      // only errors and the analyzer's own import warnings do.
+      configureAnalysisOptionsBuilder: ({required analysisOptionsBuilder}) {
+        analysisOptionsBuilder
+          ..lint = false
+          ..lintRules = [];
+      },
     );
+    final contexts = [...collection.contexts]
+      ..sort(
+        (a, b) => b.contextRoot.root.path.length.compareTo(
+          a.contextRoot.root.path.length,
+        ),
+      );
 
     for (final file in files.map(p.canonicalize)) {
-      final fileResult = await _sanitizeFile(collection, overlay, file, result);
+      final context = contexts.firstWhere(
+        (c) => c.contextRoot.root.isOrContains(file),
+      );
+      final fileResult = await _sanitizeFile(context, overlay, file, result);
       if (fileResult != null) result.files.add(fileResult);
     }
     return result;
   }
 
+  /// Linked element models — the SDK's, every package's, every library's —
+  /// persist across runs under the user's cache home (`~/Library/Caches`,
+  /// `$XDG_CACHE_HOME`, `%LOCALAPPDATA%`), at most 1 GiB, least recently
+  /// used evicted first. Linking them dominates the first run on a codebase;
+  /// the next run — `--dry-run`, then for real — finds them ready and takes
+  /// less than half the time. Entries are keyed by content signature, so a
+  /// stale one is never a wrong one. A memory tier of the same size fronts
+  /// the files: a smaller one thrashed, re-reading what it had just written
+  /// and doubling the cold run. No usable cache home → memory only.
+  static ByteStore _byteStore() {
+    // cli_util knows no cache home elsewhere and throws an Error for it.
+    if (!Platform.isLinux && !Platform.isMacOS && !Platform.isWindows) {
+      return MemoryByteStore();
+    }
+    try {
+      final dir = BaseDirectories('dotsan').cacheHome;
+      Directory(dir).createSync(recursive: true);
+      return MemoryCachingByteStore(
+        EvictingFileByteStore(dir, 1 << 30),
+        1 << 30,
+      );
+    } on Exception {
+      return MemoryByteStore();
+    }
+  }
+
   Future<FileResult?> _sanitizeFile(
-    AnalysisContextCollection collection,
+    AnalysisContext context,
     OverlayResourceProvider overlay,
     String file,
     SanitizeResult result,
   ) async {
-    final context = collection.contextFor(file);
     final original = await context.currentSession.getResolvedUnit(file);
     if (original is! ResolvedUnitResult) return null;
 
@@ -242,7 +307,7 @@ final class Sanitizer({
       return null;
     }
 
-    final collector = _CandidateCollector();
+    final collector = _CandidateCollector(original.typeProvider);
     original.unit.accept(collector);
     final candidates = <Candidate>[];
     for (final c in collector.candidates) {
@@ -260,6 +325,7 @@ final class Sanitizer({
       file: file,
       original: original,
       candidates: candidates,
+      unviable: collector.unviable,
       dryRun: dryRun,
     ).run();
   }
@@ -322,6 +388,10 @@ final class _FileSanitizer({
   required final OverlayResourceProvider overlay,
   required final String file,
   required final List<Candidate> candidates,
+
+  /// Sites the collector's static pre-check ruled out before any resolve;
+  /// reported as reverted, since they too stay prefixed.
+  required final int unviable,
   required final bool dryRun,
   required final ResolvedUnitResult original,
 }) {
@@ -524,6 +594,7 @@ final class _FileSanitizer({
       if (resolved == null || resolved.libraryUri == null) {
         culprits.add(candidate);
       } else if (!resolved.matches(candidate) &&
+          !resolved.forwardsTo(candidate) &&
           !await _isConstAlias(candidate, resolved, selfUri)) {
         culprits.add(candidate);
       }
@@ -545,8 +616,10 @@ final class _FileSanitizer({
   ///
   /// Value identity is deliberately narrower than element identity: it
   /// rescues the alias while still refusing every forwarder that *computes* an
-  /// equivalent (`EdgeInsetsGeometry.all(8)` allocates a fresh, non-const
-  /// instance — no constant value, no rescue) and every same-named sibling
+  /// equivalent (`static Geo all(double v) => Box.all(v);` allocates a fresh,
+  /// non-const instance — no constant value, no rescue; a redirecting factory
+  /// is the one forwarder rescued, by [_ResolvedShorthand.forwardsTo]) and
+  /// every same-named sibling
   /// holding a different value (`Base.a` vs `Sub.a`,
   /// `AlignmentDirectional.center` in an `AlignmentGeometry` slot — the
   /// value's type differs).
@@ -621,7 +694,7 @@ final class _FileSanitizer({
         for (final c in _active)
           '${_lineOf(c.deleteStart)}: ${c.display} -> .${c.memberName}',
       ],
-      candidates.length - _active.length,
+      candidates.length - _active.length + unviable,
       removedImports: _orphanCuts.length,
     );
   }
@@ -652,12 +725,57 @@ final class _Rewritten(
 final class _ResolvedShorthand(
   final String memberName,
   final String? containerName,
-  final String? libraryUri,
-) {
+  final String? libraryUri, {
+
+  /// Where the element's redirecting-factory chain ends, when it is one and
+  /// every hop keeps the formal parameters — null otherwise. Its [signature]
+  /// is the terminal's return type over the entry's parameters, i.e. what the
+  /// forwarded call constructs and what it accepts.
+  final _ResolvedShorthand? redirectTarget,
+  final String? signature,
+}) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
       containerName == c.containerName &&
       libraryUri == c.libraryUri;
+
+  /// Whether the element is a redirecting factory that forwards the call,
+  /// argument for argument, to [c]'s constructor. Dart forbids default values
+  /// on a redirecting factory and passes arguments straight through, so the
+  /// only way the rewrite could differ from the original is a parameter type
+  /// that changes an argument's context type (`Geo.all(double)` redirecting
+  /// to `Box.all(num)` turns `Box.all(1)`'s `int` into a `double`) — the
+  /// signature comparison refuses that. The invocation's own static type
+  /// widens to the factory's class, which cannot leak: a candidate is never a
+  /// receiver, and the shorthand only resolves where that class is already
+  /// the context type.
+  bool forwardsTo(Candidate c) =>
+      redirectTarget != null &&
+      redirectTarget!.matches(c) &&
+      redirectTarget!.signature == c.signature;
+}
+
+/// `ReturnType(params)` of a constructor, instantiated as resolved — the
+/// identity [_ResolvedShorthand.forwardsTo] compares across a redirect.
+String _constructorSignature(ConstructorElement e) =>
+    '${e.returnType.getDisplayString()}${_parametersOf(e)}';
+
+/// The formal parameter list of [e]: kind, type and name of each, positional
+/// in order, named sorted by name — `only({left, right, top, bottom})` and
+/// `only({left, top, right, bottom})` accept the same calls.
+String _parametersOf(ConstructorElement e) {
+  String show(FormalParameterElement p) =>
+      '${p.isOptionalPositional ? '[' : ''}'
+      '${p.type.getDisplayString()} ${p.name}';
+  final positional = [
+    for (final p in e.formalParameters)
+      if (!p.isNamed) show(p),
+  ];
+  final named = [
+    for (final p in e.formalParameters)
+      if (p.isNamed) '{${show(p)}',
+  ]..sort();
+  return '(${[...positional, ...named].join(', ')})';
 }
 
 int _byOffset(Candidate a, Candidate b) =>
@@ -734,6 +852,32 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       memberName,
       element?.enclosingElement?.displayName,
       element?.library?.uri.toString(),
+      redirectTarget: element is ConstructorElement
+          ? _redirectTargetOf(element)
+          : null,
+    );
+  }
+
+  /// Follows `factory A.x(...) = B.y;` hops to the first constructor that is
+  /// not a redirecting factory, or null when [entry] is not one, a hop changes
+  /// the formal parameters, or the chain loops. A generative constructor
+  /// redirecting with `: this.y(...)` also reports a `redirectedConstructor`,
+  /// but it may rewrite the arguments — the factory test stops there.
+  static _ResolvedShorthand? _redirectTargetOf(ConstructorElement entry) {
+    final params = _parametersOf(entry);
+    final seen = <ConstructorElement>{};
+    var cur = entry;
+    while (cur.isFactory && cur.redirectedConstructor != null) {
+      if (!seen.add(cur.baseElement)) return null;
+      cur = cur.redirectedConstructor!;
+      if (_parametersOf(cur) != params) return null;
+    }
+    if (identical(cur, entry)) return null;
+    return _ResolvedShorthand(
+      cur.name ?? '',
+      cur.enclosingElement.displayName,
+      cur.library.uri.toString(),
+      signature: '${cur.returnType.getDisplayString()}$params',
     );
   }
 
@@ -762,19 +906,32 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
   }
 }
 
-final class _CandidateCollector extends RecursiveAstVisitor<void> {
+final class _CandidateCollector(TypeProvider typeProvider)
+    extends RecursiveAstVisitor<void> {
+  final _viability = _Viability(typeProvider);
   final candidates = <Candidate>[];
+
+  /// Sites [_Viability] ruled out — they stay prefixed without a resolve.
+  int unviable = 0;
+
+  /// `[Type.member]` in a doc comment is prose, not a site.
+  @override
+  void visitComment(Comment node) {}
 
   /// [dotOffset] doubles as the exclusive end of the deleted prefix — the
   /// prefix ends exactly where its `.` begins.
   void _add({
-    required AstNode node,
+    required Expression node,
     required int deleteStart,
     required int dotOffset,
     required String owner,
     required String memberName,
     required Element? memberElement,
   }) {
+    if (!_viability.check(node, memberName)) {
+      unviable++;
+      return;
+    }
     candidates.add(
       Candidate(
         groupKey: _groupKeyOf(node),
@@ -785,6 +942,9 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
         memberName: memberName,
         containerName: memberElement?.enclosingElement?.displayName,
         libraryUri: memberElement?.library?.uri.toString(),
+        signature: memberElement is ConstructorElement
+            ? _constructorSignature(memberElement)
+            : null,
       ),
     );
   }
@@ -899,12 +1059,187 @@ final class _CandidateCollector extends RecursiveAstVisitor<void> {
     };
   }
 
-  /// `Foo.bar.baz` / `Foo.bar()` — the node is itself a receiver; `.bar.baz`
-  /// is not a legal shorthand position.
+  /// `Foo.bar.baz` / `Foo.bar()` — the node is itself a receiver. `.bar.baz`
+  /// would resolve `.bar` against the chain's context type (see
+  /// [_Viability]), which is `baz`'s type, not `Foo`, in all but contrived
+  /// code; kept out wholesale rather than probed.
   static bool _isReceiverPosition(Expression node) {
     final parent = node.parent;
     return (parent is PropertyAccess && identical(parent.target, node)) ||
         (parent is MethodInvocation && identical(parent.target, node));
+  }
+}
+
+/// Static pre-check that a `Type.member` site can possibly verify, so that
+/// sites which cannot are never handed to the resolve loop — on a Flutter
+/// codebase they are the bulk of the candidates (`Theme.of(context).x`,
+/// `Colors.red`, `final size = MediaQuery.sizeOf(context)`), and each one
+/// costs a speculative resolve per recovery wave before being reverted.
+///
+/// A shorthand `.member` resolves against the context type of the whole
+/// postfix chain it heads — `.of(context).colorScheme` looks `of` up on
+/// `ColorScheme`, `.tryParse(s)!` on `int` — and the rewrite is a no-op only
+/// if that type declares a static `member` the verdict accepts (the original,
+/// a const alias, a redirecting factory). So:
+///
+/// - where the syntax pins the context type down (an argument's parameter,
+///   a declared variable type, the enclosing function's return type, an
+///   assignment target, a collection literal's element type), that type must
+///   declare `member`;
+/// - where the position provably has no context type (an expression
+///   statement, `var x = …`, an `as`/`is` operand, an interpolation, a
+///   binary left operand) or one that can't declare it (`throw` resolves
+///   against `Object`), the site never converts;
+/// - otherwise the chain's own static type must be assignable to the context
+///   type, so one of its supertypes must declare `member`.
+///
+/// Every rule is a necessary condition only — a site that passes is still
+/// verified by the resolve, a site that fails would have been reverted after
+/// costing one. Type parameters, `dynamic` and an unresolved parameter are
+/// "can't tell" and pass.
+final class _Viability(final TypeProvider typeProvider) {
+  bool check(Expression site, String member) {
+    AstNode head = site;
+    while (_passesContextTo(head.parent, head)) {
+      head = head.parent!;
+    }
+    final context = _contextOf(head);
+    if (context != null) return _admits(context, member);
+    final type = head is Expression ? head.staticType : null;
+    if (type is! InterfaceType) return true;
+    return type.element.getStatic(member) != null ||
+        type.element.allSupertypes.any(
+          (t) => t.element.getStatic(member) != null,
+        );
+  }
+
+  /// Whether [parent] hands its own context type down to [child] — as the
+  /// head of a selector chain, or as a syntactic wrapper the context type
+  /// passes through.
+  static bool _passesContextTo(AstNode? parent, AstNode child) =>
+      switch (parent) {
+        PropertyAccess(:final target) => identical(target, child),
+        MethodInvocation(:final target) => identical(target, child),
+        IndexExpression(:final target) => identical(target, child),
+        CascadeExpression(:final target) => identical(target, child),
+        PostfixExpression() ||
+        ParenthesizedExpression() ||
+        AwaitExpression() ||
+        NamedArgument() ||
+        SwitchExpression() ||
+        ForElement() ||
+        NullAwareElement() => true,
+        ConditionalExpression(:final thenExpression, :final elseExpression) =>
+          identical(thenExpression, child) || identical(elseExpression, child),
+        BinaryExpression(:final operator) =>
+          operator.type == TokenType.QUESTION_QUESTION,
+        SwitchExpressionCase(:final expression) => identical(expression, child),
+        IfElement(:final thenElement, :final elseElement) =>
+          identical(thenElement, child) || identical(elseElement, child),
+        _ => false,
+      };
+
+  /// The context type at [head], null when the syntax doesn't tell. Positions
+  /// with no context type at all report `Never`: it declares nothing, and no
+  /// site with a real `Never` context could convert either.
+  DartType? _contextOf(AstNode head) {
+    final none = typeProvider.neverType;
+    final bool = typeProvider.boolType;
+    final parent = head.parent;
+    if (parent == null) return null;
+    switch (parent) {
+      case ExpressionStatement() ||
+          AsExpression() ||
+          IsExpression() ||
+          InterpolationExpression():
+        return none;
+      case VariableDeclaration():
+        return (parent.parent! as VariableDeclarationList).type?.type ?? none;
+      case ThrowExpression():
+        return typeProvider.objectType;
+      case PrefixExpression(:final operator):
+        return operator.type == TokenType.BANG ? bool : none;
+      case BinaryExpression(:final operator, :final leftOperand):
+        if (operator.type == TokenType.AMPERSAND_AMPERSAND ||
+            operator.type == TokenType.BAR_BAR) {
+          return bool;
+        }
+        if (identical(leftOperand, head)) return none;
+        if (operator.type == TokenType.EQ_EQ ||
+            operator.type == TokenType.BANG_EQ) {
+          return leftOperand.staticType;
+        }
+        return parent.element?.formalParameters.firstOrNull?.type;
+      case IfStatement(:final expression) ||
+              IfElement(:final expression) ||
+              WhileStatement(condition: final expression) ||
+              DoStatement(condition: final expression) ||
+              AssertStatement(condition: final expression)
+          when identical(expression, head):
+        return bool;
+      case ArgumentList():
+        final type = (head as Argument).correspondingParameter?.type;
+        return type is TypeParameterType ? null : type;
+      case AssignmentExpression(:final rightHandSide)
+          when identical(rightHandSide, head):
+        return parent.writeType;
+      case FormalParameterDefaultClause(parent: final FormalParameter param):
+        return param.declaredFragment?.element.type;
+      case ReturnStatement() || ExpressionFunctionBody():
+        return _returnContext(parent.thisOrAncestorOfType<FunctionBody>()!);
+      case ListLiteral(:final staticType) || SetOrMapLiteral(:final staticType):
+        return _elementType(staticType, 0);
+      case MapLiteralEntry(:final key, parent: final Expression literal):
+        return _elementType(literal.staticType, identical(key, head) ? 0 : 1);
+      default:
+        return null;
+    }
+  }
+
+  /// The context type of a `return` (or `=>` body) in [body]: its function's
+  /// declared or inferred return type, unwrapped once for an `async` body.
+  static DartType? _returnContext(FunctionBody body) {
+    if (body.isGenerator) return null;
+    final owner = body.parent;
+    final type = switch (owner) {
+      FunctionExpression() => owner.declaredFragment?.element.returnType,
+      MethodDeclaration() => owner.declaredFragment?.element.returnType,
+      _ => null,
+    };
+    if (body.isAsynchronous &&
+        type is InterfaceType &&
+        type.isDartAsyncFuture) {
+      return type.typeArguments.first;
+    }
+    return type;
+  }
+
+  static DartType? _elementType(DartType? literal, int index) =>
+      literal is InterfaceType && literal.typeArguments.length > index
+      ? literal.typeArguments[index]
+      : null;
+
+  /// Whether a context type [type] could hold a static [member] the verdict
+  /// would accept. `FutureOr<T>` resolves the shorthand on `T`.
+  static bool _admits(DartType type, String member) {
+    var t = type;
+    if (t is InterfaceType && t.isDartAsyncFutureOr) t = t.typeArguments.first;
+    return switch (t) {
+      InterfaceType(:final element) => element.getStatic(member) != null,
+      TypeParameterType() || DynamicType() || InvalidType() => true,
+      _ => false, // void, Never, function and record types declare nothing
+    };
+  }
+}
+
+extension on InterfaceElement {
+  /// A static member or named constructor called [name], if declared here.
+  Element? getStatic(String name) {
+    final method = getMethod(name);
+    if (method != null && method.isStatic) return method;
+    final getter = getGetter(name);
+    if (getter != null && getter.isStatic) return getter;
+    return getNamedConstructor(name);
   }
 }
 

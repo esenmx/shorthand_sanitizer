@@ -4,7 +4,7 @@ import 'package:args/args.dart';
 import 'package:cli_util/cli_logging.dart';
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.7.0';
+const _version = '0.7.1';
 
 const _defaultRoots = [
   'lib',
