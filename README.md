@@ -31,13 +31,31 @@ return Padding(
 
 ## Installation
 
-Install `dotsan` globally:
+### AOT Native Binary (Default & Recommended)
+
+Compiles `dotsan` into a standalone native executable inside your global pub cache bin. Replaces Dart VM startup (~160 ms) with instant native execution (~20 ms) on your existing `PATH`:
+
+```bash
+PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
+rm -f "$PUB_CACHE/bin/dotsan" && \
+dart pub global activate shorthand_sanitizer && \
+dart compile exe \
+  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
+  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
+  -o "$PUB_CACHE/bin/dotsan"
+```
+
+Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
+
+<details>
+<summary>Standard VM Installation</summary>
+
+If you prefer standard global activation without native compilation:
 
 ```bash
 dart pub global activate shorthand_sanitizer
 ```
-
-Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
+</details>
 
 ---
 
@@ -70,9 +88,13 @@ dotsan -v                           # Show version (-h for full options)
 
 ---
 
-## What Converts vs. What Stays Prefixed
+## How It Works & What Converts
 
-`dotsan` converts all witnessed static expressions while keeping your code 100% correct:
+`dotsan` uses the **Dart Analyzer API** directly:
+1. Rewrites candidate expressions speculatively in memory.
+2. Re-resolves the AST in memory.
+3. Keeps a rewrite **only** if the shorthand resolves to the exact same element with **zero new diagnostics or errors**. If ambiguous or changed, it safely reverts.
+4. Prunes any `import` directives left unused when prefixes are dropped.
 
 ### Converts Cleanly
 
@@ -85,9 +107,9 @@ dotsan -v                           # Show version (-h for full options)
 | **Const aliases** | `Alignment.topCenter` | `.topCenter` |
 | **Redirecting-factory forwarders** | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
 
-### Intentionally Stays Prefixed (Safety First)
+### Intentionally Stays Prefixed
 
-`dotsan` refuses rewrites when the context type is ambiguous or would change program semantics:
+`dotsan` leaves expressions prefixed when context type is ambiguous or would change program semantics:
 
 ```dart
 final Object o = Fit.cover;    // Unwitnessed context (type is Object, not Fit) — kept
@@ -99,19 +121,19 @@ Text('Hello');                 // Unnamed constructors (.new('Hello')) are not r
 
 ---
 
-## Why Not Regex? (Zero-Risk Guarantee)
+## OS Caching & Performance
 
-Dot shorthand migration is **not** a simple text replacement:
-- Naive regex replacements can cause **silent rebinds** (e.g. `const Base x = Sub.a` turning into `.a` which silently resolves to `Base.a` instead).
-- `dotsan` uses the **Dart Analyzer API**: every candidate is rewritten speculatively and re-analyzed in memory.
-- A rewrite survives **only** if it resolves to the exact same element with **zero new diagnostics or errors**. If anything is ambiguous, it safely reverts.
-- Any unused `import` statements left behind by removed prefixes are automatically pruned.
+Every candidate verification requires an analyzer resolution. To make runs fast, `dotsan` caches analyzer data on the OS:
 
----
-
-## Speed & Cache
-
-Every candidate costs an analyzer resolve, so `dotsan` first rules out sites that can never verify — `Theme.of(context).x`, `Colors.red` in a `Color` slot, `final size = MediaQuery.sizeOf(context)` — without one. The linked element models of the SDK, your packages and your own libraries are cached under the user cache home (`~/Library/Caches/dotsan`, `$XDG_CACHE_HOME/dotsan`, `%LOCALAPPDATA%\dotsan`; capped at 1 GiB), so the run after a `--dry-run`, or the next project on the same SDK, skips the linking that dominates a first run. The cache is keyed by content and safe to delete.
+- **Cache Locations**:
+  - **macOS**: `~/Library/Caches/dotsan`
+  - **Linux**: `$XDG_CACHE_HOME/dotsan` (or `~/.cache/dotsan`)
+  - **Windows**: `%LOCALAPPDATA%\dotsan`
+- **What is cached**: Linked element models for the Dart SDK, dependencies, and project libraries are persisted to an evicting file byte store (capped at 1 GiB, LRU) fronted by an in-memory cache.
+- **Effects on OS & Performance**:
+  - **First run vs subsequent runs**: The first run links element models. Subsequent runs (such as running without `-n` after a `--dry-run`, or processing another project on the same SDK) skip linking and run >2x faster.
+  - **Content-addressed & safe**: Cache entries are keyed by content signatures; stale entries never corrupt results.
+  - **Safe to clear**: You can wipe the cache folder at any time (`rm -rf ~/Library/Caches/dotsan`); `dotsan` rebuilds it automatically on the next run.
 
 ---
 
