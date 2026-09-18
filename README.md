@@ -36,26 +36,28 @@ return Padding(
 Compiles `dotsan` into a standalone native executable inside your global pub cache bin. Replaces Dart VM startup (~160 ms) with instant native execution (~20 ms) on your existing `PATH`:
 
 ```bash
-PUB_CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
-rm -f "$PUB_CACHE/bin/dotsan" && \
+CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
+HOST="$CACHE/hosted/pub.dev" && \
+GLOBAL="$CACHE/global_packages/shorthand_sanitizer" && \
+rm -f "$CACHE/bin/dotsan" && \
 dart pub global activate shorthand_sanitizer && \
-dart compile exe \
-  "$(ls -d "$PUB_CACHE"/hosted/pub.dev/shorthand_sanitizer-*/ 2>/dev/null | sort -V | tail -1)bin/dotsan.dart" \
-  --packages "$PUB_CACHE/global_packages/shorthand_sanitizer/.dart_tool/package_config.json" \
-  -o "$PUB_CACHE/bin/dotsan"
+ENTRY=$(ls -d \
+  "$HOST"/shorthand_sanitizer-*/bin/dotsan.dart \
+  2>/dev/null | sort -V | tail -1) && \
+dart compile exe "$ENTRY" \
+  --packages "$GLOBAL/.dart_tool/package_config.json" \
+  -o "$CACHE/bin/dotsan"
 ```
 
 Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
 
-<details>
-<summary>Standard VM Installation</summary>
+### Standard VM Installation
 
 If you prefer standard global activation without native compilation:
 
 ```bash
 dart pub global activate shorthand_sanitizer
 ```
-</details>
 
 ---
 
@@ -74,12 +76,23 @@ That's it! Your project is now upgraded to modern dot shorthands with zero orpha
 ## Usage & Options
 
 ```bash
-dotsan                              # Sanitize all roots (lib, test, bin, example, etc.)
-dotsan lib test -n                  # --dry-run: Preview changes without modifying files
-dotsan --skip=AsyncValue.error      # Keep specific members prefixed (e.g. to avoid collisions)
-dotsan --exclude="**/legacy/**"     # Exclude matching file globs
-dotsan --include-generated          # Also rewrite generated files (skipped by default)
-dotsan -v                           # Show version (-h for full options)
+# Sanitize all roots (lib, test, bin, etc.)
+dotsan
+
+# Preview changes (--dry-run)
+dotsan lib test -n
+
+# Keep specific members prefixed
+dotsan --skip=AsyncValue.error
+
+# Exclude matching file globs
+dotsan --exclude="**/legacy/**"
+
+# Also rewrite generated files
+dotsan --include-generated
+
+# Show version (-h for full options)
+dotsan -v
 ```
 
 - `--skip`: Accepts `Type.member` or bare `member` names (comma-separated).
@@ -91,6 +104,7 @@ dotsan -v                           # Show version (-h for full options)
 ## How It Works & What Converts
 
 `dotsan` uses the **Dart Analyzer API** directly:
+
 1. Rewrites candidate expressions speculatively in memory.
 2. Re-resolves the AST in memory.
 3. Keeps a rewrite **only** if the shorthand resolves to the exact same element with **zero new diagnostics or errors**. If ambiguous or changed, it safely reverts.
@@ -112,11 +126,20 @@ dotsan -v                           # Show version (-h for full options)
 `dotsan` leaves expressions prefixed when context type is ambiguous or would change program semantics:
 
 ```dart
-final Object o = Fit.cover;    // Unwitnessed context (type is Object, not Fit) — kept
-const Color c = Colors.red;    // Sibling namespace (member on Colors, context is Color) — kept
-const Base x = Sub.a;          // Rebind risk (.a would silently bind Base.a) — kept
-final l = Fit.values;          // Context is List<Fit>, not enum — kept
-Text('Hello');                 // Unnamed constructors (.new('Hello')) are not rewritten
+// Unwitnessed context (type is Object, not Fit)
+final Object o = Fit.cover;
+
+// Sibling namespace (Colors.red, context is Color)
+const Color c = Colors.red;
+
+// Rebind risk (.a would silently bind Base.a)
+const Base x = Sub.a;
+
+// Context is List<Fit>, not enum
+final l = Fit.values;
+
+// Unnamed constructors (.new) are not rewritten
+Text('Hello');
 ```
 
 ---
