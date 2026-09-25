@@ -1,3 +1,7 @@
+# 0.8.1
+
+- README: the native install is now `dart install shorthand_sanitizer` (Dart 3.10+), which compiles `dotsan` into its own bin directory. The hand-rolled recipe in the 0.5.0–0.6.0 READMEs compiled into `~/.pub-cache/bin`, and pub reads every file there as a text stub: a native binary in that directory fails **every** `dart pub global activate`/`deactivate`, for any package, with `Failed to decode data using encoding 'utf-8'` (0.5.1 scoped this to dotsan's own upgrade). If you used that recipe, run `rm ~/.pub-cache/bin/dotsan` before any other `dart pub global` command.
+
 # 0.8.0
 
 - Fix `EdgeInsets.all(16)`, `.symmetric(...)`, `.only(...)`, `.fromLTRB(...)` (and `BorderRadius.circular(8)`, `BorderRadius.all(...)`) never converting in a `padding:`/`margin:`/`borderRadius:` slot on Flutter ≥ 3.32 — the README's own headline example. The shorthand binds the slot type's forwarder (`const factory EdgeInsetsGeometry.all(double value) = EdgeInsets.all;`), a different element, so the verdict refused it. A redirecting factory passes its arguments through untouched, so the rebind is now accepted when the chain ends at the original constructor with the same formal parameters (named ones compared by name, not order). Forwarders with a body, with differing parameter types, or landing on another constructor still stay prefixed; `const EdgeInsets.symmetric(...)` becomes `const .symmetric(...)`.

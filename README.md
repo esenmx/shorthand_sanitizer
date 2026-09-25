@@ -33,23 +33,15 @@ return Padding(
 
 ### AOT Native Binary (Default & Recommended)
 
-Compiles `dotsan` into a standalone native executable inside your global pub cache bin. Replaces Dart VM startup (~160 ms) with instant native execution (~20 ms) on your existing `PATH`:
+`dart install` compiles `dotsan` into a standalone native executable. Replaces Dart VM startup (~160 ms) with instant native execution (~20 ms):
 
 ```bash
-CACHE="${PUB_CACHE:-$HOME/.pub-cache}" && \
-HOST="$CACHE/hosted/pub.dev" && \
-GLOBAL="$CACHE/global_packages/shorthand_sanitizer" && \
-rm -f "$CACHE/bin/dotsan" && \
-dart pub global activate shorthand_sanitizer && \
-ENTRY=$(ls -d \
-  "$HOST"/shorthand_sanitizer-*/bin/dotsan.dart \
-  2>/dev/null | sort -V | tail -1) && \
-dart compile exe "$ENTRY" \
-  --packages "$GLOBAL/.dart_tool/package_config.json" \
-  -o "$CACHE/bin/dotsan"
+dart install shorthand_sanitizer
 ```
 
-Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
+Re-run it to upgrade; `dart uninstall shorthand_sanitizer` removes it. Ensure its bin directory is in your `PATH` (`~/Library/Application Support/Dart/install/bin` on macOS, `~/.local/state/Dart/install/bin` on Linux — `$XDG_STATE_HOME/Dart/install/bin` if set — `%LOCALAPPDATA%\Dart\install\bin` on Windows).
+
+> Installed with the old recipe that compiled into `~/.pub-cache/bin`? Run `rm ~/.pub-cache/bin/dotsan` first. Pub reads every file in its bin directory as a text stub, so a native binary there makes every `dart pub global activate`/`deactivate` — for any package — fail with `Failed to decode data using encoding 'utf-8'`.
 
 ### Standard VM Installation
 
@@ -58,6 +50,8 @@ If you prefer standard global activation without native compilation:
 ```bash
 dart pub global activate shorthand_sanitizer
 ```
+
+Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
 
 ---
 
