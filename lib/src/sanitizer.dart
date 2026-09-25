@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
-import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
@@ -1132,7 +1131,7 @@ final class _Viability(final TypeProvider typeProvider) {
         ConditionalExpression(:final thenExpression, :final elseExpression) =>
           identical(thenExpression, child) || identical(elseExpression, child),
         BinaryExpression(:final operator) =>
-          operator.type == TokenType.QUESTION_QUESTION,
+          operator.type == .QUESTION_QUESTION,
         SwitchExpressionCase(:final expression) => identical(expression, child),
         IfElement(:final thenElement, :final elseElement) =>
           identical(thenElement, child) || identical(elseElement, child),
@@ -1158,15 +1157,14 @@ final class _Viability(final TypeProvider typeProvider) {
       case ThrowExpression():
         return typeProvider.objectType;
       case PrefixExpression(:final operator):
-        return operator.type == TokenType.BANG ? bool : none;
+        return operator.type == .BANG ? bool : none;
       case BinaryExpression(:final operator, :final leftOperand):
-        if (operator.type == TokenType.AMPERSAND_AMPERSAND ||
-            operator.type == TokenType.BAR_BAR) {
+        if (operator.type == .AMPERSAND_AMPERSAND ||
+            operator.type == .BAR_BAR) {
           return bool;
         }
         if (identical(leftOperand, head)) return none;
-        if (operator.type == TokenType.EQ_EQ ||
-            operator.type == TokenType.BANG_EQ) {
+        if (operator.type == .EQ_EQ || operator.type == .BANG_EQ) {
           return leftOperand.staticType;
         }
         return parent.element?.formalParameters.firstOrNull?.type;
