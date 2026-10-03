@@ -970,6 +970,99 @@ Future<void> main() async {
     });
   });
 
+  group('explain', () {
+    test('lists every site left prefixed, with the reason', () async {
+      final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
+        ..writeAsStringSync('''
+class Color {
+  const Color(this.v);
+  final int v;
+}
+class Palette {
+  static const Color red = Color(1);
+}
+class Base {
+  const Base.id(this.tag);
+  final String tag;
+  static const Base a = Base.id('base');
+}
+class Sub extends Base {
+  const Sub.id() : super.id('sub');
+  static const Sub a = Sub.id();
+}
+abstract class Geo {
+  const factory Geo.all(double v) = Box.all;
+}
+class Box implements Geo {
+  const Box.all(this.v);
+  final double v;
+  static const Box zero = Box.all(0);
+  static const Box unit = Box.all(1);
+}
+enum Fit { cover, contain }
+T id<T>(T x) => x;
+void main() {
+  final Fit f = Fit.cover;
+  final untyped = Fit.contain;
+  const Color c = Palette.red;
+  const Base x = Sub.a;
+  final y = id(Box.zero);
+  final Geo g = Box.all(1)..v;
+  final Box skipped = Box.unit;
+  print([f, untyped, c, x, y, g, skipped]);
+}
+''');
+      final result = await Sanitizer(
+        skips: {'Box.unit'},
+        dryRun: true,
+        explain: true,
+      ).run([file.path]);
+
+      final fileResult = result.files.single;
+      expect(fileResult.kept, [
+        // Ruled out by the static pre-check, before any resolve.
+        '30: Fit.contain kept: no context type',
+        '31: Palette.red kept: context type Color declares no static red',
+        // Refused by the verify loop: a rebind, the analyzer's own error on
+        // the shorthand, and damage only bisection pins on the site (`..v`
+        // reads a getter the forwarder's class lacks).
+        '32: Sub.a kept: rebinds to Base.a',
+        matches(r'^33: Box\.zero kept: .*context type'),
+        matches(r"^34: Box\.all kept: introduces an error: .*'v'"),
+        '35: Box.unit kept: skip-listed',
+      ]);
+      expect(fileResult.converted, hasLength(5));
+      // Every kept site but the skip-listed one counts as reverted.
+      expect(fileResult.reverted, 5);
+      expect(result.keptCount, 6);
+    });
+
+    test(
+      'a file with nothing to convert is reported only when explaining',
+      () async {
+        final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
+          ..writeAsStringSync('''
+enum Fit { cover }
+void main() {
+  final untyped = Fit.cover;
+  print(untyped);
+}
+''');
+        final plain = await Sanitizer(dryRun: true).run([file.path]);
+        expect(plain.files, isEmpty);
+
+        final explained = await Sanitizer(
+          dryRun: true,
+          explain: true,
+        ).run([file.path]);
+        expect(explained.files.single.converted, isEmpty);
+        expect(explained.files.single.kept, [
+          '3: Fit.cover kept: no context type',
+        ]);
+      },
+    );
+  });
+
   test('sdkPath returns valid SDK path and caches result', () {
     final path1 = sdkPath();
     expect(path1, isNotNull);

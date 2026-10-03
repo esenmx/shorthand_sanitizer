@@ -13,6 +13,7 @@ dotsan lib --dry-run         # preview
 dotsan --skip=AsyncValue.error lib
 dotsan --exclude=glob,glob   # leave matching files alone
 dotsan --include-generated   # also rewrite generated-marked files
+dotsan lib/page.dart -n --explain  # why each remaining site stays prefixed
 ```
 
 Missing binary → `dart pub global activate shorthand_sanitizer`.
@@ -25,6 +26,6 @@ One rebind is licensed: a `static const` **alias** of the original (`AlignmentGe
 
 ## After a run
 
-- Kept prefixes are deliberate — do not "finish the job" by hand.
+- Kept prefixes are deliberate — do not "finish the job" by hand. `--explain` names the reason per site.
 - Named constructors and enum values in typed slots (like `padding: .all(8)`) convert automatically.
 - Generated files are skipped by their leading comment marker (build_runner, FlutterFire's `firebase_options.dart`, pigeon, protoc, slang) — NOT by filename, so handwritten `*.preview.dart` previews are sanitized too.

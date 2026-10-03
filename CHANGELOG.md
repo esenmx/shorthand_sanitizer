@@ -1,3 +1,9 @@
+# 0.9.0
+
+- `--explain` (`-e`) lists every site left prefixed after each file's conversions, each with its reason. Sites the static pre-check rules out before any resolve show `no context type`, `context type Color declares no static red` or `neither Foo nor a supertype declares static bar`. Sites the verify loop refuses show `rebinds to Base.a`, the analyzer's own error on the shorthand, or `introduces an error: …`; `skip-listed` sites say so. Files with nothing converted are listed too, and the summary gains `, N kept`. Library: `Sanitizer(explain: true)`, `FileResult.kept`, `SanitizeResult.keptCount`; without the flag, `files` still lists only files with a conversion. Point it at one file: a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed (8,067 on a 589-file app).
+
+- Evaluated and declined: parallel analysis across isolates (`--jobs`). Every isolate loads its own SDK, Flutter and app element model. On a 589-file app, 4 workers cut a warm run at best from 7.5 s to 5.2 s at twice the memory (2.1 GB), and made a cold run slower (20.3 s → 24.6 s, 5.7 GB).
+
 # 0.8.1
 
 - README: the native install is now `dart install shorthand_sanitizer` (Dart 3.10+), which compiles `dotsan` into its own bin directory. The hand-rolled recipe in the 0.5.0–0.6.0 READMEs compiled into `~/.pub-cache/bin`, and pub reads every file there as a text stub: a native binary in that directory fails **every** `dart pub global activate`/`deactivate`, for any package, with `Failed to decode data using encoding 'utf-8'` (0.5.1 scoped this to dotsan's own upgrade). If you used that recipe, run `rm ~/.pub-cache/bin/dotsan` before any other `dart pub global` command.

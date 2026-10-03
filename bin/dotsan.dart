@@ -41,6 +41,12 @@ ArgParser _buildParser() {
       negatable: false,
       help: 'Also rewrite generated-marked files.',
     )
+    ..addFlag(
+      'explain',
+      abbr: 'e',
+      negatable: false,
+      help: 'Also list every site left prefixed, with the reason.',
+    )
     ..addFlag('version', abbr: 'v', negatable: false, help: 'Print version.')
     ..addFlag('help', abbr: 'h', negatable: false, help: 'Print this usage.');
 }
@@ -97,11 +103,12 @@ Future<void> main(List<String> args) async {
     excludes: opts.multiOption('exclude'),
     dryRun: dryRun,
     skipGenerated: !opts.flag('include-generated'),
+    explain: opts.flag('explain'),
   ).run(paths);
   progress?.finish(showTiming: true);
   for (final file in result.files) {
     stdout.writeln(file.path);
-    for (final line in file.converted) {
+    for (final line in [...file.converted, ...file.kept]) {
       stdout.writeln('  $line');
     }
   }
@@ -116,12 +123,15 @@ Future<void> main(List<String> args) async {
       'does not decide this.',
     );
   }
+  final changed = result.files.where((f) => f.converted.isNotEmpty).length;
+  final kept = result.keptCount;
   final skipped = result.skippedByList;
   final removed = result.removedImportCount;
   final verb = dryRun ? 'would convert' : 'converted';
   final pruneVerb = dryRun ? 'would prune' : 'pruned';
   stdout.writeln(
-    '$verb ${result.convertedCount} site(s) in ${result.files.length} file(s)'
+    '$verb ${result.convertedCount} site(s) in $changed file(s)'
+    '${kept > 0 ? ', $kept kept' : ''}'
     '${skipped > 0 ? ', $skipped skip-listed' : ''}'
     '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
   );

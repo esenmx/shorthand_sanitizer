@@ -11,6 +11,7 @@ import 'package:analyzer/dart/element/type_provider.dart';
 import 'package:analyzer/diagnostic/diagnostic.dart';
 import 'package:analyzer/file_system/overlay_file_system.dart';
 import 'package:analyzer/file_system/physical_file_system.dart';
+import 'package:analyzer/source/line_info.dart';
 // The public `AnalysisContextCollection` factory takes neither a byte store
 // nor an options hook; `dart analyze` and the analysis server build on these
 // same classes.
@@ -103,6 +104,11 @@ final class FileResult(
 
   /// Imports the conversion orphaned and this run pruned (see [Sanitizer]).
   final int removedImports = 0,
+
+  /// With [Sanitizer.explain], one `"line: Type.member kept: reason"` entry
+  /// per site left prefixed — skip-listed, ruled out by the static pre-check,
+  /// or refused by the verify loop; empty otherwise.
+  final List<String> kept = const [],
 }) {
   /// Creates a result for [path].
   this;
@@ -110,7 +116,8 @@ final class FileResult(
 
 /// Aggregate outcome across all files of a run.
 final class SanitizeResult {
-  /// Files that had at least one candidate.
+  /// Files with at least one converted site — and, with [Sanitizer.explain],
+  /// every file with a site left prefixed.
   final List<FileResult> files = [];
 
   /// Sites left prefixed because they matched the skip list.
@@ -130,6 +137,10 @@ final class SanitizeResult {
 
   /// Total imports pruned because the conversion orphaned them.
   int get removedImportCount => files.fold(0, (n, f) => n + f.removedImports);
+
+  /// Total explained sites left prefixed, skip-listed ones included; zero
+  /// without [Sanitizer.explain].
+  int get keptCount => files.fold(0, (n, f) => n + f.kept.length);
 }
 
 /// Rewrites `Type.member` to dot-shorthand `.member` (enum values, static
@@ -172,6 +183,10 @@ final class Sanitizer({
 
   /// Skip files whose leading comment declares them generated ([isGenerated]).
   final bool skipGenerated = true,
+
+  /// Also report every site left prefixed, with the reason
+  /// ([FileResult.kept]).
+  final bool explain = false,
 }) {
   /// Creates a sanitizer; see [run].
   this;
@@ -309,14 +324,29 @@ final class Sanitizer({
     final collector = _CandidateCollector(original.typeProvider);
     original.unit.accept(collector);
     final candidates = <Candidate>[];
+    final kept = [...collector.unviable];
     for (final c in collector.candidates) {
       if (skips.contains(c.display) || skips.contains(c.memberName)) {
         result.skippedByList++;
+        kept.add((
+          offset: c.deleteStart,
+          display: c.display,
+          reason: 'skip-listed',
+        ));
       } else {
         candidates.add(c);
       }
     }
-    if (candidates.isEmpty) return null;
+    if (candidates.isEmpty) {
+      return explain && kept.isNotEmpty
+          ? FileResult(
+              file,
+              const [],
+              collector.unviable.length,
+              kept: _keptLines(original.lineInfo, kept),
+            )
+          : null;
+    }
 
     return await _FileSanitizer(
       context: context,
@@ -324,7 +354,8 @@ final class Sanitizer({
       file: file,
       original: original,
       candidates: candidates,
-      unviable: collector.unviable,
+      unviable: collector.unviable.length,
+      kept: explain ? kept : null,
       dryRun: dryRun,
     ).run();
   }
@@ -391,6 +422,10 @@ final class _FileSanitizer({
   /// Sites the collector's static pre-check ruled out before any resolve;
   /// reported as reverted, since they too stay prefixed.
   required final int unviable,
+
+  /// Sites left prefixed before any resolve, when explaining; the verify
+  /// loop's refusals join them in [FileResult.kept]. Null: not explaining.
+  required final List<_Kept>? kept,
   required final bool dryRun,
   required final ResolvedUnitResult original,
 }) {
@@ -408,6 +443,9 @@ final class _FileSanitizer({
   final _dropped = <Candidate>[];
   _Rewritten? _clean;
 
+  /// The latest verdict's reason for each refused candidate.
+  final _why = <Candidate, String>{};
+
   /// Directive ranges (in [_clean]'s coordinates) to strip on write.
   var _orphanCuts = const <(int, int)>[];
 
@@ -415,8 +453,7 @@ final class _FileSanitizer({
 
   Future<FileResult?> run() async {
     try {
-      if (!await _converge()) return null;
-      await _recover();
+      if (await _converge()) await _recover();
     } finally {
       // Unconditional: the overlay holds speculative text, so bailing out with
       // it still installed leaks this file's unverified rewrite into every
@@ -426,10 +463,41 @@ final class _FileSanitizer({
       await context.applyPendingFileChanges();
     }
 
-    if (_clean case final rewritten? when _active.isNotEmpty) {
-      return _write(rewritten);
+    // No verified set: nothing converts and the file stays untouched.
+    final rewritten = _clean;
+    final converted = rewritten == null ? const <Candidate>[] : _active;
+    if (rewritten != null && !dryRun) {
+      File(file).writeAsStringSync(
+        _orphanCuts.isEmpty
+            ? rewritten.text
+            : _stripRanges(rewritten.text, _orphanCuts),
+      );
     }
-    return null; // nothing verifiable — file untouched
+    if (converted.isEmpty && kept == null) return null;
+
+    final done = converted.toSet();
+    return FileResult(
+      file,
+      [
+        for (final c in converted)
+          '${_lineOf(c.deleteStart)}: ${c.display} -> .${c.memberName}',
+      ],
+      candidates.length - converted.length + unviable,
+      removedImports: rewritten == null ? 0 : _orphanCuts.length,
+      kept: switch (kept) {
+        null => const [],
+        final kept => _keptLines(original.lineInfo, [
+          ...kept,
+          for (final c in candidates)
+            if (!done.contains(c))
+              (
+                offset: c.deleteStart,
+                display: c.display,
+                reason: _why[c] ?? _unverified,
+              ),
+        ]),
+      },
+    );
   }
 
   /// Narrows [_active] to a set that verifies clean, if one exists. Returns
@@ -487,7 +555,12 @@ final class _FileSanitizer({
     final a = await _attempt(set);
     if (a == null) return const [];
     if (a.isClean) return set;
-    if (set.length == 1) return const [];
+    if (set.length == 1) {
+      if (a.strayError case final error?) {
+        _why[set.single] = 'introduces an error: $error';
+      }
+      return const [];
+    }
     final mid = set.length ~/ 2;
     return [
       ...await _largestClean(set.sublist(0, mid)),
@@ -529,6 +602,10 @@ final class _FileSanitizer({
         if (settled != null && settled.isClean) {
           _active = a.isClean ? trial : regained;
           _accept(settled);
+        } else if (settled?.strayError case final error?) {
+          for (final c in wave) {
+            if (!a.culprits.contains(c)) _why[c] = '$_unverified: $error';
+          }
         }
       }
       pending = rest;
@@ -576,8 +653,11 @@ final class _FileSanitizer({
   /// that is not a const alias of the original — so the verdict names the
   /// author exactly and the drop is final. Diagnostics deliberately accuse no
   /// one: the errors a broken candidate causes vanish with it. They only
-  /// raise [_Attempt.strayErrors], damage with no author, which forces the
+  /// raise [_Attempt.strayError], damage with no author, which forces the
   /// set to be bisected.
+  ///
+  /// Each conviction records its reason in [_why]: the analyzer's own error
+  /// on the shorthand head, or the element it rebound to.
   Future<_Attempt> _verdict(
     _Rewritten rewritten,
     ResolvedUnitResult check,
@@ -592,19 +672,32 @@ final class _FileSanitizer({
       final resolved = shorthands.byOffset[offset];
       if (resolved == null || resolved.libraryUri == null) {
         culprits.add(candidate);
+        _why[candidate] =
+            _errorOn(check, offset, candidate.memberName) ??
+            'the shorthand does not resolve';
       } else if (!resolved.matches(candidate) &&
           !resolved.forwardsTo(candidate) &&
           !await _isConstAlias(candidate, resolved, selfUri)) {
         culprits.add(candidate);
+        _why[candidate] =
+            'rebinds to '
+            '${[?resolved.containerName, resolved.memberName].join('.')}';
       }
     }
 
-    final stray =
-        culprits.isEmpty &&
-        check.diagnostics.any(
-          (d) => d.severity == .error && !baseline.contains(_errorKey(d)),
-        );
-    return _Attempt(rewritten, check, culprits, strayErrors: stray);
+    final stray = culprits.isEmpty
+        ? check.diagnostics
+              .where(
+                (d) => d.severity == .error && !baseline.contains(_errorKey(d)),
+              )
+              .firstOrNull
+        : null;
+    return _Attempt(
+      rewritten,
+      check,
+      culprits,
+      strayError: stray == null ? null : _sentence(stray.message),
+    );
   }
 
   /// Whether a rebind landed on a `static const` **alias** of the original —
@@ -680,38 +773,50 @@ final class _FileSanitizer({
     return _constCache[key] = holder?.getField(member)?.computeConstantValue();
   }
 
-  FileResult _write(_Rewritten rewritten) {
-    if (!dryRun) {
-      final text = _orphanCuts.isEmpty
-          ? rewritten.text
-          : _stripRanges(rewritten.text, _orphanCuts);
-      File(file).writeAsStringSync(text);
-    }
-    return FileResult(
-      file,
-      [
-        for (final c in _active)
-          '${_lineOf(c.deleteStart)}: ${c.display} -> .${c.memberName}',
-      ],
-      candidates.length - _active.length + unviable,
-      removedImports: _orphanCuts.length,
-    );
-  }
-
   int _lineOf(int offset) => original.lineInfo.getLocation(offset).lineNumber;
 }
 
 /// One verified rewrite of a candidate set: the text, its resolve, the
-/// candidates node-level evidence convicts, and whether unattributable errors
-/// remain (see [_FileSanitizer._verdict]).
+/// candidates node-level evidence convicts, and the first new error none of
+/// them accounts for (see [_FileSanitizer._verdict]).
 final class _Attempt(
   final _Rewritten rewritten,
   final ResolvedUnitResult check,
   final Set<Candidate> culprits, {
-  required final bool strayErrors,
+  required final String? strayError,
 }) {
-  bool get isClean => culprits.isEmpty && !strayErrors;
+  bool get isClean => culprits.isEmpty && strayError == null;
 }
+
+/// A site left prefixed, and why — for [FileResult.kept].
+typedef _Kept = ({int offset, String display, String reason});
+
+/// Fallback reason for a candidate that only ever failed as part of a set.
+const _unverified = 'not verifiable alongside the other rewrites';
+
+/// `"line: Type.member kept: reason"` for each of [kept], in source order.
+List<String> _keptLines(LineInfo lines, List<_Kept> kept) => [
+  for (final k in [...kept]..sort((a, b) => a.offset.compareTo(b.offset)))
+    '${lines.getLocation(k.offset).lineNumber}: ${k.display} kept: ${k.reason}',
+];
+
+/// The analyzer's error on the shorthand head `.member` whose `.` sits at
+/// [offset] in [check] — why that shorthand failed, in the analyzer's words.
+String? _errorOn(ResolvedUnitResult check, int offset, String member) {
+  final end = offset + 1 + member.length;
+  for (final d in check.diagnostics) {
+    if (d.severity == .error &&
+        d.offset < end &&
+        d.offset + d.length > offset) {
+      return _sentence(d.message);
+    }
+  }
+  return null;
+}
+
+/// An analyzer message as a reason clause: the closing period dropped.
+String _sentence(String message) =>
+    message.endsWith('.') ? message.substring(0, message.length - 1) : message;
 
 final class _Rewritten(
   final String text,
@@ -911,7 +1016,7 @@ final class _CandidateCollector(TypeProvider typeProvider)
   final candidates = <Candidate>[];
 
   /// Sites [_Viability] ruled out — they stay prefixed without a resolve.
-  int unviable = 0;
+  final unviable = <_Kept>[];
 
   /// `[Type.member]` in a doc comment is prose, not a site.
   @override
@@ -927,8 +1032,9 @@ final class _CandidateCollector(TypeProvider typeProvider)
     required String memberName,
     required Element? memberElement,
   }) {
-    if (!_viability.check(node, memberName)) {
-      unviable++;
+    final display = '$owner.$memberName';
+    if (_viability.whyNot(node, memberName) case final reason?) {
+      unviable.add((offset: deleteStart, display: display, reason: reason));
       return;
     }
     candidates.add(
@@ -937,7 +1043,7 @@ final class _CandidateCollector(TypeProvider typeProvider)
         deleteStart: deleteStart,
         deleteEnd: dotOffset,
         shorthandOffset: dotOffset,
-        display: '$owner.$memberName',
+        display: display,
         memberName: memberName,
         containerName: memberElement?.enclosingElement?.displayName,
         libraryUri: memberElement?.library?.uri.toString(),
@@ -1097,19 +1203,24 @@ final class _CandidateCollector(TypeProvider typeProvider)
 /// costing one. Type parameters, `dynamic` and an unresolved parameter are
 /// "can't tell" and pass.
 final class _Viability(final TypeProvider typeProvider) {
-  bool check(Expression site, String member) {
+  /// Why [site] can never verify, or null when it might.
+  String? whyNot(Expression site, String member) {
     AstNode head = site;
     while (_passesContextTo(head.parent, head)) {
       head = head.parent!;
     }
     final context = _contextOf(head);
-    if (context != null) return _admits(context, member);
+    if (context != null) return _refusal(context, member);
     final type = head is Expression ? head.staticType : null;
-    if (type is! InterfaceType) return true;
-    return type.element.getStatic(member) != null ||
+    if (type is! InterfaceType ||
+        type.element.getStatic(member) != null ||
         type.element.allSupertypes.any(
           (t) => t.element.getStatic(member) != null,
-        );
+        )) {
+      return null;
+    }
+    return 'neither ${type.getDisplayString()} nor a supertype declares '
+        'static $member';
   }
 
   /// Whether [parent] hands its own context type down to [child] — as the
@@ -1217,15 +1328,20 @@ final class _Viability(final TypeProvider typeProvider) {
       ? literal.typeArguments[index]
       : null;
 
-  /// Whether a context type [type] could hold a static [member] the verdict
-  /// would accept. `FutureOr<T>` resolves the shorthand on `T`.
-  static bool _admits(DartType type, String member) {
+  /// Why a context type [type] cannot hold a static [member] the verdict
+  /// would accept, or null when it could. `FutureOr<T>` resolves the
+  /// shorthand on `T`; `Never` is [_contextOf]'s "no context type".
+  static String? _refusal(DartType type, String member) {
     var t = type;
     if (t is InterfaceType && t.isDartAsyncFutureOr) t = t.typeArguments.first;
     return switch (t) {
-      InterfaceType(:final element) => element.getStatic(member) != null,
-      TypeParameterType() || DynamicType() || InvalidType() => true,
-      _ => false, // void, Never, function and record types declare nothing
+      InterfaceType(:final element) when element.getStatic(member) != null =>
+        null,
+      TypeParameterType() || DynamicType() || InvalidType() => null,
+      NeverType() => 'no context type',
+      // An interface lacking it; void, function and record types declare
+      // nothing.
+      _ => 'context type ${t.getDisplayString()} declares no static $member',
     };
   }
 }

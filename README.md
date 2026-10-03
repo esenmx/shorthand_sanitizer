@@ -85,12 +85,16 @@ dotsan --exclude="**/legacy/**"
 # Also rewrite generated files
 dotsan --include-generated
 
+# Why did a site stay prefixed?
+dotsan lib/page.dart -n --explain
+
 # Show version (-h for full options)
 dotsan -v
 ```
 
 - `--skip`: Accepts `Type.member` or bare `member` names (comma-separated).
 - `--exclude`: Glob pattern matching CWD-relative paths or file basenames (comma-separated).
+- `--explain` (`-e`): After each file's conversions, lists every site left prefixed with its reason. Reasons include `no context type`, `context type Color declares no static red`, `rebinds to Base.a`, the analyzer's own error on the shorthand, and `skip-listed`. Point it at one file — a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed.
 - **Generated Files**: Automatically detected and skipped by their header comment (e.g., `build_runner`, `firebase_options.dart`, pigeon, protoc, and slang outputs), while handwritten files like `page.preview.dart` are processed normally.
 
 ---
