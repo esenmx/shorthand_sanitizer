@@ -2,6 +2,8 @@
 
 - `--explain` (`-e`) lists every site left prefixed after each file's conversions, each with its reason. Sites the static pre-check rules out before any resolve show `no context type`, `context type Color declares no static red` or `neither Foo nor a supertype declares static bar`. Sites the verify loop refuses show `rebinds to Base.a`, the analyzer's own error on the shorthand, or `introduces an error: …`; `skip-listed` sites say so. Files with nothing converted are listed too, and the summary gains `, N kept`. Library: `Sanitizer(explain: true)`, `FileResult.kept`, `SanitizeResult.keptCount`; without the flag, `files` still lists only files with a conversion. Point it at one file: a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed (8,067 on a 589-file app).
 
+- `--exclude` globs: a leading `**/` now also matches zero directories, so `**/legacy/**` excludes a `legacy/` directory directly under the working directory, which it previously missed (`glob` ^2.2.0). Also requires `cli_util` ^0.6.0.
+
 - Evaluated and declined: parallel analysis across isolates (`--jobs`). Every isolate loads its own SDK, Flutter and app element model. On a 589-file app, 4 workers cut a warm run at best from 7.5 s to 5.2 s at twice the memory (2.1 GB), and made a cold run slower (20.3 s → 24.6 s, 5.7 GB).
 
 # 0.8.1
