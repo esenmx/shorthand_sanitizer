@@ -22,7 +22,7 @@ updated: 2026-10-03
   - [x] R-SS-3: refuse a cut in an excluded, generated or out-of-scope unit; report every written file (`part_prune`)
   - [x] R-SS-4: check every target is writable before a multi-file write; no unhandled exception
   - [x] R-SS-5: match baseline unused imports to their directive (`dup_uri_prune`)
-  - [ ] R-SS-6: drop private doc comments that restate the code
+  - [x] R-SS-6: drop private doc comments that restate the code
   - [ ] Re-run format, analyze, `dart test`, the downgrade leg and pana
 - [ ] Phase 9: Release 0.10.0
 
@@ -849,6 +849,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - R-SS-3 is a contract regression from Phase 4, outside the plan's text. Library-wide pruning wrote the part's library even when that file was excluded, generated or not given, and the report named only the part. Now `_finalize` refuses the file's conversion when a cut lands in a unit outside the run's collected file set, giving the reason (`excluded`, `generated`, `not among the given paths`). `_FileSanitizer.run` returns a `FileResult` per written file with that file's own `removedImports`, and `Sanitizer.run` merges results by path (a library pruned for a part may convert its own sites too). `FileResult.removedImports` now counts per file instead of per library. Red first: in all three `SS-R3` "never edits" cases the library lost its two imports; "reports every file it writes" was missing the library's key. Suite 84/84 green.
 - R-SS-4: before writing any file of a library, `_FileSanitizer` opens every target in append mode. On failure it writes nothing, records `SanitizeResult.writeFailures`, gives the kept reason `cannot write <file>: <OS error>`, and the CLI prints `error: could not write … so … was not converted.` and exits **74**. The plan defines no code for a write failure; 74 (EX_IOERR) follows its sysexits use (64, 69). A failure after that check (a full disk) is caught and reported the same way, though files written before it stay written. Red first: `SS-R4` threw `PathAccessException … Permission denied`; the CLI exited 255 where it should exit 74. Both tests skip on Windows. Suite 86/86 green.
 - R-SS-5: orphan selection keys a removable-import diagnostic by `(unit path, directive index, code)` (`_ImportIssue`), recorded once from the original library. A rewrite deletes no directive, so the index survives it. The old per-message count went by position and swapped two imports of one URI. The e2e harness cannot see this case (both outcomes leave one identical `unused_import`), so `SS-R5` asserts the text. Red first: it kept `import 'r5_fit.dart' show Mode;` and dropped `as keep_me`. Suite 87/87 green.
+- R-SS-6 deleted the restating private docs on `rootOf`, `offLimits`, `_overlaid`, `_refuseAll`, `_unwritable`, `_keptSites`, `_describe`, `_census`, `_importAt`, `_globError` and `_display`. `_dartOnPath` keeps only its CRLF trap, and `_ResolvedShorthand.staticType` went in R-SS-1. Trap and contract notes stay (`_DiagKey`, `_isTransparent`, `_canonical`, `_typeKey`, `_restrictionsOf`, `_ImportIssue`, `_writeAll`, `_write`). No test can go red for a comment-only change. Suite 87/87 green.
 
 ## Execution prompt
 

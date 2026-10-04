@@ -247,7 +247,6 @@ Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
   ],
 };
 
-/// Why [pattern] is not a valid `--exclude` glob, or null when it is.
 String? _globError(String pattern) {
   try {
     Glob(pattern);
@@ -257,8 +256,6 @@ String? _globError(String pattern) {
   }
 }
 
-/// [path] relative to the working directory when inside it (`.` for the
-/// directory itself), else absolute; native separators either way.
 String _display(String path) {
   final absolute = p.normalize(p.absolute(path));
   if (p.equals(absolute, p.current)) return '.';
