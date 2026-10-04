@@ -1,3 +1,9 @@
+## Unreleased
+
+### Fixed
+
+- Verification compares the whole library's diagnostics as a multiset across errors, warnings and infos. A duplicate of an existing error, or a new deprecation info, now keeps the site prefixed.
+
 # 0.9.0
 
 - `--explain` (`-e`) lists every site left prefixed after each file's conversions, each with its reason. Sites the static pre-check rules out before any resolve show `no context type`, `context type Color declares no static red` or `neither Foo nor a supertype declares static bar`. Sites the verify loop refuses show `rebinds to Base.a`, the analyzer's own error on the shorthand, or `introduces an error: …`; `skip-listed` sites say so. Files with nothing converted are listed too, and the summary gains `, N kept`. Library: `Sanitizer(explain: true)`, `FileResult.kept`, `SanitizeResult.keptCount`; without the flag, `files` still lists only files with a conversion. Point it at one file: a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed (8,067 on a 589-file app).

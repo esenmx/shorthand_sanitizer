@@ -303,14 +303,18 @@ final class Sanitizer({
     String file,
     SanitizeResult result,
   ) async {
-    final original = await context.currentSession.getResolvedUnit(file);
-    if (original is! ResolvedUnitResult) return null;
+    final library = await context.currentSession.getResolvedLibraryContaining(
+      file,
+    );
+    if (library is! ResolvedLibraryResult) return null;
+    final original = library.unitWithPath(file);
+    if (original == null) return null;
 
     // The installed SDK does not decide this — the package's own `environment:
     // sdk:` constraint does. Below the floor every rewrite fails to parse, so
     // the verify loop would revert all of them and report an ordinary
     // "converted 0 site(s)", indistinguishable from having nothing to convert.
-    final language = original.libraryElement.languageVersion.effective;
+    final language = library.element.languageVersion.effective;
     if (language.major < _floorMajor ||
         (language.major == _floorMajor && language.minor < _floorMinor)) {
       result.skippedBelowFloor.update(
@@ -352,6 +356,7 @@ final class Sanitizer({
       context: context,
       overlay: overlay,
       file: file,
+      library: library,
       original: original,
       candidates: candidates,
       unviable: collector.unviable.length,
@@ -427,14 +432,15 @@ final class _FileSanitizer({
   /// loop's refusals join them in [FileResult.kept]. Null: not explaining.
   required final List<_Kept>? kept,
   required final bool dryRun,
+  required final ResolvedLibraryResult library,
   required final ResolvedUnitResult original,
 }) {
   final String content = original.content;
-  final Set<String> baseline = _errorKeys(original.diagnostics);
 
-  // Imports already unused before we touched the file are the user's to
-  // keep; only orphans we newly create get pruned.
-  final Set<String> baselineImports = _importIssueKeys(original.diagnostics);
+  /// Every diagnostic of [file]'s library before the rewrite, counted per
+  /// key. A rewrite may add none; imports already unused here are the user's
+  /// to keep, so only orphans the rewrite newly creates get pruned.
+  final Map<_DiagKey, int> baseline = _census(library);
   final _constCache = <(String, String, String), DartObject?>{};
 
   /// Candidates still in the running; once [_clean] is set, exactly the ones
@@ -556,8 +562,8 @@ final class _FileSanitizer({
     if (a == null) return const [];
     if (a.isClean) return set;
     if (set.length == 1) {
-      if (a.strayError case final error?) {
-        _why[set.single] = 'introduces an error: $error';
+      if (a.stray case final stray?) {
+        _why[set.single] = 'introduces $stray';
       }
       return const [];
     }
@@ -602,9 +608,9 @@ final class _FileSanitizer({
         if (settled != null && settled.isClean) {
           _active = a.isClean ? trial : regained;
           _accept(settled);
-        } else if (settled?.strayError case final error?) {
+        } else if (settled?.stray case final stray?) {
           for (final c in wave) {
-            if (!a.culprits.contains(c)) _why[c] = '$_unverified: $error';
+            if (!a.culprits.contains(c)) _why[c] = '$_unverified: $stray';
           }
         }
       }
@@ -614,7 +620,7 @@ final class _FileSanitizer({
 
   void _accept(_Attempt a) {
     _clean = a.rewritten;
-    _orphanCuts = _orphanRanges(a.check, baselineImports);
+    _orphanCuts = _orphanRanges(a.unit, baseline);
   }
 
   /// Rewrites the file with [set] applied and resolves the result, or null if
@@ -628,9 +634,13 @@ final class _FileSanitizer({
     );
     context.changeFile(file);
     await context.applyPendingFileChanges();
-    final check = await context.currentSession.getResolvedUnit(file);
-    if (check is! ResolvedUnitResult) return null;
-    return await _verdict(rewritten, check);
+    final check = await context.currentSession.getResolvedLibraryContaining(
+      file,
+    );
+    if (check is! ResolvedLibraryResult) return null;
+    final unit = check.unitWithPath(file);
+    if (unit == null) return null;
+    return await _verdict(rewritten, check, unit);
   }
 
   _Rewritten _apply(List<Candidate> set) {
@@ -652,14 +662,15 @@ final class _FileSanitizer({
   /// its own shorthand node — it did not resolve, or it rebound to an element
   /// that is not a const alias of the original — so the verdict names the
   /// author exactly and the drop is final. Diagnostics deliberately accuse no
-  /// one: the errors a broken candidate causes vanish with it. They only
-  /// raise [_Attempt.strayError], damage with no author, which forces the
-  /// set to be bisected.
+  /// one: the diagnostics a broken candidate causes vanish with it. Any the
+  /// library gains only raise [_Attempt.stray], damage with no author, which
+  /// forces the set to be bisected.
   ///
   /// Each conviction records its reason in [_why]: the analyzer's own error
   /// on the shorthand head, or the element it rebound to.
   Future<_Attempt> _verdict(
     _Rewritten rewritten,
+    ResolvedLibraryResult library,
     ResolvedUnitResult check,
   ) async {
     final shorthands = _ShorthandIndex();
@@ -685,19 +696,46 @@ final class _FileSanitizer({
       }
     }
 
+    // Removable import diagnostics are excused: the accepted text gets its
+    // orphans pruned.
     final stray = culprits.isEmpty
-        ? check.diagnostics
-              .where(
-                (d) => d.severity == .error && !baseline.contains(_errorKey(d)),
-              )
-              .firstOrNull
+        ? _firstNew(library, (path, d) => path == file && _isRemovableImport(d))
         : null;
     return _Attempt(
       rewritten,
+      library,
       check,
       culprits,
-      strayError: stray == null ? null : _sentence(stray.message),
+      stray: stray == null
+          ? null
+          : '${switch (stray.severity) {
+              .error => 'an error',
+              .warning => 'a warning',
+              .info => 'an info',
+            }}: ${_sentence(stray.message)}',
     );
+  }
+
+  /// The first diagnostic [lib] has more of than [baseline] — the edited
+  /// unit first, then the others in library order, each by offset — skipping
+  /// [excused] ones; null when the library gained nothing.
+  Diagnostic? _firstNew(
+    ResolvedLibraryResult lib,
+    bool Function(String path, Diagnostic d) excused,
+  ) {
+    final seen = <_DiagKey, int>{};
+    for (final unit in [
+      ...lib.units.where((u) => u.path == file),
+      ...lib.units.where((u) => u.path != file),
+    ]) {
+      for (final d in _byPosition(unit.diagnostics)) {
+        if (excused(unit.path, d)) continue;
+        final key = _keyOf(unit.path, d);
+        final count = seen.update(key, (n) => n + 1, ifAbsent: () => 1);
+        if (count > (baseline[key] ?? 0)) return d;
+      }
+    }
+    return null;
   }
 
   /// Whether a rebind landed on a `static const` **alias** of the original —
@@ -776,16 +814,19 @@ final class _FileSanitizer({
   int _lineOf(int offset) => original.lineInfo.getLocation(offset).lineNumber;
 }
 
-/// One verified rewrite of a candidate set: the text, its resolve, the
-/// candidates node-level evidence convicts, and the first new error none of
-/// them accounts for (see [_FileSanitizer._verdict]).
+/// One verified rewrite of a candidate set: the text, its library's resolve
+/// and the edited [unit] within it, the candidates node-level evidence
+/// convicts, and the first new diagnostic none of them accounts for (see
+/// [_FileSanitizer._verdict]), as `an error: …`, `a warning: …` or
+/// `an info: …`.
 final class _Attempt(
   final _Rewritten rewritten,
-  final ResolvedUnitResult check,
+  final ResolvedLibraryResult library,
+  final ResolvedUnitResult unit,
   final Set<Candidate> culprits, {
-  required final String? strayError,
+  required final String? stray,
 }) {
-  bool get isClean => culprits.isEmpty && strayError == null;
+  bool get isClean => culprits.isEmpty && stray == null;
 }
 
 /// A site left prefixed, and why — for [FileResult.kept].
@@ -885,14 +926,36 @@ String _parametersOf(ConstructorElement e) {
 int _byOffset(Candidate a, Candidate b) =>
     a.deleteStart.compareTo(b.deleteStart);
 
-/// Offsets shift across rewrites — key errors by code + message instead.
-String _errorKey(Diagnostic d) =>
-    '${d.diagnosticCode.lowerCaseName}:${d.message}';
+/// Offsets shift across rewrites — a diagnostic is keyed by its unit,
+/// severity, code and message instead. `severity` is the code's default:
+/// `analyzer: errors:` overrides are not applied, on either side.
+typedef _DiagKey = ({
+  String path,
+  String severity,
+  String code,
+  String message,
+});
 
-Set<String> _errorKeys(List<Diagnostic> diagnostics) => {
-  for (final d in diagnostics)
-    if (d.severity == .error) _errorKey(d),
-};
+_DiagKey _keyOf(String path, Diagnostic d) => (
+  path: path,
+  severity: d.severity.name,
+  code: d.diagnosticCode.lowerCaseName,
+  message: d.message,
+);
+
+/// How many times each diagnostic key occurs across [lib]'s units.
+Map<_DiagKey, int> _census(ResolvedLibraryResult lib) {
+  final counts = <_DiagKey, int>{};
+  for (final unit in lib.units) {
+    for (final d in unit.diagnostics) {
+      counts.update(_keyOf(unit.path, d), (n) => n + 1, ifAbsent: () => 1);
+    }
+  }
+  return counts;
+}
+
+List<Diagnostic> _byPosition(List<Diagnostic> diagnostics) =>
+    [...diagnostics]..sort((a, b) => a.offset.compareTo(b.offset));
 
 /// Import-scoped diagnostics whose fix is to drop the whole directive.
 const _removableImportCodes = {
@@ -904,24 +967,26 @@ const _removableImportCodes = {
 bool _isRemovableImport(Diagnostic d) =>
     _removableImportCodes.contains(d.diagnosticCode.lowerCaseName);
 
-Set<String> _importIssueKeys(List<Diagnostic> diagnostics) => {
-  for (final d in diagnostics)
-    if (_isRemovableImport(d)) _errorKey(d),
-};
-
 /// Directive ranges (each spanning `import … ;` plus its line ending) for
-/// imports the rewrite orphaned — those [check] now flags removable that
-/// weren't in [baseline]. Coordinates are [check]'s content, i.e. the
+/// imports the rewrite orphaned — removable-import diagnostics [check] has
+/// more of than [baseline]. Coordinates are [check]'s content, i.e. the
 /// rewritten text about to be written.
-List<(int, int)> _orphanRanges(ResolvedUnitResult check, Set<String> baseline) {
+List<(int, int)> _orphanRanges(
+  ResolvedUnitResult check,
+  Map<_DiagKey, int> baseline,
+) {
   final text = check.content;
   final imports = check.unit.directives.whereType<ImportDirective>().toList();
   if (imports.isEmpty) return const [];
 
+  final counts = <_DiagKey, int>{};
   final seen = <int>{};
   final ranges = <(int, int)>[];
-  for (final d in check.diagnostics) {
-    if (!_isRemovableImport(d) || baseline.contains(_errorKey(d))) continue;
+  for (final d in _byPosition(check.diagnostics)) {
+    if (!_isRemovableImport(d)) continue;
+    final key = _keyOf(check.path, d);
+    final count = counts.update(key, (n) => n + 1, ifAbsent: () => 1);
+    if (count <= (baseline[key] ?? 0)) continue;
     for (final directive in imports) {
       if (d.offset < directive.offset || d.offset >= directive.end) continue;
       if (!seen.add(directive.offset)) break;
