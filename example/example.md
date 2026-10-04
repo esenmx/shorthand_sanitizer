@@ -1,5 +1,5 @@
 ```bash
-dart pub global activate shorthand_sanitizer
+dart install shorthand_sanitizer
 
 dotsan                          # sanitize every existing root dir (lib, bin, test, ...)
 dotsan lib test --dry-run       # report only

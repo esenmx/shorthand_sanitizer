@@ -19,6 +19,7 @@
 - A file whose library already has an error-severity diagnostic is skipped by default and listed on stderr (`SanitizeResult.skippedWithErrors`): verification cannot tell a rewrite's damage apart inside code that does not compile. Pass `--allow-errors` to process it anyway.
 - `--skip=Type.member` also matches the declaring type, so `--skip=Fit.cover` keeps `m.Fit.cover` (an import prefix) and `Mode.cover` (a typedef of `Fit`) prefixed too.
 - Report file lines show the path relative to the working directory when the file is inside it, else absolute (`FileResult.path` stays absolute).
+- The agent skill directory is renamed to `skills/shorthand-sanitizer-dotsan/` (skill name `shorthand-sanitizer-dotsan`). Install it with `dart run skills@ get --package shorthand_sanitizer --all`.
 
 ### Fixed
 
@@ -34,6 +35,10 @@
 - An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
 - Windows: an installed `dotsan` (AOT, no `DART_SDK`) crashed looking up `dart` with `which`; it now uses `where` there and takes the first match. When no SDK is found at all, `dotsan` says so and exits 69.
 - A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
+
+### Removed
+
+- `.pubignore`: `.gitignore` already keeps editor and build directories out of the package, and pub never publishes dot-directories.
 
 # 0.9.0
 

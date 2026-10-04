@@ -15,7 +15,7 @@ updated: 2026-10-03
 - [x] Phase 5: Engine and CLI hygiene
 - [x] Phase 6: `--set-exit-if-changed` and `--format=json`
 - [x] Phase 7: CI, dependency safety net, Windows SDK discovery
-- [ ] Phase 8: Docs, skill, repo meta, packaging
+- [x] Phase 8: Docs, skill, repo meta, packaging
 - [ ] Phase 9: Release 0.10.0
 
 ## Problem
@@ -832,6 +832,8 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - Phase 5: `Glob('[')` throws `SourceSpanFormatException`, a `FormatException`, so `on FormatException` catches it. The `--version prints the pubspec version` pin replaces the old source-regex test; it cannot go red while both read 0.9.0. SS-B7's third case (40 licence lines, then the marker) went red on the 1024-byte head read. e2e `battery` stays at 69. Oracle 71/71 green.
 - Phase 6: the `--explain` CLI test now builds its fixture through the shared `explainFixture()` helper that SS-G1/SS-G3 use; its expected output is unchanged. `FileResult` sorts `sites` in a body field initialised from the primary-constructor parameter of the same name, which SDK 3.13.4 accepts. The README JSON schema and exit codes land in Phase 8 (the Phase 6 file list has no README). Oracle 75/75 green.
 - Phase 7: SS-S1 passes locally (the `which` path), as the plan expects; its red run belongs to the Windows CI leg in Phase 9. The restored `publish.yaml` differs from `951159a^` only in the commented-out trigger plus `workflow_dispatch`. Oracle green: yq `true`, 76/76 tests on the upgrade resolve, and 76/76 on the downgrade resolve (analyzer 14.0.0, package_config 2.2.0).
+- Phase 8: `rg -n 'dart-shorthand-sanitizer'` matches only this plan, which names the old path; outside `plans/` it prints nothing, and the plan goes in Phase 9. `rg -n 'unawaited\('` matches the plan-mandated `analysis_options.yaml` comment ("never unawaited().") and this plan; `rg -n 'unawaited\(' -t dart` prints nothing. very_good_analysis 11.0.0 sets all three strict modes (checked). The `analysis_options.yaml` edit used the session-root marker, removed right after.
+- Phase 8: the README `## Install` holds exactly the listed content, so the old line 36 (the AOT startup-time sentence) went with lines 32-54. "in a slot of exactly that type" sits in the table's Kind column. The README snippet check passed: 3 dart blocks, `flutter analyze lib/snippets.dart` reported 0 errors (6 `unused_local_variable` warnings). The skills@ oracle printed `Installed shorthand-sanitizer-dotsan` with no `Skipping skill`.
 
 ## Execution prompt
 
