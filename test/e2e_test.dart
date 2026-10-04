@@ -67,6 +67,8 @@ void e2e(
           p.join(root.path, dir),
     ]);
 
+    expect(result.skippedWithErrors, isEmpty, reason: 'fixture has errors');
+
     final surplus = _diagnostics(root);
     diagnosticsBefore.forEach(surplus.remove);
     expect(surplus, isEmpty, reason: 'new diagnostics:\n${surplus.join('\n')}');

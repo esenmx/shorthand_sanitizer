@@ -35,7 +35,13 @@ Future<String> sanitize(
   bool allowErrors = false,
 }) async {
   final file = write(pkg, 'lib/case_${fileId++}.dart', source);
-  await Sanitizer(skips: skips, allowErrors: allowErrors).run([file.path]);
+  final result = await Sanitizer(
+    skips: skips,
+    allowErrors: allowErrors,
+  ).run([file.path]);
+  // A fixture with an analysis error is skipped whole: the assertion would
+  // pass without testing anything.
+  expect(result.skippedWithErrors, isEmpty, reason: 'fixture has errors');
   return file.readAsStringSync();
 }
 
