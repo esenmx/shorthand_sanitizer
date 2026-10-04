@@ -396,4 +396,36 @@ final G<b.X> g = AG.of(const a.X());
     expect(result.convertedCount, 0);
     expect(result.files.single.kept.single, contains('r1_a.dart::X>'));
   });
+
+  test('SS-R2 a rebind onto a @visibleForTesting member is refused', () async {
+    final app = makePackage(
+      'r2',
+      'name: r2\nenvironment:\n  sdk: ^3.10.0\n'
+          'dependencies:\n  meta: ^1.15.0\n',
+    );
+    addTearDown(() => app.deleteSync(recursive: true));
+    final restricted = geoLibrary
+        .replaceFirst('const factory', '@visibleForTesting const factory')
+        .replaceFirst(
+          'static const Geo',
+          '@visibleForTesting static const Geo',
+        );
+    write(app, 'lib/geo.dart', "import 'package:meta/meta.dart';\n$restricted");
+    final file = write(app, 'lib/use.dart', '''
+import 'geo.dart';
+void use(Geo g) {}
+void run() {
+  use(Box.all(1));
+  use(Box.zero);
+}
+''');
+    final result = await Sanitizer(
+      dryRun: true,
+      explain: true,
+    ).run([file.path]);
+    expect(result.files.single.kept, [
+      '4: Box.all kept: rebinds to Geo.all, which is @visibleForTesting',
+      '5: Box.zero kept: rebinds to Geo.zero, which is @visibleForTesting',
+    ]);
+  });
 }

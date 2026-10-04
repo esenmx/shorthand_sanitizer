@@ -109,6 +109,9 @@ final class Candidate({
   /// `_Viability.typedSlotOf`); null outside a typed slot.
   final String? typedSlot,
 
+  /// The member's use-restricting annotations (see `_restrictionsOf`).
+  final Set<String> restrictions = const {},
+
   /// Offset of the enclosing statement (or declaration, outside a body).
   /// Type inference does not cross that boundary, so two candidates with
   /// different keys cannot affect each other's resolution — which is what
@@ -941,11 +944,14 @@ final class _FileSanitizer({
         final inSlot =
             candidate.typedSlot != null &&
             candidate.typedSlot == resolved.staticType;
-        if (!licensed || !inSlot) {
+        final gained = resolved.restrictions.difference(candidate.restrictions);
+        if (!licensed || !inSlot || gained.isNotEmpty) {
           culprits.add(candidate);
-          _why[candidate] = licensed
-              ? 'rebinds to $target outside a typed slot'
-              : 'rebinds to $target';
+          _why[candidate] = switch ((licensed, inSlot)) {
+            (false, _) => 'rebinds to $target',
+            (true, false) => 'rebinds to $target outside a typed slot',
+            (true, true) => 'rebinds to $target, which is ${gained.join(', ')}',
+          };
         }
       }
     }
@@ -1152,6 +1158,7 @@ final class _ResolvedShorthand(
 
   final String? staticType,
   final String? shownType,
+  final Set<String> restrictions = const {},
 }) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
@@ -1237,6 +1244,27 @@ String _parameterKey(FormalParameterElement p) => switch (p) {
     '{${p.isRequired ? 'required ' : ''}${_typeKey(p.type)} ${p.name}}',
   _ when p.isOptionalPositional => '[${_typeKey(p.type)}]',
   _ => _typeKey(p.type),
+};
+
+/// Annotations that restrict where [element] may be used. A licensed rebind
+/// onto a member carrying one the original lacks is a new restricted use,
+/// which the analyzer does not always report: analyzer 14.4 skips its
+/// `@visibleForTesting` check on a dot-shorthand constructor invocation. A
+/// field's annotations sit on the field, not on its getter.
+Set<String> _restrictionsOf(Element? element) => {
+  for (final holder in [
+    ?element,
+    if (element is PropertyAccessorElement) element.variable,
+  ]) ...{
+    if (holder.metadata.hasDeprecated) '@Deprecated',
+    if (holder.metadata.hasDoNotSubmit) '@doNotSubmit',
+    if (holder.metadata.hasExperimental) '@experimental',
+    if (holder.metadata.hasInternal) '@internal',
+    if (holder.metadata.hasProtected) '@protected',
+    if (holder.metadata.hasVisibleForOverriding) '@visibleForOverriding',
+    if (holder.metadata.hasVisibleForTesting) '@visibleForTesting',
+    if (holder.metadata.hasVisibleOutsideTemplate) '@visibleOutsideTemplate',
+  },
 };
 
 int _byOffset(Candidate a, Candidate b) =>
@@ -1345,6 +1373,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
           : null,
       staticType: type == null ? null : _typeKey(type),
       shownType: type?.getDisplayString(),
+      restrictions: _restrictionsOf(element),
     );
   }
 
@@ -1453,6 +1482,7 @@ final class _CandidateCollector(TypeProvider typeProvider)
         },
         shownType: node.staticType?.getDisplayString(),
         typedSlot: _viability.typedSlotOf(node),
+        restrictions: _restrictionsOf(memberElement),
       ),
     );
   }
