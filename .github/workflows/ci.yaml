@@ -5,7 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '23 5 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -13,44 +18,60 @@ concurrency:
 
 jobs:
   format:
-    name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
-      - run: dart pub get
-      - run: dart format --output=none --set-exit-if-changed .
-
+      - run: git ls-files -z -- '*.dart' | xargs -0 dart format --output=none --set-exit-if-changed
   analyze:
-    name: Analyze
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
       - run: dart pub get
       - run: dart analyze --fatal-infos --fatal-warnings
-
   test:
-    name: Test (Dart ${{ matrix.sdk }})
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        sdk: [stable, beta]
+        include:
+          - { name: floor, os: ubuntu-latest, sdk: '3.13.0' }
+          - { name: stable, os: ubuntu-latest, sdk: stable }
+          - { name: beta, os: ubuntu-latest, sdk: beta }
+          - { name: windows, os: windows-latest, sdk: stable }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: ${{ matrix.sdk }}
       - run: dart pub get
       - run: dart test
-
-  pana:
-    name: Pana score
+  downgrade:
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub downgrade
+      - run: dart analyze --fatal-warnings
+      - run: dart test
+  pana:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
       - run: dart pub global activate pana
-      - run: dart pub global run pana --no-warning --exit-code-threshold 0 .
+      - run: dart pub global run pana --no-warning --exit-code-threshold 0
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1
+      - run: dart pub publish --dry-run

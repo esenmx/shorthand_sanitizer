@@ -27,10 +27,11 @@ import 'package:path/path.dart' as p;
 
 String? _cachedSdkPath;
 
-/// Locates the Dart SDK for the analyzer. Inside a JIT run the executable
-/// lives in the SDK; an AOT-compiled binary does not, so fall back to
-/// `DART_SDK`, then to the `dart` on PATH (following the Flutter shim, whose
-/// SDK sits under `bin/cache/dart-sdk`). `package:cli_util`'s `sdkPath` is
+/// Locates the Dart SDK for the analyzer, or null when none is found. Inside
+/// a JIT run the executable lives in the SDK; an AOT-compiled binary does
+/// not, so fall back to `DART_SDK`, then to the `dart` on PATH (`which`, or
+/// `where` on Windows; following the Flutter shim, whose SDK sits under
+/// `bin/cache/dart-sdk`). `package:cli_util`'s `sdkPath` is
 /// the resolvedExecutable step alone — no validity check, no AOT or shim
 /// fallback — so it cannot replace this.
 String? sdkPath() {
@@ -46,11 +47,26 @@ String? sdkPath() {
   final exeSdk = p.dirname(p.dirname(Platform.resolvedExecutable));
   if (isSdk(exeSdk)) return _cachedSdkPath = exeSdk;
 
-  final which = Process.runSync('which', ['dart']).stdout.toString().trim();
-  if (which.isEmpty) return null;
+  final which = _dartOnPath();
+  if (which == null) return null;
   final bin = p.dirname(File(which).resolveSymbolicLinksSync());
   for (final candidate in [p.join(bin, 'cache', 'dart-sdk'), p.dirname(bin)]) {
     if (isSdk(candidate)) return _cachedSdkPath = candidate;
+  }
+  return null;
+}
+
+/// The first `dart` on PATH, or null. `where` lists every match, with CRLF
+/// line endings.
+String? _dartOnPath() {
+  final ProcessResult lookup;
+  try {
+    lookup = Process.runSync(Platform.isWindows ? 'where' : 'which', ['dart']);
+  } on ProcessException {
+    return null;
+  }
+  for (final line in LineSplitter.split(lookup.stdout.toString())) {
+    if (line.trim() case final path when path.isNotEmpty) return path;
   }
   return null;
 }
