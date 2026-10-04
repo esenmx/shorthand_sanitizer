@@ -201,7 +201,7 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
 ## Requirements
 
 - Target packages need language version ≥ **3.10**; packages below it, or with no package config (run `dart pub get`), are skipped with a warning naming the package.
-- Runs on macOS, Linux and Windows (all three in CI).
+- Runs on macOS, Linux and Windows: Linux and Windows in CI; macOS locally.
 
 ---
 
@@ -210,8 +210,10 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
 This package ships an agent skill in `skills/shorthand-sanitizer-dotsan/`. Install it into your project's agent config with:
 
 ```sh
-dart run skills@ get --package shorthand_sanitizer --all
+dart run skills@ get --package shorthand_sanitizer --agent claude --all
 ```
+
+Name your agent with `--agent`. Without it, the command auto-detects the agent from an existing agent directory; in a project that has none yet, it prints "Could not auto-detect agent", exits 0 and installs nothing.
 
 ---
 

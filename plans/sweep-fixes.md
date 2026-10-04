@@ -25,8 +25,8 @@ updated: 2026-10-03
   - [x] R-SS-6: drop private doc comments that restate the code
 - [ ] Review round 2 (coordinator, 4db5a2e..4896513). New commits, commit only:
   - [x] R2-SS-1: pin the multiset diagnostic comparison with a test that goes red under the set-based mutant
-  - [ ] R2-SS-2: README CI platforms (Linux and Windows in CI; macOS locally)
-  - [ ] R2-SS-3: skill install hint with `--agent`
+  - [x] R2-SS-2: README CI platforms (Linux and Windows in CI; macOS locally)
+  - [x] R2-SS-3: skill install hint with `--agent`
 - [ ] Re-run format, analyze, `dart test`, the downgrade leg and pana over both rounds
 - [ ] Phase 9: Release 0.10.0
 
@@ -855,6 +855,8 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - R-SS-5: orphan selection keys a removable-import diagnostic by `(unit path, directive index, code)` (`_ImportIssue`), recorded once from the original library. A rewrite deletes no directive, so the index survives it. The old per-message count went by position and swapped two imports of one URI. The e2e harness cannot see this case (both outcomes leave one identical `unused_import`), so `SS-R5` asserts the text. Red first: it kept `import 'r5_fit.dart' show Mode;` and dropped `as keep_me`. Suite 87/87 green.
 - R-SS-6 deleted the restating private docs on `rootOf`, `offLimits`, `_overlaid`, `_refuseAll`, `_unwritable`, `_keptSites`, `_describe`, `_census`, `_importAt`, `_globError` and `_display`. `_dartOnPath` keeps only its CRLF trap, and `_ResolvedShorthand.staticType` went in R-SS-1. Trap and contract notes stay (`_DiagKey`, `_isTransparent`, `_canonical`, `_typeKey`, `_restrictionsOf`, `_ImportIssue`, `_writeAll`, `_write`). No test can go red for a comment-only change. Suite 87/87 green.
 - R2-SS-1: the multiset count had no test. SS-B3 and e2e `masked_error` are cascades, which the typed-slot rule refuses before the diagnostic check runs. The reviewer's mutant (`if (!baseline.containsKey(key))`, the old set check) left the suite green. The reviewer's fixture (`@Deprecated static const Geo zero`, cross-package) no longer isolates it: since R-SS-2, `_restrictionsOf` refuses that rebind first (`rebinds to Geo2.zero, which is @Deprecated`, checked under the mutant). The new e2e `duplicate_info` uses a forwarder with no restricting annotation of its own whose optional named parameter is `@Deprecated` (a deprecated *required* parameter gets no diagnostic). `take(Box.all(v: 2))` passes every node-level check and adds a second copy of the info that `final pre = Geo.all(v: 1);` already has. Proof, built from `git archive HEAD` into a scratch copy, never in the repo: under the mutant, `duplicate_info` fails with a surplus `INFO|DEPRECATED_MEMBER_USE|…/use.dart|'v' is deprecated…`, and it is the suite's only failure (87 pass, 1 fails). At HEAD it is green. The SS-B3 and `masked_error` comments now say the typed-slot rule refuses them.
+- R2-SS-2 resolves a conflict between two plan texts. Phase 8 dictated "Runs on macOS, Linux and Windows (all three in CI)", while the Phase 7 `ci.yaml` runs only ubuntu and windows. The README now reads "Linux and Windows in CI; macOS locally"; `ci.yaml` is unchanged.
+- R2-SS-3: the plan's install line `dart run skills@ get --package shorthand_sanitizer --all` auto-detects the agent, so in a project with no agent directory yet it prints "Could not auto-detect agent", exits 0 and installs nothing. README and CHANGELOG now show `--agent claude` with a note. This matches the Phase 8 oracle, which already passed `--agent claude`.
 
 ## Execution prompt
 
