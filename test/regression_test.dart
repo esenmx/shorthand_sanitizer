@@ -543,4 +543,18 @@ void run() => takeMode(.a);
 ''');
     },
   );
+
+  test(
+    'R3-SS-4 a library reached through a symlink is still in scope',
+    () async {
+      final (lib, part) = partPrune('r34');
+      final alias = Directory.systemTemp.createTempSync('dotsan_alias');
+      addTearDown(() => alias.deleteSync(recursive: true));
+      final link = Link(p.join(alias.path, 'pkg'))..createSync(pkg.path);
+      final result = await Sanitizer(dryRun: true)
+          .run([p.join(link.path, 'lib', p.basename(lib.path)), part.path]);
+      expect(result.convertedCount, 2);
+    },
+    testOn: '!windows',
+  );
 }

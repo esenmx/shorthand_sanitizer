@@ -333,8 +333,11 @@ final class Sanitizer({
   /// (files or directories).
   Future<SanitizeResult> run(List<String> paths) async {
     final globs = [for (final e in excludes) Glob(e)];
+    final cwd = _real(p.current);
     bool isExcluded(String path) {
-      final relative = p.relative(path).replaceAll(p.separator, '/');
+      final relative = p
+          .relative(_real(path), from: cwd)
+          .replaceAll(p.separator, '/');
       return globs.any(
         (g) => g.matches(relative) || g.matches(p.basename(path)),
       );
@@ -346,9 +349,9 @@ final class Sanitizer({
 
     // Pruning may edit another unit of a file's library: only one this run
     // would have processed itself.
-    final scope = files.toSet();
+    final scope = files.map(_real).toSet();
     String? offLimits(String path) => switch (path) {
-      _ when scope.contains(path) => null,
+      _ when scope.contains(_real(path)) => null,
       _ when isExcluded(path) => 'excluded',
       _ when skipGenerated && isGenerated(path) => 'generated',
       _ => 'not among the given paths',
@@ -544,13 +547,16 @@ final class Sanitizer({
     List<String> paths,
     bool Function(String path) isExcluded,
   ) {
-    final files = <String>{};
+    // Keyed by real path: one file reached through a symlink and directly
+    // is still one file.
+    final files = <String, String>{};
+    void add(String path) => files.putIfAbsent(_real(path), () => path);
     for (final rootPath in paths) {
       if (FileSystemEntity.isFileSync(rootPath)) {
         if (rootPath.endsWith('.dart') &&
             !isExcluded(_canonical(rootPath)) &&
             (!skipGenerated || !isGenerated(rootPath))) {
-          files.add(_canonical(rootPath));
+          add(_canonical(rootPath));
         }
         continue;
       }
@@ -574,18 +580,29 @@ final class Sanitizer({
           } else if (entity is File && entity.path.endsWith('.dart')) {
             if (isExcluded(_canonical(entity.path))) continue;
             if (skipGenerated && isGenerated(entity.path)) continue;
-            files.add(_canonical(entity.path));
+            add(_canonical(entity.path));
           }
         }
       }
     }
-    return files.toList()..sort();
+    return files.values.toList()..sort();
   }
 }
 
 /// Absolute and normalized, case kept: `p.canonicalize` lowercases on
 /// Windows, where package-config roots keep their case.
 String _canonical(String path) => p.normalize(p.absolute(path));
+
+/// [path] with symlinks resolved, for deciding membership only: a path
+/// through a link (macOS `/tmp` and `/var` are links) and the real one must
+/// match, while reports keep the path as given.
+String _real(String path) {
+  try {
+    return File(path).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    return path;
+  }
+}
 
 /// Which package a file belongs to, and whether the analyzer was handed that
 /// package's own config. One per [Sanitizer.run]; lookups are memoised.

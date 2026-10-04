@@ -206,6 +206,27 @@ void main() {
     expect(file.readAsStringSync(), before);
   }, testOn: '!windows');
 
+  test(
+    'R3-SS-4 a relative --exclude glob holds for a path through a symlink',
+    () {
+      final file = explainFixture();
+      final root = file.parent.parent.path;
+      final alias = Directory.systemTemp.createTempSync('dotsan_alias');
+      addTearDown(() => alias.deleteSync(recursive: true));
+      final link = Link(p.join(alias.path, 'pkg'))..createSync(root);
+      final run = Process.runSync(Platform.resolvedExecutable, [
+        '--packages=${p.absolute('.dart_tool/package_config.json')}',
+        p.absolute('bin/dotsan.dart'),
+        '-n',
+        '--exclude=lib/main.dart',
+        p.join(link.path, 'lib'),
+      ], workingDirectory: root);
+      expect(run.exitCode, 0, reason: '${run.stderr}');
+      expect(run.stdout, 'would convert 0 site(s) in 0 file(s)\n');
+    },
+    testOn: '!windows',
+  );
+
   test('--version prints the pubspec version', () {
     final version = RegExp(
       r'^version:\s*(\S+)',

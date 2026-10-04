@@ -33,7 +33,8 @@
 - Rewriting a part now prunes the import it orphans in its library (or another part), and the pruned library is re-verified; if pruning would leave any diagnostic, nothing in that file converts and each site says `pruning its orphaned imports leaves …`. Before, the orphaned import stayed behind as a new `unused_import` warning.
 - Generated-file detection skips a leading UTF-8 BOM, reads `/* … */` block-comment banners, and reads a banner of any length; before, it only looked at the first 1024 bytes of `//` lines.
 - A rewrite keeps the file's UTF-8 BOM, in every unit it writes.
-- Overlapping path arguments (`lib lib lib/.`, or a file inside a directory also given) process each file once.
+- Overlapping path arguments (`lib lib lib/.`, a file inside a directory also given, or one file reached through a symlink and directly) process each file once.
+- A relative `--exclude` glob now matches a file reached through a symlinked path argument (macOS `/tmp` and `/var` are symlinks). The path is resolved before matching.
 - A path argument that does not exist, or a file that is not a `.dart` file, is a usage error (exit 64) instead of a silent no-op.
 - An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
 - Windows: an installed `dotsan` (AOT, no `DART_SDK`) crashed looking up `dart` with `which`; it now uses `where` there and takes the first match. When no SDK is found at all, `dotsan` says so and exits 69.

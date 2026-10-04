@@ -31,7 +31,7 @@ updated: 2026-10-03
 - [ ] Review round 3 (coordinator, 4896513..83a3670). New commits, commit only:
   - [x] R3-SS-1: refuse shorthands of `@useResult` members (e2e)
   - [x] R3-SS-3: key a generic function type's own type parameters by position, with bounds; readable kept reasons
-  - [ ] R3-SS-4: compare real (symlink-resolved) paths for scope, dedupe and excludes
+  - [x] R3-SS-4: compare real (symlink-resolved) paths for scope, dedupe and excludes
   - [ ] R3-SS-5: allow same-package `@internal` and test-scope `@visibleForTesting` rebinds
   - [ ] R3-SS-2 + R3-SS-6: write-failure scope wording, `Sanitizer.run` API change, CHANGELOG history
   - [ ] Append the two deferred SWEEP.md rows
@@ -869,6 +869,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - For Phase 9: the CHANGELOG line numbers in step 2 ("lines 1, 9, 13, …, 65") are stale, because `## Unreleased` has grown. Match `^# x.y.z` by pattern instead. The two judgment calls from round 1 that are open to veto are exit code 74 for a write failure, and `@Deprecated`/`@experimental` among the `_restrictionsOf` annotations.
 - R3-SS-1 (a pre-existing hole): `dart analyze` from SDK 3.13.4 reports `unused_result` on every shorthand of a `@useResult` member, even where its value is used. The bundled analyzer 14.4 does not, so the diagnostic check cannot see it. `_verdict` now refuses any shorthand whose resolved element (or a getter's field) has `hasUseResult`, same element or licensed, with the reason `resolves to a @useResult member, whose shorthand dart analyze reports as unused`. Red first: e2e `use_result` (the reviewer's `useresult` fixture plus `mustbeconst`'s `Box.res` forwarder) gained 7 `WARNING|UNUSED_RESULT` lines (5× `make`, `origin`, `res`). Suite 89/89 green.
 - R3-SS-3 fixes a pre-release regression from R-SS-1, so there is no CHANGELOG entry. `_typeKey` keyed a generic function type's own type parameters by their declaring element (`null::null.T` in a typedef, `file:///…::<unnamed>.T` at the site), so identical types keyed differently. `_functionKey` now keys them by position, bounds included. The static-type reason always shows displayed types; when they read the same it says `to a different G<X>`. Red first: e2e `generic_function` (`converted: 2`) converted 0; `SS-R1` printed raw keys. The reviewer's `zoo` fixture now gives the same site list and reasons as 4896513. Suite 90/90 green.
+- R3-SS-4: scope, dedupe and exclude membership now compare real paths (`_real`, `resolveSymbolicLinksSync`), while reports keep the path as given. One root cause explains both the false "not among the given paths" (a `/tmp/…` argument next to a cwd-relative one) and the reviewer's pre-existing `--exclude` miss through a symlink, since the glob's relative path is now taken from real path to real cwd. Red first: library test `R3-SS-4` converted 0 where it should convert 2; the CLI test listed `…/dotsan_alias…/pkg/lib/main.dart` despite `--exclude=lib/main.dart`. The reviewer's `paths/c` command now converts both sites and prunes the library. Suite 92/92 green.
 
 ## Execution prompt
 
