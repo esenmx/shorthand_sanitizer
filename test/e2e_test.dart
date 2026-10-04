@@ -15,6 +15,8 @@ void main() {
   e2e('neg_zero_alias', negZeroAlias);
   e2e('doc_ref_import', docRefImport);
   e2e('unused_import_error', unusedImportError);
+  e2e('typedef_fixed_args', typedefFixedArgs);
+  e2e('static_type_widen', staticTypeWiden);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -392,6 +394,93 @@ void run() => take(Fit.cover);
 ''',
   'pubspec.yaml': '''
 name: unused_import_error
+environment:
+  sdk: ^3.10.0
+''',
+};
+
+const typedefFixedArgs = {
+  'bin/main.dart': r'''
+import 'package:typedef_fixed_args/g.dart';
+
+G<num> make() => IntG.of(1);
+
+void main() {
+  final G<num> g = IntG.of(1);
+  final List<num> l = IntList.filled(1, 0);
+  print('${g.runtimeType} ${make().runtimeType} ${l.runtimeType}');
+  try {
+    g.value = 1.5;
+    l[0] = 1.5;
+    print('stored doubles');
+  } on TypeError catch (e) {
+    print('TypeError: $e');
+  }
+}
+''',
+  'lib/g.dart': '''
+class G<T> {
+  G.of(this.value);
+  T value;
+}
+
+typedef IntG = G<int>;
+typedef IntList = List<int>;
+''',
+  'pubspec.yaml': '''
+name: typedef_fixed_args
+environment:
+  sdk: ^3.10.0
+''',
+};
+
+const staticTypeWiden = {
+  'bin/main.dart': r'''
+import 'package:static_type_widen/geo.dart';
+
+void main() {
+  // Cascade target: static type Box before, Geo after the forwarder rebind.
+  final Geo a = Box.all(1)..log();
+  final Geo b = Box.zero..log();
+  print([a, b].length);
+
+  // Promotion on assignment: Box is a type of interest, so `g = Box.all(2)`
+  // promotes g to Box; `.all(2)` has static type Geo and does not.
+  Geo g = const Geo();
+  if (g is Box) print('never');
+  g = Box.all(2);
+  print('after ctor assignment: ${g.describe()}');
+  g = const Geo();
+  if (g is Box) print('never');
+  g = Box.zero;
+  print('after alias assignment: ${g.describe()}');
+}
+''',
+  'lib/geo.dart': '''
+class Geo {
+  const Geo();
+  const factory Geo.all(int v) = Box.all;
+  static const Geo zero = Box.zero;
+}
+
+class Box extends Geo {
+  const Box.all(this.v);
+  final int v;
+  static const Box zero = Box.all(0);
+}
+
+extension GeoDescribe on Geo {
+  String describe() => 'Geo';
+  void log() => print('log via Geo extension');
+}
+
+extension BoxDescribe on Box {
+  String describe() => 'Box';
+  void log() => print('log via Box extension');
+}
+''',
+  'pubspec.yaml': '''
+name: static_type_widen
 environment:
   sdk: ^3.10.0
 ''',
