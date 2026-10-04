@@ -102,6 +102,7 @@ dotsan -v
 | `1` | `--set-exit-if-changed` and at least one site converted or would convert. Files are still written, as with `dart format`. |
 | `64` | Usage error: bad option, invalid glob, missing or non-`.dart` path, no default root. |
 | `69` | Dart SDK not found; set `DART_SDK` to its directory. |
+| `74` | A file could not be written (read-only, for example). That file's library was left unchanged, and the rest of the run still completed. |
 
 ### JSON report
 

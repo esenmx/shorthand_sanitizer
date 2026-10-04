@@ -194,6 +194,18 @@ void main() {
     expect(run.stderr, isNot(contains('Exception')));
   }, timeout: const Timeout(Duration(minutes: 5)));
 
+  test('SS-R4 a file it cannot write is an error (exit 74), not a crash', () {
+    final file = explainFixture();
+    final before = file.readAsStringSync();
+    Process.runSync('chmod', ['444', file.path]);
+    addTearDown(() => Process.runSync('chmod', ['644', file.path]));
+    final run = dotsan([file.parent.path]);
+    expect(run.exitCode, 74, reason: '${run.stderr}');
+    expect(run.stderr, contains('could not write'));
+    expect(run.stderr, isNot(contains('Unhandled exception')));
+    expect(file.readAsStringSync(), before);
+  }, testOn: '!windows');
+
   test('--version prints the pubspec version', () {
     final version = RegExp(
       r'^version:\s*(\S+)',

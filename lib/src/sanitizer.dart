@@ -211,6 +211,12 @@ final class SanitizeResult {
   /// diagnostic, as canonical paths; see [Sanitizer.allowErrors].
   final List<String> skippedWithErrors = [];
 
+  /// Files left unchanged because a file their conversion had to write could
+  /// not be written: `path` is that file (`file` itself, or a unit of its
+  /// library losing an orphaned import), `error` the OS's reason. Nothing of
+  /// that library is written.
+  final List<({String file, String path, String error})> writeFailures = [];
+
   /// Total converted sites.
   int get convertedCount => files.fold(0, (n, f) => n + f.converted.length);
 
@@ -522,6 +528,7 @@ final class Sanitizer({
       kept: explain ? kept : null,
       dryRun: dryRun,
       offLimits: offLimits,
+      result: result,
     ).run();
   }
 
@@ -645,6 +652,7 @@ final class _FileSanitizer({
 
   /// Why this run must not write a path, or null when it may.
   required final String? Function(String path) offLimits,
+  required final SanitizeResult result,
 }) {
   final String content = original.content;
 
@@ -680,7 +688,17 @@ final class _FileSanitizer({
       // Written while the overlays still hold the same text: removing them
       // first would have the analyzer re-read the pre-write disk, and every
       // later file of the library would be judged against stale text.
-      if (texts != null && !dryRun) texts.forEach(_write);
+      if (texts != null && !dryRun) {
+        // All or nothing: a part written without its library leaves the
+        // import it orphaned behind.
+        final failure = _unwritable(texts.keys) ?? _writeAll(texts);
+        if (failure case (:final path, :final error)) {
+          result.writeFailures.add((file: file, path: path, error: error));
+          final shown = p.relative(path, from: p.dirname(file));
+          _refuseAll('cannot write $shown: $error');
+          texts = null;
+        }
+      }
     } finally {
       // Unconditional: an overlay holds speculative text, so bailing out with
       // it still installed leaks an unverified rewrite into every file
@@ -900,6 +918,31 @@ final class _FileSanitizer({
     overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
     _overlaid.add(path);
     context.changeFile(path);
+  }
+
+  /// The first of [paths] that cannot be opened for writing, and why.
+  static ({String path, String error})? _unwritable(Iterable<String> paths) {
+    for (final path in paths) {
+      try {
+        File(path).openSync(mode: .append).closeSync();
+      } on FileSystemException catch (e) {
+        return (path: path, error: e.osError?.message ?? e.message);
+      }
+    }
+    return null;
+  }
+
+  /// Writes [texts]; a failure past the [_unwritable] check (a full disk) is
+  /// reported, not thrown, though earlier files may already be written.
+  static ({String path, String error})? _writeAll(Map<String, String> texts) {
+    for (final MapEntry(key: path, value: text) in texts.entries) {
+      try {
+        _write(path, text);
+      } on FileSystemException catch (e) {
+        return (path: path, error: e.osError?.message ?? e.message);
+      }
+    }
+    return null;
   }
 
   /// The analyzer's content carries no BOM; one the file had is kept.
