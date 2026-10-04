@@ -369,4 +369,31 @@ void r() => t(Fit.cover);
     await Sanitizer(allowErrors: true).run([file.path]);
     expect(file.readAsStringSync(), contains('t(.cover)'));
   });
+
+  test('SS-R1 two same-named classes are different static types', () async {
+    write(pkg, 'lib/r1_b.dart', 'class X {\n  const X();\n}\n');
+    write(
+      pkg,
+      'lib/r1_a.dart',
+      "import 'r1_b.dart' as b;\nclass X extends b.X {\n  const X();\n}\n",
+    );
+    write(
+      pkg,
+      'lib/r1_g.dart',
+      'class G<T> {\n  G.of(this.value);\n  T value;\n}\n',
+    );
+    final file = write(pkg, 'lib/r1_use.dart', '''
+import 'r1_a.dart' as a;
+import 'r1_b.dart' as b;
+import 'r1_g.dart';
+typedef AG = G<a.X>;
+final G<b.X> g = AG.of(const a.X());
+''');
+    final result = await Sanitizer(
+      dryRun: true,
+      explain: true,
+    ).run([file.path]);
+    expect(result.convertedCount, 0);
+    expect(result.files.single.kept.single, contains('r1_a.dart::X>'));
+  });
 }
