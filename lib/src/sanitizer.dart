@@ -56,8 +56,7 @@ String? sdkPath() {
   return null;
 }
 
-/// The first `dart` on PATH, or null. `where` lists every match, with CRLF
-/// line endings.
+/// `where` lists every match, with CRLF line endings.
 String? _dartOnPath() {
   final ProcessResult lookup;
   try {
@@ -594,7 +593,6 @@ final class _PackageGate() {
   final _roots = <String, String?>{};
   final _configs = <String, PackageConfig?>{};
 
-  /// The nearest directory above [file] holding a `pubspec.yaml`.
   String? rootOf(String file) => _rootOfDir(p.dirname(file));
 
   String? _rootOfDir(String dir) {
@@ -650,7 +648,6 @@ final class _FileSanitizer({
   required final ResolvedLibraryResult library,
   required final ResolvedUnitResult original,
 
-  /// Why this run must not write a path, or null when it may.
   required final String? Function(String path) offLimits,
   required final SanitizeResult result,
 }) {
@@ -678,7 +675,6 @@ final class _FileSanitizer({
   /// [file]'s in [_clean]'s coordinates, every other unit's in its own.
   var _orphanCuts = const <String, List<(int, int)>>{};
 
-  /// Paths this run has overlaid; all are restored when it ends.
   final _overlaid = <String>{};
 
   var _stamp = 0;
@@ -909,7 +905,6 @@ final class _FileSanitizer({
     return null;
   }
 
-  /// Gives up on every active candidate, each kept for [reason].
   void _refuseAll(String reason) {
     for (final c in _active) {
       _why[c] = reason;
@@ -923,7 +918,6 @@ final class _FileSanitizer({
     context.changeFile(path);
   }
 
-  /// The first of [paths] that cannot be opened for writing, and why.
   static ({String path, String error})? _unwritable(Iterable<String> paths) {
     for (final path in paths) {
       try {
@@ -1187,7 +1181,6 @@ typedef _Kept = ({int offset, String display, String reason});
 /// Fallback reason for a candidate that only ever failed as part of a set.
 const _unverified = 'not verifiable alongside the other rewrites';
 
-/// A [Site] for each of [kept].
 List<Site> _keptSites(LineInfo lines, List<_Kept> kept) => [
   for (final k in kept)
     _siteAt(lines, k.offset, k.display, keptReason: k.reason),
@@ -1224,7 +1217,6 @@ String? _errorOn(ResolvedUnitResult check, int offset, String member) {
   return null;
 }
 
-/// `an error: …`, `a warning: …` or `an info: …` — [d] as a reason clause.
 String _describe(Diagnostic d) =>
     '${switch (d.severity) {
       .error => 'an error',
@@ -1387,7 +1379,6 @@ _DiagKey _keyOf(String path, Diagnostic d) => (
   message: d.message,
 );
 
-/// How many times each diagnostic key occurs across [lib]'s units.
 Map<_DiagKey, int> _census(ResolvedLibraryResult lib) {
   final counts = <_DiagKey, int>{};
   for (final unit in lib.units) {
@@ -1424,7 +1415,6 @@ Set<_ImportIssue> _importIssuesOf(ResolvedLibraryResult lib) => {
           (unit.path, index, d.diagnosticCode.lowerCaseName),
 };
 
-/// Index in [unit]'s directives of the import spanning [offset].
 int? _importAt(ResolvedUnitResult unit, int offset) {
   final directives = unit.unit.directives;
   for (var i = 0; i < directives.length; i++) {
