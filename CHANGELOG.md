@@ -1,4 +1,6 @@
-## Unreleased
+# Changelog
+
+## 0.10.0 - 2026-10-04
 
 ### Breaking
 
@@ -49,7 +51,7 @@
 
 - `.pubignore`: `.gitignore` already keeps editor and build directories out of the package, and pub never publishes dot-directories.
 
-# 0.9.0
+## 0.9.0
 
 - `--explain` (`-e`) lists every site left prefixed after each file's conversions, each with its reason. Sites the static pre-check rules out before any resolve show `no context type`, `context type Color declares no static red` or `neither Foo nor a supertype declares static bar`. Sites the verify loop refuses show `rebinds to Base.a`, the analyzer's own error on the shorthand, or `introduces an error: …`; `skip-listed` sites say so. Files with nothing converted are listed too, and the summary gains `, N kept`. Library: `Sanitizer(explain: true)`, `FileResult.kept`, `SanitizeResult.keptCount`; without the flag, `files` still lists only files with a conversion. Point it at one file: a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed (8,067 on a 589-file app).
 
@@ -57,11 +59,11 @@
 
 - Evaluated and declined: parallel analysis across isolates (`--jobs`). Every isolate loads its own SDK, Flutter and app element model. On a 589-file app, 4 workers cut a warm run at best from 7.5 s to 5.2 s at twice the memory (2.1 GB), and made a cold run slower (20.3 s → 24.6 s, 5.7 GB).
 
-# 0.8.1
+## 0.8.1
 
 - README: the native install is now `dart install shorthand_sanitizer` (Dart 3.10+), which compiles `dotsan` into its own bin directory. The hand-rolled recipe in the 0.5.0–0.6.0 READMEs compiled into `~/.pub-cache/bin`, and pub reads every file there as a text stub: a native binary in that directory fails **every** `dart pub global activate`/`deactivate`, for any package, with `Failed to decode data using encoding 'utf-8'` (0.5.1 scoped this to dotsan's own upgrade). If you used that recipe, run `rm ~/.pub-cache/bin/dotsan` before any other `dart pub global` command.
 
-# 0.8.0
+## 0.8.0
 
 - Fix `EdgeInsets.all(16)`, `.symmetric(...)`, `.only(...)`, `.fromLTRB(...)` (and `BorderRadius.circular(8)`, `BorderRadius.all(...)`) never converting in a `padding:`/`margin:`/`borderRadius:` slot on Flutter ≥ 3.32 — the README's own headline example. The shorthand binds the slot type's forwarder (`const factory EdgeInsetsGeometry.all(double value) = EdgeInsets.all;`), a different element, so the verdict refused it. A redirecting factory passes its arguments through untouched, so the rebind is now accepted when the chain ends at the original constructor with the same formal parameters (named ones compared by name, not order). Forwarders with a body, with differing parameter types, or landing on another constructor still stay prefixed; `const EdgeInsets.symmetric(...)` becomes `const .symmetric(...)`.
 
@@ -71,7 +73,7 @@
 
 - Sites starved by a doomed neighbour in an earlier statement now convert: `final theme = Theme.of(context)` never converts, but applying it speculatively made `theme` an invalid type and took every later `theme.copyWith(side: BorderSide.none)` down across the statement boundary the recovery pass relies on. Never applying it keeps the rest resolving.
 
-# 0.7.0
+## 0.7.0
 
 - Fix nested arguments never converting in files where **every** outer call is context-less — e.g. a design-token file of inferred `static const brXs = BorderRadius.all(Radius.circular(xs));` fields reported 0 sites. Round one drops all candidates (the context-less outer starves its own argument of a context type), and the recovery pass refused to run without at least one verified conversion as a base. It now recovers from an empty base — the original file trivially resolves — so the inner `Radius.circular` sites convert while the outers correctly stay prefixed.
 
@@ -79,15 +81,15 @@
 
 - Performance: directory traversal prunes hidden and `build/` trees instead of listing then filtering; recovery skips redundant analyzer resolves when a wave yields no winners; constant lookups are memoized and the resolved SDK path cached; synthetic `Enum.values` accesses are pre-filtered instead of collected and reverted.
 
-# 0.6.0
+## 0.6.0
 
 - CLI ported to `package:args`: short flags `-v` (`--version`), `-h` (`--help`), `-n` (`--dry-run`); generated, aligned usage; unknown options fail with exit 64 and the usage instead of a bare error. `--skip`/`--exclude` now also accept repeated occurrences in addition to comma lists.
 
-# 0.5.1
+## 0.5.1
 
 - README: correct the AOT upgrade recipe — `pub global activate`/`deactivate` refuse a foreign binary at the shim path (`Failed to decode data using encoding 'utf-8'`), so upgrading requires `rm ~/.pub-cache/bin/dotsan` first; 0.5.0 wrongly claimed activate rewrites the shim in place.
 
-# 0.5.0
+## 0.5.0
 
 - `dotsan` with no path arguments now scans every conventional root directory that exists — `lib`, `bin`, `test`, `example`, `tool`, `integration_test`, `benchmark` — instead of only `lib`, and exits 64 when none exist.
 - Warn when files are skipped because their package's language version predates 3.10 (dot shorthands' floor), counted per version. Previously such a run reported an ordinary "converted 0 site(s)", indistinguishable from having nothing to convert.
@@ -97,23 +99,27 @@
 
 - Convert a rebind onto a `static const` **alias** of the original — `Alignment.topCenter` in an `AlignmentGeometry` slot now becomes `.topCenter`. The shorthand binds a different element (`AlignmentGeometry.topCenter`), but const canonicalization makes it the identical object, so the rewrite is observably a no-op. Const-value identity is the oracle; it still refuses non-const forwarders (`EdgeInsetsGeometry.all` allocates), same-valued constants of a different type (`AlignmentDirectional.center` vs `Alignment.center`), and aliases declared in the file being rewritten.
 
-# 0.3.1
+## 0.4.0
+
+- Not documented.
+
+## 0.3.1
 
 - Fix `dotsan --version` reporting a stale version — the hardcoded CLI constant had drifted from `pubspec.yaml`. A test now pins the two together so it cannot drift again.
 - Harden `PropertyAccess` collection with the receiver-position guard `PrefixedIdentifier` already had: `Type.staticGetter.member` keeps its prefix instead of being collected and reverted downstream.
 
-# 0.3.0
+## 0.3.0
 
 - Convert statics reached through an import prefix (`p.Type.member`) and through a type alias (`typedef Alias = Type; Alias.member`) — the target's element is resolved past the prefix/alias to the underlying `InterfaceElement` before collecting.
 - Convert static getters and fields accessed as a `PropertyAccess` (`prefix.Type.staticGetter`), not just `PrefixedIdentifier` and method-invocation forms.
 - Static-method collection accepts any resolvable target expression, not only a bare `SimpleIdentifier`, so prefixed and aliased receivers (`p.Type.staticMethod(...)`) convert.
 
-# 0.2.0
+## 0.2.0
 
 - Prune imports the rewrite orphans: dropping a `Type` prefix can leave the import that supplied `Type` with no remaining referent. The final verified resolve is the oracle — any `unused_import`/`unnecessary_import` it reports that the original file did not is a self-inflicted orphan whose directive is removed. Imports the file already left unused are untouched.
 - `dotsan` reports pruned imports in its summary; `SanitizeResult.removedImportCount` / `FileResult.removedImports` expose the count.
 
-# 0.1.0
+## 0.1.0
 
 - Initial release: type-resolved `Type.member` → `.member` batch codemod, shipped as the `dotsan` executable.
 - Element-identity verification — unwitnessed contexts, sibling-namespace members (`Colors.red` in a `Color` slot), `Enum.values`, forwarder rebinds (`EdgeInsets.all` in geometry slots), and silent same-name rebinds all revert.
