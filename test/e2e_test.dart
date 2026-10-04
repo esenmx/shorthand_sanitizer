@@ -18,6 +18,7 @@ void main() {
   e2e('typedef_fixed_args', typedefFixedArgs);
   e2e('static_type_widen', staticTypeWiden);
   e2e('part_orphan', partOrphan, converted: 1);
+  e2e('display_collision', displayCollision);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -517,6 +518,50 @@ void take(Fit f) => print(f);
 ''',
   'pubspec.yaml': '''
 name: part_orphan
+environment:
+  sdk: ^3.10.0
+''',
+};
+
+// Two classes named `X`: their display strings match, their types do not.
+const displayCollision = {
+  'bin/main.dart': '''
+import 'package:dc/a.dart' as a;
+import 'package:dc/b.dart' as b;
+import 'package:dc/g.dart';
+
+typedef AG = G<a.X>;
+
+void main() {
+  final G<b.X> g = AG.of(const a.X());
+  try {
+    g.value = const b.X();
+    print('stored b.X');
+  } on TypeError {
+    print('TypeError: G<a.X> rejects b.X');
+  }
+}
+''',
+  'lib/a.dart': '''
+import 'b.dart' as b;
+
+class X extends b.X {
+  const X();
+}
+''',
+  'lib/b.dart': '''
+class X {
+  const X();
+}
+''',
+  'lib/g.dart': '''
+class G<T> {
+  G.of(this.value);
+  T value;
+}
+''',
+  'pubspec.yaml': '''
+name: dc
 environment:
   sdk: ^3.10.0
 ''',

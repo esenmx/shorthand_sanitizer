@@ -16,6 +16,14 @@ updated: 2026-10-03
 - [x] Phase 6: `--set-exit-if-changed` and `--format=json`
 - [x] Phase 7: CI, dependency safety net, Windows SDK discovery
 - [x] Phase 8: Docs, skill, repo meta, packaging
+- [ ] Review round 1 (coordinator, 4c99706..4db5a2e). Each fix is a new commit, commit only, with a test that goes red first:
+  - [x] R-SS-1: same-element static type compared by a library-qualified structural key, not the display string (`display_collision`)
+  - [ ] R-SS-2: refuse a licensed rebind whose target gains an access annotation (`vft_warning`)
+  - [ ] R-SS-3: refuse a cut in an excluded, generated or out-of-scope unit; report every written file (`part_prune`)
+  - [ ] R-SS-4: check every target is writable before a multi-file write; no unhandled exception
+  - [ ] R-SS-5: match baseline unused imports to their directive (`dup_uri_prune`)
+  - [ ] R-SS-6: drop private doc comments that restate the code
+  - [ ] Re-run format, analyze, `dart test`, the downgrade leg and pana
 - [ ] Phase 9: Release 0.10.0
 
 ## Problem
@@ -836,6 +844,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - Phase 8: the README `## Install` holds exactly the listed content, so the old line 36 (the AOT startup-time sentence) went with lines 32-54. "in a slot of exactly that type" sits in the table's Kind column. The README snippet check passed: 3 dart blocks, `flutter analyze lib/snippets.dart` reported 0 errors (6 `unused_local_variable` warnings). The skills@ oracle printed `Installed shorthand-sanitizer-dotsan` with no `Skipping skill`.
 - Local § Verification on `9b02e36` (no release commit, no push): steps 1-8 passed. Format reported 0 changed; analyze reported no issues; 76/76 tests passed on the upgrade resolve and 76/76 on the downgrade resolve (analyzer 14.0.0, package_config 2.2.0). `dart pub publish --dry-run` reported 0 warnings; the archive still carries `plans/sweep-fixes.md` until Phase 9 deletes it. pana 0.23.19 scored 160/160 with no `PathNotFoundException`. The Phase 8 oracle and the snippet check (0 errors) passed again after the commit. Step 9 (CI, Windows leg included) runs in Phase 9.
 - After Phase 8, SS-S3 hardening for the tests. A one-off probe (a print on the skip path, then reverted) over the full suite found only two in-process skips: SS-S3's own fixture (deliberate) and a leftover `page.preview.dart` from the `isGenerated` test, which the traversal test walks past without asserting on it. So no assertion had gone hollow. Both `sanitize()` helpers and the e2e harness now `expect(result.skippedWithErrors, isEmpty)`. It goes red on the old `const p.Scaler` fixture (checked) and is green on the suite. Steps 2-4 re-ran green (76/76).
+- R-SS-1 overrides Decision SS-B1 ("compared as display strings"); the core-promise Invariant wins. `getDisplayString` drops the library, so two same-named classes compared equal. `_typeKey` names every interface by library URI and name, recursively over type arguments, function and record types, with nullability. It now decides the same-element static type, the typed slot (top-level `?` stripped) and the redirecting-factory signatures. When the two displays match, the kept reason shows the keys. Red first: e2e `display_collision` printed `stored b.X` where it should print `TypeError: G<a.X> rejects b.X`; `SS-R1` converted 1 site where it should convert 0. Suite 78/78 green.
 
 ## Execution prompt
 

@@ -99,10 +99,13 @@ final class Candidate({
   /// redirecting-factory forwarder is accepted only against an identical one.
   final String? signature,
 
-  /// The site's static type as displayed; the shorthand must keep it.
+  /// The site's static type as a `_typeKey`; the shorthand must keep it.
   final String? staticType,
 
-  /// The slot type a licensed rebind must land in exactly (see
+  /// The site's static type as displayed, for the kept reason.
+  final String? shownType,
+
+  /// The `_typeKey` of the slot a licensed rebind must land in exactly (see
   /// `_Viability.typedSlotOf`); null outside a typed slot.
   final String? typedSlot,
 
@@ -922,9 +925,13 @@ final class _FileSanitizer({
       } else if (resolved.matches(candidate)) {
         if (resolved.staticType != candidate.staticType) {
           culprits.add(candidate);
+          // Same display, different types (two classes named `X`): only the
+          // library-qualified keys tell them apart.
+          final shown = resolved.shownType != candidate.shownType;
           _why[candidate] =
               'changes the static type from '
-              '${candidate.staticType} to ${resolved.staticType}';
+              '${shown ? candidate.shownType : candidate.staticType} to '
+              '${shown ? resolved.shownType : resolved.staticType}';
         }
       } else {
         final target = [?resolved.containerName, resolved.memberName].join('.');
@@ -1143,8 +1150,8 @@ final class _ResolvedShorthand(
   final _ResolvedShorthand? redirectTarget,
   final String? signature,
 
-  /// The shorthand node's static type as displayed.
   final String? staticType,
+  final String? shownType,
 }) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
@@ -1169,7 +1176,7 @@ final class _ResolvedShorthand(
 /// `ReturnType(params)` of a constructor, instantiated as resolved — the
 /// identity [_ResolvedShorthand.forwardsTo] compares across a redirect.
 String _constructorSignature(ConstructorElement e) =>
-    '${e.returnType.getDisplayString()}${_parametersOf(e)}';
+    '${_typeKey(e.returnType)}${_parametersOf(e)}';
 
 /// The formal parameter list of [e]: kind, type and name of each, positional
 /// in order, named sorted by name — `only({left, right, top, bottom})` and
@@ -1177,7 +1184,7 @@ String _constructorSignature(ConstructorElement e) =>
 String _parametersOf(ConstructorElement e) {
   String show(FormalParameterElement p) =>
       '${p.isOptionalPositional ? '[' : ''}'
-      '${p.type.getDisplayString()} ${p.name}';
+      '${_typeKey(p.type)} ${p.name}';
   final positional = [
     for (final p in e.formalParameters)
       if (!p.isNamed) show(p),
@@ -1188,6 +1195,49 @@ String _parametersOf(ConstructorElement e) {
   ]..sort();
   return '(${[...positional, ...named].join(', ')})';
 }
+
+/// Type identity across two resolves. `getDisplayString` names a class
+/// without its library, so two distinct classes called `X` display alike;
+/// this key names every interface by library URI and name, recursively over
+/// type arguments, function and record types, with nullability.
+String _typeKey(DartType type) {
+  final nullable = switch (type.nullabilitySuffix) {
+    .question => '?',
+    .star => '*',
+    .none => '',
+  };
+  String keys(Iterable<DartType> types) => types.map(_typeKey).join(', ');
+  String named(RecordTypeNamedField f) => '${_typeKey(f.type)} ${f.name}';
+  return switch (type) {
+    InterfaceType(:final element, :final typeArguments) =>
+      '${element.library.uri}::${element.name}'
+          '${typeArguments.isEmpty ? '' : '<${keys(typeArguments)}>'}'
+          '$nullable',
+    TypeParameterType(:final element) =>
+      '${element.library?.uri}::${element.enclosingElement?.displayName}'
+          '.${element.name}$nullable',
+    FunctionType(
+      :final returnType,
+      :final typeParameters,
+      :final formalParameters,
+    ) =>
+      '${_typeKey(returnType)} '
+          'Function<${typeParameters.map((t) => t.name).join(', ')}>'
+          '(${formalParameters.map(_parameterKey).join(', ')})$nullable',
+    RecordType(:final positionalFields, :final namedFields) =>
+      '(${keys(positionalFields.map((f) => f.type))}; '
+          '${namedFields.map(named).join(', ')})$nullable',
+    // dynamic, void, Never, invalid: no library to qualify.
+    _ => type.getDisplayString(),
+  };
+}
+
+String _parameterKey(FormalParameterElement p) => switch (p) {
+  _ when p.isNamed =>
+    '{${p.isRequired ? 'required ' : ''}${_typeKey(p.type)} ${p.name}}',
+  _ when p.isOptionalPositional => '[${_typeKey(p.type)}]',
+  _ => _typeKey(p.type),
+};
 
 int _byOffset(Candidate a, Candidate b) =>
     a.deleteStart.compareTo(b.deleteStart);
@@ -1293,7 +1343,8 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       redirectTarget: element is ConstructorElement
           ? _redirectTargetOf(element)
           : null,
-      staticType: type?.getDisplayString(),
+      staticType: type == null ? null : _typeKey(type),
+      shownType: type?.getDisplayString(),
     );
   }
 
@@ -1316,7 +1367,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       cur.name ?? '',
       cur.enclosingElement.displayName,
       cur.library.uri.toString(),
-      signature: '${cur.returnType.getDisplayString()}$params',
+      signature: '${_typeKey(cur.returnType)}$params',
     );
   }
 
@@ -1396,7 +1447,11 @@ final class _CandidateCollector(TypeProvider typeProvider)
         signature: memberElement is ConstructorElement
             ? _constructorSignature(memberElement)
             : null,
-        staticType: node.staticType?.getDisplayString(),
+        staticType: switch (node.staticType) {
+          final type? => _typeKey(type),
+          null => null,
+        },
+        shownType: node.staticType?.getDisplayString(),
         typedSlot: _viability.typedSlotOf(node),
       ),
     );
@@ -1597,10 +1652,8 @@ final class _Viability(final TypeProvider typeProvider) {
             MapLiteralEntry() ||
             FormalParameterDefaultClause()) {
       if (_contextOf(head) case final InterfaceType slot) {
-        final shown = slot.getDisplayString();
-        return shown.endsWith('?')
-            ? shown.substring(0, shown.length - 1)
-            : shown;
+        final key = _typeKey(slot);
+        return key.endsWith('?') ? key.substring(0, key.length - 1) : key;
       }
     }
     return null;
