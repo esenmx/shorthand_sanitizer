@@ -529,33 +529,37 @@ final class _FileSanitizer({
   /// The latest verdict's reason for each refused candidate.
   final _why = <Candidate, String>{};
 
-  /// Directive ranges (in [_clean]'s coordinates) to strip on write.
-  var _orphanCuts = const <(int, int)>[];
+  /// Directive ranges to strip on write, per unit path of [file]'s library;
+  /// [file]'s in [_clean]'s coordinates, every other unit's in its own.
+  var _orphanCuts = const <String, List<(int, int)>>{};
+
+  /// Paths this run has overlaid; all are restored when it ends.
+  final _overlaid = <String>{};
 
   var _stamp = 0;
 
   Future<FileResult?> run() async {
+    Map<String, String>? texts;
     try {
       if (await _converge()) await _recover();
+      texts = await _finalize();
+      // Written while the overlays still hold the same text: removing them
+      // first would have the analyzer re-read the pre-write disk, and every
+      // later file of the library would be judged against stale text.
+      if (texts != null && !dryRun) texts.forEach(_write);
     } finally {
-      // Unconditional: the overlay holds speculative text, so bailing out with
-      // it still installed leaks this file's unverified rewrite into every
-      // file resolved after it in the same context.
-      overlay.removeOverlay(file);
-      context.changeFile(file);
+      // Unconditional: an overlay holds speculative text, so bailing out with
+      // it still installed leaks an unverified rewrite into every file
+      // resolved after it in the same context.
+      for (final path in _overlaid) {
+        overlay.removeOverlay(path);
+        context.changeFile(path);
+      }
       await context.applyPendingFileChanges();
     }
 
-    // No verified set: nothing converts and the file stays untouched.
-    final rewritten = _clean;
-    final converted = rewritten == null ? const <Candidate>[] : _active;
-    if (rewritten != null && !dryRun) {
-      File(file).writeAsStringSync(
-        _orphanCuts.isEmpty
-            ? rewritten.text
-            : _stripRanges(rewritten.text, _orphanCuts),
-      );
-    }
+    // No verified set: nothing converts and the files stay untouched.
+    final converted = texts == null ? const <Candidate>[] : _active;
     if (converted.isEmpty && kept == null) return null;
 
     final done = converted.toSet();
@@ -566,7 +570,9 @@ final class _FileSanitizer({
           '${_lineOf(c.deleteStart)}: ${c.display} -> .${c.memberName}',
       ],
       candidates.length - converted.length + unviable,
-      removedImports: rewritten == null ? 0 : _orphanCuts.length,
+      removedImports: texts == null
+          ? 0
+          : _orphanCuts.values.fold(0, (n, cuts) => n + cuts.length),
       kept: switch (kept) {
         null => const [],
         final kept => _keptLines(original.lineInfo, [
@@ -697,19 +703,56 @@ final class _FileSanitizer({
 
   void _accept(_Attempt a) {
     _clean = a.rewritten;
-    _orphanCuts = _orphanRanges(a.unit, baseline);
+    _orphanCuts = _orphanRanges(a.library, baseline);
   }
+
+  /// The texts to write — [_clean] and every unit losing an orphaned import,
+  /// pruned — or null when nothing converts. Pruning is re-verified: if the
+  /// pruned library gains any diagnostic, nothing in [file] converts.
+  Future<Map<String, String>?> _finalize() async {
+    final clean = _clean;
+    if (clean == null) return null;
+    if (_orphanCuts.isEmpty) return {file: clean.text};
+
+    final texts = {file: clean.text};
+    for (final MapEntry(key: path, value: cuts) in _orphanCuts.entries) {
+      final text = path == file
+          ? clean.text
+          : library.unitWithPath(path)?.content;
+      if (text != null) texts[path] = _stripRanges(text, cuts);
+    }
+    texts.forEach(_overlay);
+    await context.applyPendingFileChanges();
+    final check = await context.currentSession.getResolvedLibraryContaining(
+      file,
+    );
+    final stray = check is ResolvedLibraryResult
+        ? _firstNew(check, (_, _) => false)
+        : null;
+    if (check is ResolvedLibraryResult && stray == null) return texts;
+
+    final leaves = stray == null ? 'an unresolvable library' : _describe(stray);
+    for (final c in _active) {
+      _why[c] = 'pruning its orphaned imports leaves $leaves';
+    }
+    _active = [];
+    return null;
+  }
+
+  void _overlay(String path, String text) {
+    overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
+    _overlaid.add(path);
+    context.changeFile(path);
+  }
+
+  static void _write(String path, String text) =>
+      File(path).writeAsStringSync(text);
 
   /// Rewrites the file with [set] applied and resolves the result, or null if
   /// that text no longer resolves.
   Future<_Attempt?> _attempt(List<Candidate> set) async {
     final rewritten = _apply(set);
-    overlay.setOverlay(
-      file,
-      content: rewritten.text,
-      modificationStamp: ++_stamp,
-    );
-    context.changeFile(file);
+    _overlay(file, rewritten.text);
     await context.applyPendingFileChanges();
     final check = await context.currentSession.getResolvedLibraryContaining(
       file,
@@ -787,23 +830,17 @@ final class _FileSanitizer({
       }
     }
 
-    // Removable import diagnostics are excused: the accepted text gets its
-    // orphans pruned.
+    // Removable import diagnostics are excused in every unit: the accepted
+    // text gets its orphans pruned, and the pruned text is re-verified.
     final stray = culprits.isEmpty
-        ? _firstNew(library, (path, d) => path == file && _isRemovableImport(d))
+        ? _firstNew(library, (_, d) => _isRemovableImport(d))
         : null;
     return _Attempt(
       rewritten,
       library,
       check,
       culprits,
-      stray: stray == null
-          ? null
-          : '${switch (stray.severity) {
-              .error => 'an error',
-              .warning => 'a warning',
-              .info => 'an info',
-            }}: ${_sentence(stray.message)}',
+      stray: stray == null ? null : _describe(stray),
     );
   }
 
@@ -946,6 +983,14 @@ String? _errorOn(ResolvedUnitResult check, int offset, String member) {
   return null;
 }
 
+/// `an error: …`, `a warning: …` or `an info: …` — [d] as a reason clause.
+String _describe(Diagnostic d) =>
+    '${switch (d.severity) {
+      .error => 'an error',
+      .warning => 'a warning',
+      .info => 'an info',
+    }}: ${_sentence(d.message)}';
+
 /// An analyzer message as a reason clause: the closing period dropped.
 String _sentence(String message) =>
     message.endsWith('.') ? message.substring(0, message.length - 1) : message;
@@ -1061,36 +1106,39 @@ bool _isRemovableImport(Diagnostic d) =>
     _removableImportCodes.contains(d.diagnosticCode.lowerCaseName);
 
 /// Directive ranges (each spanning `import … ;` plus its line ending) for
-/// imports the rewrite orphaned — removable-import diagnostics [check] has
-/// more of than [baseline]. Coordinates are [check]'s content, i.e. the
-/// rewritten text about to be written.
-List<(int, int)> _orphanRanges(
-  ResolvedUnitResult check,
+/// imports the rewrite orphaned — removable-import diagnostics a unit of
+/// [check] has more of than [baseline] — keyed by unit path. Coordinates are
+/// each unit's content in [check]: the rewritten text for the edited unit,
+/// the untouched text for every other.
+Map<String, List<(int, int)>> _orphanRanges(
+  ResolvedLibraryResult check,
   Map<_DiagKey, int> baseline,
 ) {
-  final text = check.content;
-  final imports = check.unit.directives.whereType<ImportDirective>().toList();
-  if (imports.isEmpty) return const [];
+  final cuts = <String, List<(int, int)>>{};
+  for (final unit in check.units) {
+    final text = unit.content;
+    final imports = unit.unit.directives.whereType<ImportDirective>().toList();
+    if (imports.isEmpty) continue;
 
-  final counts = <_DiagKey, int>{};
-  final seen = <int>{};
-  final ranges = <(int, int)>[];
-  for (final d in _byPosition(check.diagnostics)) {
-    if (!_isRemovableImport(d)) continue;
-    final key = _keyOf(check.path, d);
-    final count = counts.update(key, (n) => n + 1, ifAbsent: () => 1);
-    if (count <= (baseline[key] ?? 0)) continue;
-    for (final directive in imports) {
-      if (d.offset < directive.offset || d.offset >= directive.end) continue;
-      if (!seen.add(directive.offset)) break;
-      var end = directive.end;
-      if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
-      if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
-      ranges.add((directive.offset, end));
-      break;
+    final counts = <_DiagKey, int>{};
+    final seen = <int>{};
+    for (final d in _byPosition(unit.diagnostics)) {
+      if (!_isRemovableImport(d)) continue;
+      final key = _keyOf(unit.path, d);
+      final count = counts.update(key, (n) => n + 1, ifAbsent: () => 1);
+      if (count <= (baseline[key] ?? 0)) continue;
+      for (final directive in imports) {
+        if (d.offset < directive.offset || d.offset >= directive.end) continue;
+        if (!seen.add(directive.offset)) break;
+        var end = directive.end;
+        if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
+        if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
+        (cuts[unit.path] ??= []).add((directive.offset, end));
+        break;
+      }
     }
   }
-  return ranges;
+  return cuts;
 }
 
 /// Splices [ranges] out of [text] in order.

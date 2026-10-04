@@ -17,6 +17,7 @@ void main() {
   e2e('unused_import_error', unusedImportError);
   e2e('typedef_fixed_args', typedefFixedArgs);
   e2e('static_type_widen', staticTypeWiden);
+  e2e('part_orphan', partOrphan, converted: 1);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -481,6 +482,33 @@ extension BoxDescribe on Box {
 ''',
   'pubspec.yaml': '''
 name: static_type_widen
+environment:
+  sdk: ^3.10.0
+''',
+};
+
+const partOrphan = {
+  'lib/fit.dart': '''
+enum Fit { cover, contain }
+''',
+  'lib/lib.dart': '''
+import 'package:part_orphan/fit.dart';
+import 'package:part_orphan/sink.dart';
+
+part 'lib_part.dart';
+''',
+  'lib/lib_part.dart': '''
+part of 'lib.dart';
+
+void run() => take(Fit.cover);
+''',
+  'lib/sink.dart': '''
+import 'package:part_orphan/fit.dart';
+
+void take(Fit f) => print(f);
+''',
+  'pubspec.yaml': '''
+name: part_orphan
 environment:
   sdk: ^3.10.0
 ''',

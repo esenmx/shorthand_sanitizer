@@ -14,6 +14,8 @@
 - A typedef that fixes type arguments (`typedef IntG = G<int>`) no longer converts: `IntG.of(1)` builds a `G<int>`, while `.of(1)` in a `G<num>` slot builds a `G<num>`. A same-element shorthand must now keep the site's static type, so these sites stay prefixed.
 - A licensed rebind (a const alias or a redirecting-factory forwarder) converts only in a slot typed exactly as the rebind: an argument, a typed declaration, a return, a collection element or a parameter default. A cascade target (`Box.all(1)..log()`) or an assignment (`g = Box.all(2)`) observed the forwarder's wider static type and could dispatch another extension or lose a promotion; these sites now stay prefixed with `rebinds to Geo.all outside a typed slot`.
 - A package with no entry in the package config the analyzer used is skipped with a warning naming its root and asking to run `dart pub get` there (`SanitizeResult.skippedUnconfigured`). Before, a package without `dart pub get`, or an `example/` resolved only through its parent, was analyzed at the analyzer's default or the parent's language version and could be rewritten below the 3.10 floor. The version is never inferred from pubspec text.
+- Rewriting a part now prunes the import it orphans in its library (or another part), and the pruned library is re-verified; if pruning would leave any diagnostic, nothing in that file converts and each site says `pruning its orphaned imports leaves …`. Before, the orphaned import stayed behind as a new `unused_import` warning.
+- A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
 
 # 0.9.0
 
