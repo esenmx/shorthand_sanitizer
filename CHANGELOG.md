@@ -36,6 +36,8 @@
 - A path argument that does not exist, or a file that is not a `.dart` file, is a usage error (exit 64) instead of a silent no-op.
 - An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
 - Windows: an installed `dotsan` (AOT, no `DART_SDK`) crashed looking up `dart` with `which`; it now uses `where` there and takes the first match. When no SDK is found at all, `dotsan` says so and exits 69.
+- Pruning a part's orphaned import never edits a library file the run leaves alone: one that is `--exclude`d, has a generated header, or is not among the given paths. The part's sites stay prefixed instead, with the reason `pruning its orphaned imports would edit lib.dart, which is excluded`. Before, `dotsan lib --exclude=lib/lib.dart` still rewrote `lib/lib.dart`.
+- The report lists every file a run writes. A library pruned for one of its parts now gets its own entry, in text and JSON, with its own `removedImports`. Before, only the part was named, and it carried the library's count.
 - A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
 
 ### Removed

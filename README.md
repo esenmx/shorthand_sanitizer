@@ -87,7 +87,7 @@ dotsan -v
 ```
 
 - `--skip`: Accepts `Type.member` or bare `member` names (comma-separated). `Type` is the declaring type or the spelling at the site (`m.Fit.cover`, a typedef).
-- `--exclude`: Glob pattern matching CWD-relative paths or file basenames (comma-separated). `analyzer: exclude:` in analysis_options.yaml is not honoured — repeat those globs here.
+- `--exclude`: Glob pattern matching CWD-relative paths or file basenames (comma-separated). `analyzer: exclude:` in analysis_options.yaml is not honoured — repeat those globs here. Pruning never edits a file the run leaves alone (excluded, generated or not among the given paths): a part whose conversion would prune an import there stays prefixed.
 - `--explain` (`-e`): After each file's conversions, lists every site left prefixed with its reason. Reasons include `no context type`, `context type Color declares no static red`, `rebinds to Base.a`, the analyzer's own error on the shorthand, and `skip-listed`. Point it at one file — a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed.
 - `--set-exit-if-changed`: Exits 1 if any site converted (or, with `--dry-run`, would convert). Without `--dry-run` the files are still written, as with `dart format`.
 - `--format=json`: Prints the report as one JSON document on stdout (schema below), even on a terminal; warnings stay on stderr.
@@ -107,7 +107,7 @@ dotsan -v
 
 `--format=json` replaces the text report and summary with one document:
 
-- Top level: `dryRun` (bool), `files` (array, in report order), `converted` (int), `kept` (int: explained kept sites, 0 without `--explain`), `skipListed` (int), `removedImports` (int).
+- Top level: `dryRun` (bool), `files` (array, in report order: every file written, or with `--dry-run` that would be, and with `--explain` every file with a kept site), `converted` (int), `kept` (int: explained kept sites, 0 without `--explain`), `skipListed` (int), `removedImports` (int).
 - Each file: `path` (relative to the working directory when inside it, else absolute), `removedImports` (int), `sites` (array).
 - Each site: `line` and `column` (1-based, of the `Type` prefix), `before` (`Type.member` as written), `after` (`.member`, or null when kept), `keptReason` (string, or null when converted).
 - Kept sites are listed only with `--explain`.

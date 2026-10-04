@@ -153,7 +153,8 @@ final class FileResult(
   /// Candidates that failed verification and were left prefixed.
   final int reverted, {
 
-  /// Imports the conversion orphaned and this run pruned (see [Sanitizer]).
+  /// Imports pruned from this file because a conversion — here or in another
+  /// unit of its library — orphaned them (see [Sanitizer]).
   final int removedImports = 0,
 }) {
   /// Creates a result for [path]; [sites] are kept sorted by line, then
@@ -187,8 +188,9 @@ final class FileResult(
 
 /// Aggregate outcome across all files of a run.
 final class SanitizeResult {
-  /// Files with at least one converted site — and, with [Sanitizer.explain],
-  /// every file with a site left prefixed.
+  /// Every file written (or, in a dry run, that would be): one with a
+  /// converted site or a pruned import — and, with [Sanitizer.explain], every
+  /// file with a site left prefixed. One entry per path.
   final List<FileResult> files = [];
 
   /// Sites left prefixed because they matched the skip list.
@@ -325,9 +327,27 @@ final class Sanitizer({
   /// Sanitizes every non-generated `.dart` file under [paths]
   /// (files or directories).
   Future<SanitizeResult> run(List<String> paths) async {
-    final files = _collectFiles(paths);
+    final globs = [for (final e in excludes) Glob(e)];
+    bool isExcluded(String path) {
+      final relative = p.relative(path).replaceAll(p.separator, '/');
+      return globs.any(
+        (g) => g.matches(relative) || g.matches(p.basename(path)),
+      );
+    }
+
+    final files = _collectFiles(paths, isExcluded);
     final result = SanitizeResult();
     if (files.isEmpty) return result;
+
+    // Pruning may edit another unit of a file's library: only one this run
+    // would have processed itself.
+    final scope = files.toSet();
+    String? offLimits(String path) => switch (path) {
+      _ when scope.contains(path) => null,
+      _ when isExcluded(path) => 'excluded',
+      _ when skipGenerated && isGenerated(path) => 'generated',
+      _ => 'not among the given paths',
+    };
 
     final overlay = OverlayResourceProvider(PhysicalResourceProvider.INSTANCE);
     // Roots, not files: the locator spends ~2ms per included path, a second
@@ -359,19 +379,33 @@ final class Sanitizer({
       );
 
     final gate = _PackageGate();
+    // A file pruned for one of its parts may convert sites of its own too.
+    final byPath = <String, FileResult>{};
     for (final file in files) {
       final context = contexts.firstWhere(
         (c) => c.contextRoot.root.isOrContains(file),
       );
-      final fileResult = await _sanitizeFile(
+      for (final r in await _sanitizeFile(
         context,
         overlay,
         file,
         result,
         gate,
-      );
-      if (fileResult != null) result.files.add(fileResult);
+        offLimits,
+      )) {
+        byPath.update(
+          r.path,
+          (prior) => FileResult(
+            r.path,
+            [...prior.sites, ...r.sites],
+            prior.reverted + r.reverted,
+            removedImports: prior.removedImports + r.removedImports,
+          ),
+          ifAbsent: () => r,
+        );
+      }
     }
+    result.files.addAll(byPath.values);
     return result;
   }
 
@@ -401,27 +435,28 @@ final class Sanitizer({
     }
   }
 
-  Future<FileResult?> _sanitizeFile(
+  Future<List<FileResult>> _sanitizeFile(
     AnalysisContext context,
     OverlayResourceProvider overlay,
     String file,
     SanitizeResult result,
     _PackageGate gate,
+    String? Function(String path) offLimits,
   ) async {
     // Without its own package config a package is analyzed as part of
     // whichever one encloses it, at that package's language version.
     final root = gate.rootOf(file);
     if (root != null && !await gate.isConfigured(context, file, root)) {
       result.skippedUnconfigured.update(root, (n) => n + 1, ifAbsent: () => 1);
-      return null;
+      return const [];
     }
 
     final library = await context.currentSession.getResolvedLibraryContaining(
       file,
     );
-    if (library is! ResolvedLibraryResult) return null;
+    if (library is! ResolvedLibraryResult) return const [];
     final original = library.unitWithPath(file);
-    if (original == null) return null;
+    if (original == null) return const [];
 
     // The installed SDK does not decide this — the package's own `environment:
     // sdk:` constraint does. Below the floor every rewrite fails to parse, so
@@ -438,7 +473,7 @@ final class Sanitizer({
         (n) => n + 1,
         ifAbsent: () => 1,
       );
-      return null;
+      return const [];
     }
 
     if (!allowErrors &&
@@ -446,7 +481,7 @@ final class Sanitizer({
           (u) => u.diagnostics.any((d) => d.severity == .error),
         )) {
       result.skippedWithErrors.add(file);
-      return null;
+      return const [];
     }
 
     final collector = _CandidateCollector(original.typeProvider);
@@ -466,13 +501,14 @@ final class Sanitizer({
       }
     }
     if (candidates.isEmpty) {
-      return explain && kept.isNotEmpty
-          ? FileResult(
-              file,
-              _keptSites(original.lineInfo, kept),
-              collector.unviable.length,
-            )
-          : null;
+      return [
+        if (explain && kept.isNotEmpty)
+          FileResult(
+            file,
+            _keptSites(original.lineInfo, kept),
+            collector.unviable.length,
+          ),
+      ];
     }
 
     return await _FileSanitizer(
@@ -485,6 +521,7 @@ final class Sanitizer({
       unviable: collector.unviable.length,
       kept: explain ? kept : null,
       dryRun: dryRun,
+      offLimits: offLimits,
     ).run();
   }
 
@@ -497,21 +534,15 @@ final class Sanitizer({
           skips.contains('${c.containerName}.${c.memberName}'));
 
   /// Canonical paths of the files under [paths], each once, sorted.
-  List<String> _collectFiles(List<String> paths) {
-    final globs = [for (final e in excludes) Glob(e)];
-    bool isExcludedPath(String path) {
-      final relative = p
-          .relative(_canonical(path))
-          .replaceAll(p.separator, '/');
-      final base = p.basename(path);
-      return globs.any((g) => g.matches(relative) || g.matches(base));
-    }
-
+  List<String> _collectFiles(
+    List<String> paths,
+    bool Function(String path) isExcluded,
+  ) {
     final files = <String>{};
     for (final rootPath in paths) {
       if (FileSystemEntity.isFileSync(rootPath)) {
         if (rootPath.endsWith('.dart') &&
-            !isExcludedPath(rootPath) &&
+            !isExcluded(_canonical(rootPath)) &&
             (!skipGenerated || !isGenerated(rootPath))) {
           files.add(_canonical(rootPath));
         }
@@ -535,7 +566,7 @@ final class Sanitizer({
             if (base.startsWith('.') || base == 'build') continue;
             dirQueue.add(entity);
           } else if (entity is File && entity.path.endsWith('.dart')) {
-            if (isExcludedPath(entity.path)) continue;
+            if (isExcluded(_canonical(entity.path))) continue;
             if (skipGenerated && isGenerated(entity.path)) continue;
             files.add(_canonical(entity.path));
           }
@@ -611,6 +642,9 @@ final class _FileSanitizer({
   required final bool dryRun,
   required final ResolvedLibraryResult library,
   required final ResolvedUnitResult original,
+
+  /// Why this run must not write a path, or null when it may.
+  required final String? Function(String path) offLimits,
 }) {
   final String content = original.content;
 
@@ -638,7 +672,7 @@ final class _FileSanitizer({
 
   var _stamp = 0;
 
-  Future<FileResult?> run() async {
+  Future<List<FileResult>> run() async {
     Map<String, String>? texts;
     try {
       if (await _converge()) await _recover();
@@ -660,36 +694,41 @@ final class _FileSanitizer({
 
     // No verified set: nothing converts and the files stay untouched.
     final converted = texts == null ? const <Candidate>[] : _active;
-    if (converted.isEmpty && kept == null) return null;
-
+    final cuts = texts == null
+        ? const <String, List<(int, int)>>{}
+        : _orphanCuts;
     final done = converted.toSet();
-    return FileResult(
-      file,
-      [
-        for (final c in converted)
-          _siteAt(
-            original.lineInfo,
-            c.deleteStart,
-            c.display,
-            after: '.${c.memberName}',
-          ),
-        if (kept case final kept?)
-          ..._keptSites(original.lineInfo, [
-            ...kept,
-            for (final c in candidates)
-              if (!done.contains(c))
-                (
-                  offset: c.deleteStart,
-                  display: c.display,
-                  reason: _why[c] ?? _unverified,
-                ),
-          ]),
-      ],
-      candidates.length - converted.length + unviable,
-      removedImports: texts == null
-          ? 0
-          : _orphanCuts.values.fold(0, (n, cuts) => n + cuts.length),
-    );
+    return [
+      if (converted.isNotEmpty || kept != null)
+        FileResult(
+          file,
+          [
+            for (final c in converted)
+              _siteAt(
+                original.lineInfo,
+                c.deleteStart,
+                c.display,
+                after: '.${c.memberName}',
+              ),
+            if (kept case final kept?)
+              ..._keptSites(original.lineInfo, [
+                ...kept,
+                for (final c in candidates)
+                  if (!done.contains(c))
+                    (
+                      offset: c.deleteStart,
+                      display: c.display,
+                      reason: _why[c] ?? _unverified,
+                    ),
+              ]),
+          ],
+          candidates.length - converted.length + unviable,
+          removedImports: cuts[file]?.length ?? 0,
+        ),
+      for (final MapEntry(key: path, value: pruned) in cuts.entries)
+        if (path != file)
+          FileResult(path, const [], 0, removedImports: pruned.length),
+    ];
   }
 
   /// Narrows [_active] to a set that verifies clean, if one exists. Returns
@@ -817,6 +856,16 @@ final class _FileSanitizer({
     if (clean == null) return null;
     if (_orphanCuts.isEmpty) return {file: clean.text};
 
+    for (final path in _orphanCuts.keys.where((other) => other != file)) {
+      if (offLimits(path) case final why?) {
+        final shown = p.relative(path, from: p.dirname(file));
+        _refuseAll(
+          'pruning its orphaned imports would edit $shown, which is $why',
+        );
+        return null;
+      }
+    }
+
     final texts = {file: clean.text};
     for (final MapEntry(key: path, value: cuts) in _orphanCuts.entries) {
       final text = path == file
@@ -835,11 +884,16 @@ final class _FileSanitizer({
     if (check is ResolvedLibraryResult && stray == null) return texts;
 
     final leaves = stray == null ? 'an unresolvable library' : _describe(stray);
+    _refuseAll('pruning its orphaned imports leaves $leaves');
+    return null;
+  }
+
+  /// Gives up on every active candidate, each kept for [reason].
+  void _refuseAll(String reason) {
     for (final c in _active) {
-      _why[c] = 'pruning its orphaned imports leaves $leaves';
+      _why[c] = reason;
     }
     _active = [];
-    return null;
   }
 
   void _overlay(String path, String text) {
