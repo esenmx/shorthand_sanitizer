@@ -13,7 +13,7 @@ updated: 2026-10-03
 - [x] Phase 3: Language-version gate
 - [x] Phase 4: Library-scoped pruning and write ordering
 - [x] Phase 5: Engine and CLI hygiene
-- [ ] Phase 6: `--set-exit-if-changed` and `--format=json`
+- [x] Phase 6: `--set-exit-if-changed` and `--format=json`
 - [ ] Phase 7: CI, dependency safety net, Windows SDK discovery
 - [ ] Phase 8: Docs, skill, repo meta, packaging
 - [ ] Phase 9: Release 0.10.0
@@ -830,6 +830,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - Phase 5: SS-S3's default skip would have hollowed out e2e `masked_error` (its `lib/use.dart` carries a deliberate error), the same reason the plan gives for SS-B3. `e2e()` gained `{bool allowErrors = false}`, and `masked_error` passes `allowErrors: true`.
 - Phase 5: `sanitizer_test.dart` "static method on prefixed-imported class converts" had an accidental error in its fixture (`const p.Scaler ts = p.Scaler.scale(5);`, a static call in a const initializer), so SS-S3 now skipped it. Its fixture and expectation now use `final`; the conversion it pins is unchanged.
 - Phase 5: `Glob('[')` throws `SourceSpanFormatException`, a `FormatException`, so `on FormatException` catches it. The `--version prints the pubspec version` pin replaces the old source-regex test; it cannot go red while both read 0.9.0. SS-B7's third case (40 licence lines, then the marker) went red on the 1024-byte head read. e2e `battery` stays at 69. Oracle 71/71 green.
+- Phase 6: the `--explain` CLI test now builds its fixture through the shared `explainFixture()` helper that SS-G1/SS-G3 use; its expected output is unchanged. `FileResult` sorts `sites` in a body field initialised from the primary-constructor parameter of the same name, which SDK 3.13.4 accepts. The README JSON schema and exit codes land in Phase 8 (the Phase 6 file list has no README). Oracle 75/75 green.
 
 ## Execution prompt
 

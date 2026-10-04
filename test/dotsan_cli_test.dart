@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -29,33 +30,8 @@ void main() {
   tearDownAll(() => pkg.deleteSync(recursive: true));
 
   test('--explain lists kept sites after the converted ones', () {
-    final explained = Directory.systemTemp.createTempSync('dotsan_explain');
-    addTearDown(() => explained.deleteSync(recursive: true));
-    Directory(p.join(explained.path, 'lib')).createSync();
-    const spec = 'name: explain_fixture\nenvironment:\n  sdk: ^3.10.0\n';
-    File(p.join(explained.path, 'pubspec.yaml')).writeAsStringSync(spec);
-    final file = File(p.join(explained.path, 'lib', 'main.dart'))
-      ..writeAsStringSync('''
-enum Fit { cover, contain }
-void main() {
-  final untyped = Fit.contain;
-  Fit f = Fit.cover;
-  print([f, untyped]);
-}
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: explained.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-
-    final run = Process.runSync('dart', [
-      'run',
-      'bin/dotsan.dart',
-      '--dry-run',
-      '--explain',
-      p.join(explained.path, 'lib'),
-    ]);
+    final file = explainFixture();
+    final run = dotsan(['--dry-run', '--explain', file.parent.path]);
     expect(run.exitCode, 0, reason: '${run.stderr}');
     expect(
       run.stdout,
@@ -86,6 +62,68 @@ void main() {
       '${p.join(root, 'pubspec.yaml')} (or drop a `// @dart=` override); the '
       'installed SDK does not decide this.\n',
     );
+  });
+
+  group('SS-G1 --set-exit-if-changed', () {
+    test('a dry run that would convert exits 1 and writes nothing', () {
+      final file = explainFixture();
+      final before = file.readAsStringSync();
+      final run = dotsan(['-n', '--set-exit-if-changed', file.parent.path]);
+      expect(run.exitCode, 1, reason: '${run.stderr}');
+      expect(file.readAsStringSync(), before);
+    });
+
+    test('a run with nothing to convert exits 0', () {
+      final run = dotsan([
+        '-n',
+        '--set-exit-if-changed',
+        p.join(pkg.path, 'lib'),
+      ]);
+      expect(run.exitCode, 0, reason: '${run.stderr}');
+    });
+
+    test('a real run exits 1 and still writes', () {
+      final file = explainFixture();
+      final run = dotsan(['--set-exit-if-changed', file.parent.path]);
+      expect(run.exitCode, 1, reason: '${run.stderr}');
+      expect(file.readAsStringSync(), contains('Fit f = .cover;'));
+    });
+  });
+
+  test('SS-G3 --format=json prints the report as one JSON document', () {
+    final file = explainFixture();
+    final run = dotsan(['-n', '--explain', '--format=json', file.parent.path]);
+    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(run.stderr, isEmpty);
+    expect(jsonDecode(run.stdout as String), {
+      'dryRun': true,
+      'converted': 1,
+      'kept': 1,
+      'skipListed': 0,
+      'removedImports': 0,
+      'files': [
+        {
+          'path': p.normalize(p.absolute(file.path)),
+          'removedImports': 0,
+          'sites': [
+            {
+              'line': 3,
+              'column': 19,
+              'before': 'Fit.contain',
+              'after': null,
+              'keptReason': 'no context type',
+            },
+            {
+              'line': 4,
+              'column': 11,
+              'before': 'Fit.cover',
+              'after': '.cover',
+              'keptReason': null,
+            },
+          ],
+        },
+      ],
+    });
   });
 
   test('SS-B10 a path that does not exist is an error, not a no-op', () {
@@ -137,6 +175,31 @@ void main() {
     expect(version, isNotNull);
     expect(dotsan(['--version']).stdout, 'dotsan $version\n');
   });
+}
+
+/// A fresh `^3.10.0` package whose `lib/main.dart` has one convertible site
+/// (line 4) and one without a context type (line 3); returns that file.
+File explainFixture() {
+  final dir = Directory.systemTemp.createTempSync('dotsan_explain');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  Directory(p.join(dir.path, 'lib')).createSync();
+  const spec = 'name: explain_fixture\nenvironment:\n  sdk: ^3.10.0\n';
+  File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync(spec);
+  final file = File(p.join(dir.path, 'lib', 'main.dart'))
+    ..writeAsStringSync('''
+enum Fit { cover, contain }
+void main() {
+  final untyped = Fit.contain;
+  Fit f = Fit.cover;
+  print([f, untyped]);
+}
+''');
+  final get = Process.runSync('dart', [
+    'pub',
+    'get',
+  ], workingDirectory: dir.path);
+  if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+  return file;
 }
 
 ProcessResult dotsan(List<String> args) =>
