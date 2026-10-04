@@ -11,7 +11,7 @@ updated: 2026-10-03
 - [x] Phase 1: Diagnostic oracle
 - [x] Phase 2: Element and static-type identity
 - [x] Phase 3: Language-version gate
-- [ ] Phase 4: Library-scoped pruning and write ordering
+- [x] Phase 4: Library-scoped pruning and write ordering
 - [ ] Phase 5: Engine and CLI hygiene
 - [ ] Phase 6: `--set-exit-if-changed` and `--format=json`
 - [ ] Phase 7: CI, dependency safety net, Windows SDK discovery
@@ -826,6 +826,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - Phase 1: e2e `battery` measured 69 on 0.9.0 code before the change and 69 after; oracle 53/53 tests green.
 - Phase 2: SS-I5 "last two sentences" read as the static-type claim after the signature sentence ("The invocation's own static type widens … context type."); the signature sentence stays, since it still holds. e2e `battery` stays at 69; oracle 58/58 green.
 - Phase 3: both SS-B4 tests went red first on behaviour (file rewritten below the floor), before `skippedUnconfigured` existed. The `<root>/pubspec.yaml` in the floor warning is `p.join(_display(root), 'pubspec.yaml')`, so native separators. Oracle 60/60 green.
+- Phase 4: e2e `part_orphan` passed vacuously before the fix (the part was refused, so nothing changed), so it is pinned at `converted: 1` to go red first (0 vs 1). `_finalize` also refuses when the pruned library no longer resolves, with the reason `pruning its orphaned imports leaves an unresolvable library`. Oracle 63/63 green.
 
 ## Execution prompt
 

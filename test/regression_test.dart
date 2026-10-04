@@ -180,6 +180,28 @@ void run() => take(Fit.cover);
     },
   );
 
+  test('SS-B5 rewriting a part prunes the import it orphans', () async {
+    write(pkg, 'lib/po_fit.dart', 'enum Fit { cover, contain }\n');
+    write(
+      pkg,
+      'lib/po_sink.dart',
+      "import 'po_fit.dart';\nvoid take(Fit f) {}\n",
+    );
+    final lib = write(
+      pkg,
+      'lib/po_lib.dart',
+      "import 'po_fit.dart';\nimport 'po_sink.dart';\npart 'po_part.dart';\n",
+    );
+    final part = write(
+      pkg,
+      'lib/po_part.dart',
+      "part of 'po_lib.dart';\nvoid run() => take(Fit.cover);\n",
+    );
+    await Sanitizer().run([lib.path, part.path]);
+    expect(part.readAsStringSync(), contains('take(.cover)'));
+    expect(analyze(pkg, 'po_lib.dart'), isNot(contains('UNUSED_IMPORT')));
+  });
+
   test('SS-B6 a rebind onto a @Deprecated alias stays prefixed', () async {
     final dep = makePackage(
       'geo_pkg',
@@ -215,5 +237,29 @@ void run() {
 ''');
     await Sanitizer().run([file.path]);
     expect(analyze(app, 'use.dart'), isNot(contains('DEPRECATED_MEMBER_USE')));
+  });
+
+  test("SS-S4 a library sees its part's earlier write", () async {
+    write(pkg, 'lib/s4_fit.dart', 'enum Fit { cover, contain }\n');
+    write(
+      pkg,
+      'lib/s4_sink.dart',
+      "import 's4_fit.dart';\nvoid take(Fit f) {}\n",
+    );
+    final part = write(
+      pkg,
+      'lib/a_s4_part.dart',
+      "part of 'z_s4_lib.dart';\nvoid run() => take(Fit.cover);\n",
+    );
+    final lib = write(
+      pkg,
+      'lib/z_s4_lib.dart',
+      "import 's4_fit.dart';\nimport 's4_sink.dart';\npart 'a_s4_part.dart';\n"
+          'void own() => take(Fit.contain);\n',
+    );
+    await Sanitizer().run([part.path, lib.path]);
+    expect(part.readAsStringSync(), contains('take(.cover)'));
+    expect(lib.readAsStringSync(), contains('take(.contain)'));
+    expect(analyze(pkg, 'z_s4_lib.dart'), isNot(contains('UNUSED_IMPORT')));
   });
 }
