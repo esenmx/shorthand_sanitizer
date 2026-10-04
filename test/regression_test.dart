@@ -79,6 +79,34 @@ extension BoxTag on Box {
 }
 ''';
 
+/// A part whose two sites orphan both of its library's imports of
+/// `<tag>_fit.dart`; returns the library and the part.
+(File, File) partPrune(String tag, {String header = ''}) {
+  write(pkg, 'lib/${tag}_fit.dart', 'enum Fit { cover }\nenum Mode { a }\n');
+  write(
+    pkg,
+    'lib/${tag}_sink.dart',
+    "import '${tag}_fit.dart';\n"
+        'void take(Fit f) {}\nvoid takeMode(Mode m) {}\n',
+  );
+  final lib = write(
+    pkg,
+    'lib/${tag}_lib.dart',
+    "${header}import '${tag}_fit.dart' as f;\n"
+        "import '${tag}_fit.dart' show Mode;\n"
+        "import '${tag}_sink.dart';\n"
+        "export '${tag}_fit.dart';\n"
+        "part '${tag}_part.dart';\n",
+  );
+  final part = write(
+    pkg,
+    'lib/${tag}_part.dart',
+    "part of '${tag}_lib.dart';\n"
+        'void runPart() {\n  take(f.Fit.cover);\n  takeMode(Mode.a);\n}\n',
+  );
+  return (lib, part);
+}
+
 void main() {
   setUpAll(() {
     pkg = makePackage('shared', 'name: sweep\nenvironment:\n  sdk: ^3.10.0\n');
@@ -430,38 +458,6 @@ void run() {
   });
 
   group('SS-R3 pruning a part', () {
-    /// A part whose two sites orphan both of its library's imports of
-    /// `<tag>_fit.dart`; returns the library and the part.
-    (File, File) partPrune(String tag, {String header = ''}) {
-      write(
-        pkg,
-        'lib/${tag}_fit.dart',
-        'enum Fit { cover }\nenum Mode { a }\n',
-      );
-      write(
-        pkg,
-        'lib/${tag}_sink.dart',
-        "import '${tag}_fit.dart';\n"
-            'void take(Fit f) {}\nvoid takeMode(Mode m) {}\n',
-      );
-      final lib = write(
-        pkg,
-        'lib/${tag}_lib.dart',
-        "${header}import '${tag}_fit.dart' as f;\n"
-            "import '${tag}_fit.dart' show Mode;\n"
-            "import '${tag}_sink.dart';\n"
-            "export '${tag}_fit.dart';\n"
-            "part '${tag}_part.dart';\n",
-      );
-      final part = write(
-        pkg,
-        'lib/${tag}_part.dart',
-        "part of '${tag}_lib.dart';\n"
-            'void runPart() {\n  take(f.Fit.cover);\n  takeMode(Mode.a);\n}\n',
-      );
-      return (lib, part);
-    }
-
     for (final (tag, why, header, excluded, onlyPart) in [
       ('r3x', 'excluded', '', true, false),
       (
@@ -503,4 +499,18 @@ void run() {
       expect(result.convertedCount, 2);
     });
   });
+
+  test('SS-R4 a read-only unit leaves its whole library unchanged', () async {
+    final (lib, part) = partPrune('r4');
+    final libBefore = lib.readAsStringSync();
+    final partBefore = part.readAsStringSync();
+    Process.runSync('chmod', ['444', lib.path]);
+    addTearDown(() => Process.runSync('chmod', ['644', lib.path]));
+
+    final result = await Sanitizer().run([lib.path, part.path]);
+    expect(part.readAsStringSync(), partBefore);
+    expect(lib.readAsStringSync(), libBefore);
+    expect(result.convertedCount, 0);
+    expect(result.writeFailures.single.path, p.normalize(p.absolute(lib.path)));
+  }, testOn: '!windows');
 }

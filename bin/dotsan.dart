@@ -190,6 +190,12 @@ Future<void> main(List<String> args) async {
       stderr.writeln('  ${_display(path)}');
     }
   }
+  for (final (:file, :path, :error) in result.writeFailures) {
+    stderr.writeln(
+      '${ansi.red}error:${ansi.none} could not write ${_display(path)} '
+      '($error), so ${_display(file)} was not converted.',
+    );
+  }
   if (json) {
     stdout.writeln(
       const JsonEncoder.withIndent('  ').convert(_json(result, dryRun)),
@@ -212,6 +218,7 @@ Future<void> main(List<String> args) async {
   if (opts.flag('set-exit-if-changed') && result.convertedCount > 0) {
     exitCode = 1;
   }
+  if (result.writeFailures.isNotEmpty) exitCode = 74;
 }
 
 /// The `--format=json` document; its schema is in the README.
