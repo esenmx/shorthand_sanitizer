@@ -21,6 +21,7 @@ void main() {
   e2e('display_collision', displayCollision);
   e2e('vft_warning', vftWarning);
   e2e('duplicate_info', duplicateInfo);
+  e2e('use_result', useResult);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -651,6 +652,74 @@ void run() => take(Box.all(v: 2));
 ''',
   'pubspec.yaml': '''
 name: duplicate_info
+environment:
+  sdk: ^3.10.0
+dependencies:
+  geo_pkg:
+    path: geo_pkg
+''',
+};
+
+// `dart analyze` reports `unused_result` on a shorthand of a `@useResult`
+// member even where its value is used; the bundled analyzer does not.
+const useResult = {
+  'bin/main.dart': '''
+import 'package:geo_pkg/geo.dart';
+
+Geo ret(int x) => Geo.make(x);
+
+Geo block(int x) {
+  return Geo.named(x);
+}
+
+void main(List<String> args) {
+  final x = args.length;
+  use(Geo.make(x));
+  use(Geo.named(x));
+  use(Geo.origin);
+  final Geo g = Geo.make(x);
+  use(g);
+  use(pass(Geo.make(x)));
+  final list = <Geo>[Geo.make(x)];
+  use(list.first);
+  use(ret(x));
+  use(block(x));
+  use(Box.res(x));
+}
+''',
+  'geo_pkg/lib/geo.dart': r'''
+import 'package:meta/meta.dart';
+
+class Geo {
+  const Geo(this.v);
+  final int v;
+  @useResult
+  static Geo make(int v) => Geo(v);
+  @useResult
+  factory Geo.named(int v) => Geo(v);
+  @useResult
+  static Geo get origin => const Geo(0);
+  @useResult
+  const factory Geo.res(int v) = Box.res;
+}
+
+class Box extends Geo {
+  const Box.res(super.v);
+}
+
+void use(Geo g) => print('use ${g.v} ${g.runtimeType}');
+Geo pass(Geo g) => g;
+''',
+  'geo_pkg/pubspec.yaml': '''
+name: geo_pkg
+environment:
+  sdk: ^3.10.0
+dependencies:
+  meta: ^1.16.0
+''',
+  'lib/.keep': '',
+  'pubspec.yaml': '''
+name: use_result
 environment:
   sdk: ^3.10.0
 dependencies:
