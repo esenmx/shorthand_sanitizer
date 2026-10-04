@@ -156,7 +156,9 @@ String f() {
   });
 
   test('SS-B3 a new error matching a baseline message is not masked', () async {
-    // allowErrors: by default the pre-existing error skips the whole file.
+    // The cascade is refused by the typed-slot rule before the multiset check
+    // runs; e2e `duplicate_info` pins the multiset. allowErrors only keeps
+    // the pre-existing error from skipping the file.
     final out = await sanitize('''
 import 'geo.dart';
 void pre(Geo g) => g.boxOnly(); // pre-existing error, same message
