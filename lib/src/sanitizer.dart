@@ -531,6 +531,7 @@ final class Sanitizer({
       dryRun: dryRun,
       offLimits: offLimits,
       result: result,
+      packageRootOf: gate.rootOf,
     ).run();
   }
 
@@ -666,6 +667,7 @@ final class _FileSanitizer({
   required final ResolvedUnitResult original,
   required final String? Function(String path) offLimits,
   required final SanitizeResult result,
+  required final String? Function(String path) packageRootOf,
 }) {
   final String content = original.content;
 
@@ -1060,7 +1062,10 @@ final class _FileSanitizer({
         final inSlot =
             candidate.typedSlot != null &&
             candidate.typedSlot == resolved.staticType;
-        final gained = resolved.restrictions.difference(candidate.restrictions);
+        final gained = resolved.restrictions
+            .difference(candidate.restrictions)
+            .where((r) => !_mayUse(r, resolved, selfUri))
+            .toList();
         if (!licensed || !inSlot || gained.isNotEmpty) {
           culprits.add(candidate);
           _why[candidate] = switch ((licensed, inSlot)) {
@@ -1106,6 +1111,27 @@ final class _FileSanitizer({
       }
     }
     return null;
+  }
+
+  /// Whether [file] may use a member restricted by [annotation], as the SDK
+  /// analyzer rules it: `@internal` within its own package,
+  /// `@visibleForTesting` in its declaring library or under the package's
+  /// `test/`. Every other restriction stays a refusal.
+  bool _mayUse(String annotation, _ResolvedShorthand target, String selfUri) {
+    final root = packageRootOf(file);
+    return switch (annotation) {
+      '@internal' => switch ((root, target.libraryPath)) {
+        (final root?, final path?) => switch (packageRootOf(path)) {
+          final other? => _real(other) == _real(root),
+          null => false,
+        },
+        _ => false,
+      },
+      '@visibleForTesting' =>
+        target.libraryUri == selfUri ||
+            (root != null && p.isWithin(p.join(root, 'test'), file)),
+      _ => false,
+    };
   }
 
   /// Whether a rebind landed on a `static const` **alias** of the original —
@@ -1274,6 +1300,7 @@ final class _ResolvedShorthand(
   final String? shownType,
   final Set<String> restrictions = const {},
   final bool useResult = false,
+  final String? libraryPath,
 }) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
@@ -1536,6 +1563,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       shownType: type?.getDisplayString(),
       restrictions: _restrictionsOf(element),
       useResult: _holdersOf(element).any((e) => e.metadata.hasUseResult),
+      libraryPath: element?.library?.firstFragment.source.fullName,
     );
   }
 
