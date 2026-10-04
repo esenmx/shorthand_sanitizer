@@ -28,14 +28,14 @@ updated: 2026-10-03
   - [x] R2-SS-2: README CI platforms (Linux and Windows in CI; macOS locally)
   - [x] R2-SS-3: skill install hint with `--agent`
 - [x] Re-run format, analyze, `dart test`, the downgrade leg and pana over both rounds
-- [ ] Review round 3 (coordinator, 4896513..83a3670). New commits, commit only:
+- [x] Review round 3 (coordinator, 4896513..83a3670). New commits, commit only:
   - [x] R3-SS-1: refuse shorthands of `@useResult` members (e2e)
   - [x] R3-SS-3: key a generic function type's own type parameters by position, with bounds; readable kept reasons
   - [x] R3-SS-4: compare real (symlink-resolved) paths for scope, dedupe and excludes
   - [x] R3-SS-5: allow same-package `@internal` and test-scope `@visibleForTesting` rebinds
   - [x] R3-SS-2 + R3-SS-6: write-failure scope wording, `Sanitizer.run` API change, CHANGELOG history
-  - [ ] Append the two deferred SWEEP.md rows
-  - [ ] Re-run format, analyze, `dart test`, downgrade, pana; 5-package corpus comparison against `/tmp/dotsan_exe_review3`
+  - [x] Append the two deferred SWEEP.md rows
+  - [x] Re-run format, analyze, `dart test`, downgrade, pana; 5-package corpus comparison against `/tmp/dotsan_exe_review3`
 - [ ] Phase 9: Release 0.10.0
 
 ## Problem
@@ -872,6 +872,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - R3-SS-4: scope, dedupe and exclude membership now compare real paths (`_real`, `resolveSymbolicLinksSync`), while reports keep the path as given. One root cause explains both the false "not among the given paths" (a `/tmp/…` argument next to a cwd-relative one) and the reviewer's pre-existing `--exclude` miss through a symlink, since the glob's relative path is now taken from real path to real cwd. Red first: library test `R3-SS-4` converted 0 where it should convert 2; the CLI test listed `…/dotsan_alias…/pkg/lib/main.dart` despite `--exclude=lib/main.dart`. The reviewer's `paths/c` command now converts both sites and prunes the library. Suite 92/92 green.
 - R3-SS-5: `_mayUse` drops a gained restriction the SDK analyzer would allow. `@internal` is allowed when the site's package root and the target library's root match (real paths). `@visibleForTesting` is allowed when the site is the declaring library or sits under its package's `test/`. Everything else stays refused. The e2e harness gained a `roots:` option so `test/` is sanitized. Red first: e2e `restrict_scope` (`converted: 2`) converted 0. Its cross-package `@internal` and its `lib/` use of `@visibleForTesting` stay prefixed, and `vft_warning` and `SS-R2` stay green. Suite 93/93 green.
 - R3-SS-2: R-SS-4's "nothing of that library is written" overclaimed. What is all-or-nothing is one file's conversion plus the imports it prunes (the reviewer's `mg_ro`: a read-only `z_part.dart` exits 74, while `lib.dart` and `a_part.dart`, converted earlier, stay written). README's exit-code row, the `writeFailures` dartdoc and the CHANGELOG now say exactly that. `Sanitizer.run` returning normally instead of throwing is listed under `### Breaking`. R3-SS-6: the CHANGELOG "Before, …" clauses describing states that never shipped are dropped (the R-SS-3 exclude case, the R-SS-5 position swap, the part-then-library write failure). The report line moved to `### Changed` and now says `files` entries may carry only pruned imports (`sites: []`). Docs only; no test can go red.
+- Round 3 re-verified on `ffe2ffd`: format reported 0 changed; analyze reported no issues; 93/93 tests passed on the upgrade resolve and 93/93 on the downgrade resolve (analyzer 14.0.0, package_config 2.2.0). pana scored 160/160, and `dart pub publish --dry-run` reported 0 warnings. Corpus check: a dry run with `--explain --format=json` over fresh `git archive HEAD` copies (rand 0ada121, fluiver f719c8c, mapkit_flutter c6ed4da, material_async_button fdf3dd7, collection_notifiers 766fc28) produced identical JSON from HEAD and from `/tmp/dotsan_exe_review3` (83a3670). Converted/kept/removedImports: 35/510/0, 11/126/1, 16/133/2, 12/178/0, 7/51/0. None of the five has a `@useResult` site. The two deferred SWEEP.md rows (R3-SS-n1, R3-SS-n2) are appended.
 
 ## Execution prompt
 
