@@ -858,6 +858,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - R2-SS-2 resolves a conflict between two plan texts. Phase 8 dictated "Runs on macOS, Linux and Windows (all three in CI)", while the Phase 7 `ci.yaml` runs only ubuntu and windows. The README now reads "Linux and Windows in CI; macOS locally"; `ci.yaml` is unchanged.
 - R2-SS-3: the plan's install line `dart run skills@ get --package shorthand_sanitizer --all` auto-detects the agent, so in a project with no agent directory yet it prints "Could not auto-detect agent", exits 0 and installs nothing. README and CHANGELOG now show `--agent claude` with a note. This matches the Phase 8 oracle, which already passed `--agent claude`.
 - Both review rounds re-verified on `1cb272d`: format reported 0 changed; analyze reported no issues; 88/88 tests passed on the upgrade resolve and 88/88 on the downgrade resolve (analyzer 14.0.0, package_config 2.2.0). pana scored 160/160, and `dart pub publish --dry-run` reported 0 warnings.
+- For Phase 9: the CHANGELOG line numbers in step 2 ("lines 1, 9, 13, …, 65") are stale, because `## Unreleased` has grown. Match `^# x.y.z` by pattern instead. The two judgment calls from round 1 that are open to veto are exit code 74 for a write failure, and `@Deprecated`/`@experimental` among the `_restrictionsOf` annotations.
 
 ## Execution prompt
 
