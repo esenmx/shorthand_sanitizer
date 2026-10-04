@@ -19,7 +19,7 @@
 - A file whose library already has an error-severity diagnostic is skipped by default and listed on stderr (`SanitizeResult.skippedWithErrors`): verification cannot tell a rewrite's damage apart inside code that does not compile. Pass `--allow-errors` to process it anyway.
 - `--skip=Type.member` also matches the declaring type, so `--skip=Fit.cover` keeps `m.Fit.cover` (an import prefix) and `Mode.cover` (a typedef of `Fit`) prefixed too.
 - Report file lines show the path relative to the working directory when the file is inside it, else absolute (`FileResult.path` stays absolute).
-- The agent skill directory is renamed to `skills/shorthand-sanitizer-dotsan/` (skill name `shorthand-sanitizer-dotsan`). Install it with `dart run skills@ get --package shorthand_sanitizer --all`.
+- The agent skill directory is renamed to `skills/shorthand-sanitizer-dotsan/` (skill name `shorthand-sanitizer-dotsan`). Install it with `dart run skills@ get --package shorthand_sanitizer --agent claude --all` (name your agent with `--agent`; without it, a project with no agent directory yet gets nothing installed).
 
 ### Fixed
 
