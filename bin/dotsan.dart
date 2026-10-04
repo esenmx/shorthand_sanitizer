@@ -126,6 +126,14 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  if (sdkPath() == null) {
+    stderr.writeln(
+      'could not locate the Dart SDK: set DART_SDK to its directory',
+    );
+    exitCode = 69;
+    return;
+  }
+
   final dryRun = opts.flag('dry-run');
   final json = opts.option('format') == 'json';
   // Piped stdout is the parseable report; the non-ANSI Progress fallback

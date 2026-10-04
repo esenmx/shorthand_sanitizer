@@ -32,6 +32,7 @@
 - Overlapping path arguments (`lib lib lib/.`, or a file inside a directory also given) process each file once.
 - A path argument that does not exist, or a file that is not a `.dart` file, is a usage error (exit 64) instead of a silent no-op.
 - An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
+- Windows: an installed `dotsan` (AOT, no `DART_SDK`) crashed looking up `dart` with `which`; it now uses `where` there and takes the first match. When no SDK is found at all, `dotsan` says so and exits 69.
 - A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
 
 # 0.9.0

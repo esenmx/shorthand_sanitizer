@@ -167,6 +167,33 @@ void main() {
     expect(run.stdout, startsWith('${p.join('lib', 'main.dart')}\n'));
   });
 
+  test('SS-S1 an AOT build finds the SDK on PATH without DART_SDK', () {
+    final file = explainFixture();
+    final out = Directory.systemTemp.createTempSync('dotsan_aot');
+    addTearDown(() => out.deleteSync(recursive: true));
+    final exe = p.join(out.path, Platform.isWindows ? 'dotsan.exe' : 'dotsan');
+    final compile = Process.runSync(Platform.resolvedExecutable, [
+      'compile',
+      'exe',
+      'bin/dotsan.dart',
+      '-o',
+      exe,
+    ]);
+    if (compile.exitCode != 0) {
+      throw StateError('compile failed: ${compile.stderr}');
+    }
+
+    final run = Process.runSync(
+      exe,
+      ['-n', file.parent.path],
+      environment: {...Platform.environment}..remove('DART_SDK'),
+      includeParentEnvironment: false,
+    );
+    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(run.stdout, endsWith('would convert 1 site(s) in 1 file(s)\n'));
+    expect(run.stderr, isNot(contains('Exception')));
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
   test('--version prints the pubspec version', () {
     final version = RegExp(
       r'^version:\s*(\S+)',
