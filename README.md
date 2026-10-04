@@ -1,9 +1,8 @@
 # shorthand_sanitizer
 
-[![pub package](https://img.shields.io/pub/v/shorthand_sanitizer.svg)](https://pub.dev/packages/shorthand_sanitizer)
-[![Dart SDK](https://img.shields.io/badge/Dart-3.10%2B-blue.svg)](https://dart.dev)
+[![pub package](https://img.shields.io/pub/v/shorthand_sanitizer.svg)](https://pub.dev/packages/shorthand_sanitizer) [![pub points](https://img.shields.io/pub/points/shorthand_sanitizer)](https://pub.dev/packages/shorthand_sanitizer/score) [![CI](https://github.com/esenmx/shorthand_sanitizer/actions/workflows/ci.yaml/badge.svg)](https://github.com/esenmx/shorthand_sanitizer/actions/workflows/ci.yaml) [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A safe, automated codemod for Dart 3.10+ [dot shorthands](https://dart.dev/language/dot-shorthands). Rewrites `Type.member` to `.member` across your entire Flutter or Dart project, then automatically cleans up any imports orphaned by dropping the prefixes.
+Rewrites `Type.member` to [dot shorthand](https://dart.dev/language/dot-shorthands) `.member` across a whole Dart or Flutter project, checking every site by re-resolving it, then prunes the imports the dropped prefixes orphaned. Dart's IDE assist *Convert to dot shorthand* does one site at a time; dotsan does the project in one verified run. Rewrites packages at language version 3.10+; dotsan itself needs Dart 3.13+.
 
 ```dart
 // Before
@@ -29,11 +28,7 @@ return Padding(
 
 ---
 
-## Installation
-
-### AOT Native Binary (Default & Recommended)
-
-`dart install` compiles `dotsan` into a standalone native executable. Replaces Dart VM startup (~160 ms) with instant native execution (~20 ms):
+## Install
 
 ```bash
 dart install shorthand_sanitizer
@@ -41,17 +36,7 @@ dart install shorthand_sanitizer
 
 Re-run it to upgrade; `dart uninstall shorthand_sanitizer` removes it. Ensure its bin directory is in your `PATH` (`~/Library/Application Support/Dart/install/bin` on macOS, `~/.local/state/Dart/install/bin` on Linux — `$XDG_STATE_HOME/Dart/install/bin` if set — `%LOCALAPPDATA%\Dart\install\bin` on Windows).
 
-> Installed with the old recipe that compiled into `~/.pub-cache/bin`? Run `rm ~/.pub-cache/bin/dotsan` first. Pub reads every file in its bin directory as a text stub, so a native binary there makes every `dart pub global activate`/`deactivate` — for any package — fail with `Failed to decode data using encoding 'utf-8'`.
-
-### Standard VM Installation
-
-If you prefer standard global activation without native compilation:
-
-```bash
-dart pub global activate shorthand_sanitizer
-```
-
-Ensure your pub cache bin directory is in your `PATH` (`~/.pub-cache/bin` on macOS/Linux, `%LOCALAPPDATA%\Pub\Cache\bin` on Windows).
+Alternative: `dart pub global activate shorthand_sanitizer`.
 
 ---
 
@@ -88,14 +73,64 @@ dotsan --include-generated
 # Why did a site stay prefixed?
 dotsan lib/page.dart -n --explain
 
+# CI gate: exit 1 if any site would still convert
+dotsan -n --set-exit-if-changed
+
+# Machine-readable report
+dotsan lib -n --format=json
+
+# Also rewrite files whose library already has analysis errors
+dotsan --allow-errors
+
 # Show version (-h for full options)
 dotsan -v
 ```
 
-- `--skip`: Accepts `Type.member` or bare `member` names (comma-separated).
+- `--skip`: Accepts `Type.member` or bare `member` names (comma-separated). `Type` is the declaring type or the spelling at the site (`m.Fit.cover`, a typedef).
 - `--exclude`: Glob pattern matching CWD-relative paths or file basenames (comma-separated). `analyzer: exclude:` in analysis_options.yaml is not honoured — repeat those globs here.
 - `--explain` (`-e`): After each file's conversions, lists every site left prefixed with its reason. Reasons include `no context type`, `context type Color declares no static red`, `rebinds to Base.a`, the analyzer's own error on the shorthand, and `skip-listed`. Point it at one file — a Flutter app keeps thousands of `Theme.of(context)`-style sites prefixed.
+- `--set-exit-if-changed`: Exits 1 if any site converted (or, with `--dry-run`, would convert). Without `--dry-run` the files are still written, as with `dart format`.
+- `--format=json`: Prints the report as one JSON document on stdout (schema below), even on a terminal; warnings stay on stderr.
+- `--allow-errors`: A file whose library already has an analysis error is skipped by default and listed on stderr, since verification cannot tell a rewrite's damage apart inside code that does not compile. This flag processes it anyway.
 - **Generated Files**: Automatically detected and skipped by their header comment (e.g., `build_runner`, `firebase_options.dart`, pigeon, protoc, and slang outputs), while handwritten files like `page.preview.dart` are processed normally.
+
+### Exit codes
+
+| Code | Meaning |
+| :--- | :--- |
+| `0` | Success. |
+| `1` | `--set-exit-if-changed` and at least one site converted or would convert. Files are still written, as with `dart format`. |
+| `64` | Usage error: bad option, invalid glob, missing or non-`.dart` path, no default root. |
+| `69` | Dart SDK not found; set `DART_SDK` to its directory. |
+
+### JSON report
+
+`--format=json` replaces the text report and summary with one document:
+
+- Top level: `dryRun` (bool), `files` (array, in report order), `converted` (int), `kept` (int: explained kept sites, 0 without `--explain`), `skipListed` (int), `removedImports` (int).
+- Each file: `path` (relative to the working directory when inside it, else absolute), `removedImports` (int), `sites` (array).
+- Each site: `line` and `column` (1-based, of the `Type` prefix), `before` (`Type.member` as written), `after` (`.member`, or null when kept), `keptReason` (string, or null when converted).
+- Kept sites are listed only with `--explain`.
+
+```json
+{
+  "dryRun": true,
+  "converted": 1,
+  "kept": 1,
+  "skipListed": 0,
+  "removedImports": 0,
+  "files": [
+    {
+      "path": "lib/main.dart",
+      "removedImports": 0,
+      "sites": [
+        {"line": 3, "column": 19, "before": "Fit.contain", "after": null, "keptReason": "no context type"},
+        {"line": 4, "column": 11, "before": "Fit.cover", "after": ".cover", "keptReason": null}
+      ]
+    }
+  ]
+}
+```
 
 ---
 
@@ -116,8 +151,8 @@ dotsan -v
 | **Named constructors** | `EdgeInsets.all(16)` | `.all(16)` |
 | **Factory constructors** | `BorderRadius.circular(8)` | `.circular(8)` |
 | **Static getters & fields** | `Duration.zero` | `.zero` |
-| **Const aliases** | `Alignment.topCenter` | `.topCenter` |
-| **Redirecting-factory forwarders** | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
+| **Const aliases** in a slot of exactly that type | `Alignment.topCenter` | `.topCenter` |
+| **Redirecting-factory forwarders** in a slot of exactly that type | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
 
 ### Intentionally Stays Prefixed
 
@@ -138,6 +173,10 @@ final l = Fit.values;
 
 // Unnamed constructors (.new) are not rewritten
 Text('Hello');
+
+final G<num> g = IntG.of(1); // typedef IntG = G<int> fixes the type argument
+
+final Geo a = Box.all(1)..log(); // the cascade observes the rebind's type
 ```
 
 ---
@@ -161,4 +200,26 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
 ## Requirements
 
 - Target packages need language version ≥ **3.10**; packages below it, or with no package config (run `dart pub get`), are skipped with a warning naming the package.
-- Compatible with Dart & Flutter projects on macOS, Linux, and Windows.
+- Runs on macOS, Linux and Windows (all three in CI).
+
+---
+
+## Agent skill
+
+This package ships an agent skill in `skills/shorthand-sanitizer-dotsan/`. Install it into your project's agent config with:
+
+```sh
+dart run skills@ get --package shorthand_sanitizer --all
+```
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
