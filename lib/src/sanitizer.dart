@@ -647,7 +647,6 @@ final class _FileSanitizer({
   required final bool dryRun,
   required final ResolvedLibraryResult library,
   required final ResolvedUnitResult original,
-
   required final String? Function(String path) offLimits,
   required final SanitizeResult result,
 }) {
@@ -1772,11 +1771,11 @@ final class _Viability(final TypeProvider typeProvider) {
         'static $member';
   }
 
-  /// The slot type of [site] when a licensed rebind may land there: an
+  /// The `_typeKey` of [site]'s slot when a licensed rebind may land there: an
   /// argument, a typed declaration, a return, a collection element or a
   /// parameter default whose context type is an interface type, reached only
   /// through wrappers that pass the value on unobserved ([_isTransparent]).
-  /// Displayed without one trailing `?`: a nullable slot types the shorthand
+  /// Keyed without one trailing `?`: a nullable slot types the shorthand
   /// as its non-null class. Null elsewhere — a cascade target, an assignment
   /// or an inferred declaration observes the shorthand's own static type.
   String? typedSlotOf(Expression site) {
