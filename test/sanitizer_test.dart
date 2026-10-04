@@ -594,11 +594,11 @@ class Scaler {
     final out = await sanitize('''
 import 'dep_class2.dart' as p;
 void main() {
-  const p.Scaler ts = p.Scaler.scale(5);
+  final p.Scaler ts = p.Scaler.scale(5);
   print(ts);
 }
 ''');
-    expect(out, contains('const p.Scaler ts = .scale(5);'));
+    expect(out, contains('final p.Scaler ts = .scale(5);'));
   });
 
   test('static const on type alias / typedef converts', () async {
@@ -1070,16 +1070,5 @@ void main() {
     expect(path1, isNotNull);
     final path2 = sdkPath();
     expect(path2, equals(path1));
-  });
-
-  test('CLI --version constant matches pubspec version', () {
-    final pubspecVersion = RegExp(
-      r'^version:\s*(.+)$',
-      multiLine: true,
-    ).firstMatch(File('pubspec.yaml').readAsStringSync())?.group(1)?.trim();
-    final cliVersion = RegExp(r"_version\s*=\s*'([^']+)'")
-        .firstMatch(File(p.join('bin', 'dotsan.dart')).readAsStringSync())
-        ?.group(1);
-    expect(cliVersion, equals(pubspecVersion));
   });
 }

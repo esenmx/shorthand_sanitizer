@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:cli_util/cli_logging.dart';
+import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
@@ -41,6 +42,11 @@ ArgParser _buildParser() {
       'include-generated',
       negatable: false,
       help: 'Also rewrite generated-marked files.',
+    )
+    ..addFlag(
+      'allow-errors',
+      negatable: false,
+      help: 'Also rewrite files whose library already has analysis errors.',
     )
     ..addFlag(
       'explain',
@@ -84,6 +90,21 @@ Future<void> main(List<String> args) async {
     return;
   }
 
+  final usageErrors = [
+    for (final path in opts.rest)
+      switch (FileSystemEntity.typeSync(path)) {
+        .notFound => 'no such file or directory: $path',
+        .file when !path.endsWith('.dart') => 'not a .dart file: $path',
+        _ => null,
+      },
+    for (final pattern in opts.multiOption('exclude')) _globError(pattern),
+  ].nonNulls.toList();
+  if (usageErrors.isNotEmpty) {
+    usageErrors.forEach(stderr.writeln);
+    exitCode = 64;
+    return;
+  }
+
   final paths = [...opts.rest];
   if (paths.isEmpty) {
     paths.addAll(_defaultRoots.where((d) => Directory(d).existsSync()));
@@ -105,10 +126,11 @@ Future<void> main(List<String> args) async {
     dryRun: dryRun,
     skipGenerated: !opts.flag('include-generated'),
     explain: opts.flag('explain'),
+    allowErrors: opts.flag('allow-errors'),
   ).run(paths);
   progress?.finish(showTiming: true);
   for (final file in result.files) {
-    stdout.writeln(file.path);
+    stdout.writeln(_display(file.path));
     for (final line in [...file.converted, ...file.kept]) {
       stdout.writeln('  $line');
     }
@@ -134,6 +156,16 @@ Future<void> main(List<String> args) async {
       'first.',
     );
   }
+  if (result.skippedWithErrors.isNotEmpty) {
+    stderr.writeln(
+      '${ansi.yellow}warning:${ansi.none} skipped '
+      '${result.skippedWithErrors.length} file(s) whose library already has '
+      'analysis errors (fix them or pass --allow-errors):',
+    );
+    for (final path in result.skippedWithErrors) {
+      stderr.writeln('  ${_display(path)}');
+    }
+  }
   final changed = result.files.where((f) => f.converted.isNotEmpty).length;
   final kept = result.keptCount;
   final skipped = result.skippedByList;
@@ -146,6 +178,16 @@ Future<void> main(List<String> args) async {
     '${skipped > 0 ? ', $skipped skip-listed' : ''}'
     '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
   );
+}
+
+/// Why [pattern] is not a valid `--exclude` glob, or null when it is.
+String? _globError(String pattern) {
+  try {
+    Glob(pattern);
+    return null;
+  } on FormatException catch (e) {
+    return 'invalid --exclude glob "$pattern": ${e.message}';
+  }
 }
 
 /// [path] relative to the working directory when inside it (`.` for the

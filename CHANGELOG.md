@@ -3,10 +3,18 @@
 ### Breaking
 
 - `SanitizeResult.skippedBelowFloor` is keyed by `({String root, String version})`: the package root (the file's directory when no `pubspec.yaml` encloses it) and the `major.minor` language version.
+- `Candidate` is no longer exported; it was an internal detail of the AST pass.
+
+### Added
+
+- `--allow-errors` (`Sanitizer(allowErrors: true)`) also rewrites files whose library already has analysis errors.
 
 ### Changed
 
 - The below-floor warning names the package root and its `pubspec.yaml`, one line per package and version, and mentions a `// @dart=` override as the other cause.
+- A file whose library already has an error-severity diagnostic is skipped by default and listed on stderr (`SanitizeResult.skippedWithErrors`): verification cannot tell a rewrite's damage apart inside code that does not compile. Pass `--allow-errors` to process it anyway.
+- `--skip=Type.member` also matches the declaring type, so `--skip=Fit.cover` keeps `m.Fit.cover` (an import prefix) and `Mode.cover` (a typedef of `Fit`) prefixed too.
+- Report file lines show the path relative to the working directory when the file is inside it, else absolute (`FileResult.path` stays absolute).
 
 ### Fixed
 
@@ -15,6 +23,11 @@
 - A licensed rebind (a const alias or a redirecting-factory forwarder) converts only in a slot typed exactly as the rebind: an argument, a typed declaration, a return, a collection element or a parameter default. A cascade target (`Box.all(1)..log()`) or an assignment (`g = Box.all(2)`) observed the forwarder's wider static type and could dispatch another extension or lose a promotion; these sites now stay prefixed with `rebinds to Geo.all outside a typed slot`.
 - A package with no entry in the package config the analyzer used is skipped with a warning naming its root and asking to run `dart pub get` there (`SanitizeResult.skippedUnconfigured`). Before, a package without `dart pub get`, or an `example/` resolved only through its parent, was analyzed at the analyzer's default or the parent's language version and could be rewritten below the 3.10 floor. The version is never inferred from pubspec text.
 - Rewriting a part now prunes the import it orphans in its library (or another part), and the pruned library is re-verified; if pruning would leave any diagnostic, nothing in that file converts and each site says `pruning its orphaned imports leaves …`. Before, the orphaned import stayed behind as a new `unused_import` warning.
+- Generated-file detection skips a leading UTF-8 BOM, reads `/* … */` block-comment banners, and reads a banner of any length; before, it only looked at the first 1024 bytes of `//` lines.
+- A rewrite keeps the file's UTF-8 BOM, in every unit it writes.
+- Overlapping path arguments (`lib lib lib/.`, or a file inside a directory also given) process each file once.
+- A path argument that does not exist, or a file that is not a `.dart` file, is a usage error (exit 64) instead of a silent no-op.
+- An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
 - A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
 
 # 0.9.0

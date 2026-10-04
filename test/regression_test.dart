@@ -1,5 +1,6 @@
 // Sweep 2026-10-03 regressions, keyed by finding ID (`SS-<ID>` in each test
 // name). Each one failed on 0.9.0.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -28,9 +29,13 @@ File write(Directory dir, String rel, String source) =>
       ..parent.createSync(recursive: true)
       ..writeAsStringSync(source);
 
-Future<String> sanitize(String source, {Set<String> skips = const {}}) async {
+Future<String> sanitize(
+  String source, {
+  Set<String> skips = const {},
+  bool allowErrors = false,
+}) async {
   final file = write(pkg, 'lib/case_${fileId++}.dart', source);
-  await Sanitizer(skips: skips).run([file.path]);
+  await Sanitizer(skips: skips, allowErrors: allowErrors).run([file.path]);
   return file.readAsStringSync();
 }
 
@@ -117,11 +122,12 @@ String f() {
   });
 
   test('SS-B3 a new error matching a baseline message is not masked', () async {
+    // allowErrors: by default the pre-existing error skips the whole file.
     final out = await sanitize('''
 import 'geo.dart';
 void pre(Geo g) => g.boxOnly(); // pre-existing error, same message
 final Geo fresh = Box.all(1)..boxOnly();
-''');
+''', allowErrors: true);
     expect(out, contains('Box.all(1)..boxOnly()'));
   });
 
@@ -261,5 +267,100 @@ void run() {
     expect(part.readAsStringSync(), contains('take(.cover)'));
     expect(lib.readAsStringSync(), contains('take(.contain)'));
     expect(analyze(pkg, 'z_s4_lib.dart'), isNot(contains('UNUSED_IMPORT')));
+  });
+
+  test(
+    'SS-I1 --skip=Type.member also covers prefixed and aliased spellings',
+    () async {
+      write(pkg, 'lib/sk_fit.dart', '''
+enum Fit { cover, contain }
+typedef Mode = Fit;
+void take(Fit f) {}
+''');
+      final out = await sanitize(
+        '''
+import 'sk_fit.dart' as m;
+import 'sk_fit.dart';
+void a() => take(Fit.cover);
+void b() => m.take(m.Fit.cover);
+void c() => take(Mode.cover);
+''',
+        skips: {'Fit.cover'},
+      );
+      expect(out, contains('take(Fit.cover)'));
+      expect(out, contains('m.Fit.cover'));
+      expect(out, contains('Mode.cover'));
+    },
+  );
+
+  test('SS-B7 generated header behind a BOM, in a block comment, or late', () {
+    final bom = write(pkg, 'lib/bom.g.dart', '')
+      ..writeAsBytesSync([
+        0xEF,
+        0xBB,
+        0xBF,
+        ...utf8.encode('// GENERATED CODE - DO NOT MODIFY BY HAND\n'),
+      ]);
+    final block = write(
+      pkg,
+      'lib/block.g.dart',
+      '/* GENERATED CODE - DO NOT MODIFY BY HAND */\n',
+    );
+    final deep = write(
+      pkg,
+      'lib/late.g.dart',
+      '${'// Licensed under the Apache License, Version 2.0.\n' * 40}'
+          '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
+    );
+    expect(Sanitizer.isGenerated(bom.path), isTrue);
+    expect(Sanitizer.isGenerated(block.path), isTrue);
+    expect(Sanitizer.isGenerated(deep.path), isTrue);
+  });
+
+  test('SS-B8 a rewrite keeps the UTF-8 BOM and CRLF line endings', () async {
+    final file = write(pkg, 'lib/bom_keep.dart', '')
+      ..writeAsBytesSync([
+        0xEF,
+        0xBB,
+        0xBF,
+        ...utf8.encode(
+          'enum Fit { cover, contain }\r\nvoid t(Fit f) {}\r\n'
+          'void r() => t(Fit.cover);\r\n',
+        ),
+      ]);
+    await Sanitizer().run([file.path]);
+    final bytes = file.readAsBytesSync();
+    expect(bytes.take(3), [0xEF, 0xBB, 0xBF]);
+    expect(
+      utf8.decode(bytes.skip(3).toList()),
+      'enum Fit { cover, contain }\r\nvoid t(Fit f) {}\r\n'
+      'void r() => t(.cover);\r\n',
+    );
+  });
+
+  test('SS-B9 overlapping path arguments are processed once', () async {
+    final dir = Directory(p.join(pkg.path, 'lib', 'dup'))..createSync();
+    write(pkg, 'lib/dup/a.dart', '''
+enum Fit { cover, contain }
+void t(Fit f) {}
+void r() => t(Fit.cover);
+''');
+    final result = await Sanitizer(dryRun: true)
+        .run([dir.path, dir.path, '${dir.path}/.']);
+    expect(result.convertedCount, 1);
+    expect(result.files, hasLength(1));
+  });
+
+  test('SS-S3 a library with analysis errors is skipped by default', () async {
+    const source =
+        'enum Fit { cover }\nvoid t(Fit f) {}\nvoid r() => t(Fit.cover);\n'
+        "int bad = '';\n";
+    final file = write(pkg, 'lib/s3_errors.dart', source);
+    final result = await Sanitizer().run([file.path]);
+    expect(file.readAsStringSync(), source);
+    expect(result.skippedWithErrors, [p.normalize(p.absolute(file.path))]);
+
+    await Sanitizer(allowErrors: true).run([file.path]);
+    expect(file.readAsStringSync(), contains('t(.cover)'));
   });
 }

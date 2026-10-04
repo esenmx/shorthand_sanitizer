@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:analyzer/dart/analysis/analysis_context.dart';
@@ -142,6 +143,10 @@ final class SanitizeResult {
   /// analyzer used; run `dart pub get` in `root`.
   final Map<String, int> skippedUnconfigured = {};
 
+  /// Files skipped whole because their library already has an error-severity
+  /// diagnostic, as canonical paths; see [Sanitizer.allowErrors].
+  final List<String> skippedWithErrors = [];
+
   /// Total converted sites.
   int get convertedCount => files.fold(0, (n, f) => n + f.converted.length);
 
@@ -186,8 +191,8 @@ final class Sanitizer({
   /// `Type.member` or bare `member` names that must stay prefixed.
   final Set<String> skips = const {},
 
-  /// Glob patterns of files to leave alone — matched against the
-  /// CWD-relative path when the pattern contains `/`, else the basename
+  /// Glob patterns of files to leave alone. Each glob is matched against
+  /// both the CWD-relative path (`/` separators) and the basename
   /// (`firebase_options.dart`, `**/legacy/**`).
   final List<String> excludes = const [],
 
@@ -200,6 +205,11 @@ final class Sanitizer({
   /// Also report every site left prefixed, with the reason
   /// ([FileResult.kept]).
   final bool explain = false,
+
+  /// Also rewrite files whose library already has an error-severity
+  /// diagnostic; otherwise they are listed in
+  /// [SanitizeResult.skippedWithErrors] and left alone.
+  final bool allowErrors = false,
 }) {
   /// Creates a sanitizer; see [run].
   this;
@@ -217,27 +227,35 @@ final class Sanitizer({
   /// FlutterFire, pigeon, protoc, slang). Filename shape (`*.g.dart` vs a
   /// handwritten `*.preview.dart`) proves nothing, the header does.
   ///
-  /// Scanning stops at the first line that is neither blank nor a comment: a
-  /// generator writes its marker in the banner, so a comment sitting below the
-  /// first declaration is ordinary prose no matter what it says. The marker
-  /// matches `generated`/`auto-generated`, never the bare stem — that would
-  /// flag a handwritten header merely noting that something *regenerates* and
-  /// silently skip the whole file.
+  /// Scanning stops at the first line that is neither blank nor a comment
+  /// (`//`, `#`, or a `/* … */` block): a generator writes its marker in the
+  /// banner, so a comment sitting below the first declaration is ordinary
+  /// prose no matter what it says. A leading BOM is skipped, and a banner of
+  /// any length is read whole. The marker matches `generated`/`auto-generated`,
+  /// never the bare stem — that would flag a handwritten header merely noting
+  /// that something *regenerates* and silently skip the whole file.
   static bool isGenerated(String path) {
     final file = File(path);
     if (!file.existsSync()) return false;
-    final raf = file.openSync();
-    final String head;
-    try {
-      head = .fromCharCodes(raf.readSync(1024));
-    } finally {
-      raf.closeSync();
-    }
-    for (final line in head.split('\n')) {
+    final raw = utf8.decode(file.readAsBytesSync(), allowMalformed: true);
+    final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
+    var inBlock = false;
+    for (final line in text.split('\n')) {
       final trimmed = line.trim();
-      if (trimmed.isEmpty) continue;
-      if (!trimmed.startsWith('//') && !trimmed.startsWith('#')) return false;
+      final opens = !inBlock && trimmed.startsWith('/*');
+      if (!inBlock &&
+          !opens &&
+          trimmed.isNotEmpty &&
+          !trimmed.startsWith('//') &&
+          !trimmed.startsWith('#')) {
+        return false;
+      }
       if (_generatedMarker.hasMatch(trimmed)) return true;
+      if (opens) {
+        inBlock = !trimmed.substring(2).contains('*/');
+      } else if (inBlock) {
+        inBlock = !trimmed.contains('*/');
+      }
     }
     return false;
   }
@@ -254,8 +272,12 @@ final class Sanitizer({
     // per 500 files. An `analyzer: exclude:` in the package's options then
     // hides those files from `contextFor`, so contexts are picked by root
     // below — every collected file is analyzed, as before.
+    final roots = paths.map(_canonical).toSet();
     final collection = AnalysisContextCollectionImpl(
-      includedPaths: paths.map(_canonical).toSet().toList(),
+      includedPaths: [
+        for (final root in roots)
+          if (!roots.any((other) => p.isWithin(other, root))) root,
+      ],
       resourceProvider: overlay,
       sdkPath: sdkPath(),
       byteStore: _byteStore(),
@@ -275,7 +297,7 @@ final class Sanitizer({
       );
 
     final gate = _PackageGate();
-    for (final file in files.map(_canonical)) {
+    for (final file in files) {
       final context = contexts.firstWhere(
         (c) => c.contextRoot.root.isOrContains(file),
       );
@@ -357,12 +379,20 @@ final class Sanitizer({
       return null;
     }
 
+    if (!allowErrors &&
+        library.units.any(
+          (u) => u.diagnostics.any((d) => d.severity == .error),
+        )) {
+      result.skippedWithErrors.add(file);
+      return null;
+    }
+
     final collector = _CandidateCollector(original.typeProvider);
     original.unit.accept(collector);
     final candidates = <Candidate>[];
     final kept = [...collector.unviable];
     for (final c in collector.candidates) {
-      if (skips.contains(c.display) || skips.contains(c.memberName)) {
+      if (_isSkipped(c)) {
         result.skippedByList++;
         kept.add((
           offset: c.deleteStart,
@@ -397,6 +427,15 @@ final class Sanitizer({
     ).run();
   }
 
+  /// [c] as written, by its declaring type (`m.Fit.cover` and a typedef's
+  /// `Mode.cover` both match `Fit.cover`), or by its bare member name.
+  bool _isSkipped(Candidate c) =>
+      skips.contains(c.display) ||
+      skips.contains(c.memberName) ||
+      (c.containerName != null &&
+          skips.contains('${c.containerName}.${c.memberName}'));
+
+  /// Canonical paths of the files under [paths], each once, sorted.
   List<String> _collectFiles(List<String> paths) {
     final globs = [for (final e in excludes) Glob(e)];
     bool isExcludedPath(String path) {
@@ -407,13 +446,13 @@ final class Sanitizer({
       return globs.any((g) => g.matches(relative) || g.matches(base));
     }
 
-    final files = <String>[];
+    final files = <String>{};
     for (final rootPath in paths) {
       if (FileSystemEntity.isFileSync(rootPath)) {
         if (rootPath.endsWith('.dart') &&
             !isExcludedPath(rootPath) &&
             (!skipGenerated || !isGenerated(rootPath))) {
-          files.add(rootPath);
+          files.add(_canonical(rootPath));
         }
         continue;
       }
@@ -437,12 +476,12 @@ final class Sanitizer({
           } else if (entity is File && entity.path.endsWith('.dart')) {
             if (isExcludedPath(entity.path)) continue;
             if (skipGenerated && isGenerated(entity.path)) continue;
-            files.add(entity.path);
+            files.add(_canonical(entity.path));
           }
         }
       }
     }
-    return files..sort();
+    return files.toList()..sort();
   }
 }
 
@@ -745,8 +784,24 @@ final class _FileSanitizer({
     context.changeFile(path);
   }
 
-  static void _write(String path, String text) =>
-      File(path).writeAsStringSync(text);
+  /// The analyzer's content carries no BOM; one the file had is kept.
+  static void _write(String path, String text) {
+    final file = File(path);
+    file.writeAsStringSync(_hasBom(file) ? '\uFEFF$text' : text);
+  }
+
+  static bool _hasBom(File file) {
+    final raf = file.openSync();
+    try {
+      final head = raf.readSync(3);
+      return head.length == 3 &&
+          head[0] == 0xEF &&
+          head[1] == 0xBB &&
+          head[2] == 0xBF;
+    } finally {
+      raf.closeSync();
+    }
+  }
 
   /// Rewrites the file with [set] applied and resolves the result, or null if
   /// that text no longer resolves.

@@ -10,7 +10,7 @@ import 'package:test/test.dart';
 
 void main() {
   e2e('battery', battery, converted: 69);
-  e2e('masked_error', maskedError);
+  e2e('masked_error', maskedError, allowErrors: true);
   e2e('deprecated_alias', deprecatedAlias);
   e2e('neg_zero_alias', negZeroAlias);
   e2e('doc_ref_import', docRefImport);
@@ -23,8 +23,14 @@ void main() {
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
 /// to its root; a `.keep` entry makes an empty directory). The run must add
 /// no `dart analyze` diagnostic, leave `bin/main.dart`'s output unchanged and,
-/// when given, convert exactly [converted] sites.
-void e2e(String name, Map<String, String> files, {int? converted}) {
+/// when given, convert exactly [converted] sites. [allowErrors] keeps a
+/// fixture with a deliberate error from being skipped whole.
+void e2e(
+  String name,
+  Map<String, String> files, {
+  int? converted,
+  bool allowErrors = false,
+}) {
   test('e2e $name', () async {
     final root = Directory.systemTemp.createTempSync('dotsan_e2e_');
     addTearDown(() => root.deleteSync(recursive: true));
@@ -55,7 +61,7 @@ void e2e(String name, Map<String, String> files, {int? converted}) {
 
     final diagnosticsBefore = _diagnostics(root);
     final runBefore = _run(root);
-    final result = await Sanitizer().run([
+    final result = await Sanitizer(allowErrors: allowErrors).run([
       for (final dir in ['lib', 'bin'])
         if (Directory(p.join(root.path, dir)).existsSync())
           p.join(root.path, dir),
