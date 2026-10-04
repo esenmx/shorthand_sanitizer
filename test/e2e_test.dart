@@ -19,6 +19,7 @@ void main() {
   e2e('static_type_widen', staticTypeWiden);
   e2e('part_orphan', partOrphan, converted: 1);
   e2e('display_collision', displayCollision);
+  e2e('vft_warning', vftWarning);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -564,5 +565,52 @@ class G<T> {
 name: dc
 environment:
   sdk: ^3.10.0
+''',
+};
+
+// The forwarder and the alias are @visibleForTesting; the originals are not.
+const vftWarning = {
+  'bin/main.dart': '''
+import 'package:geo_pkg/geo.dart';
+
+void use(Geo g) => print(g.runtimeType);
+
+void main() {
+  use(Box.all(1));
+  use(Box.zero);
+}
+''',
+  'geo_pkg/lib/geo.dart': '''
+import 'package:meta/meta.dart';
+
+class Geo {
+  const Geo();
+  @visibleForTesting
+  const factory Geo.all(int v) = Box.all;
+  @visibleForTesting
+  static const Geo zero = Box.zero;
+}
+
+class Box extends Geo {
+  const Box.all(this.v);
+  final int v;
+  static const Box zero = Box.all(0);
+}
+''',
+  'geo_pkg/pubspec.yaml': '''
+name: geo_pkg
+environment:
+  sdk: ^3.10.0
+dependencies:
+  meta: ^1.15.0
+''',
+  'lib/.keep': '',
+  'pubspec.yaml': '''
+name: vft
+environment:
+  sdk: ^3.10.0
+dependencies:
+  geo_pkg:
+    path: geo_pkg
 ''',
 };
