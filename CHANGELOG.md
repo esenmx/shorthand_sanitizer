@@ -5,6 +5,7 @@
 - `SanitizeResult.skippedBelowFloor` is keyed by `({String root, String version})`: the package root (the file's directory when no `pubspec.yaml` encloses it) and the `major.minor` language version.
 - `Candidate` is no longer exported; it was an internal detail of the AST pass.
 - `FileResult(path, sites, reverted, {removedImports})` takes a list of `Site`s; `converted` and `kept` are now getters derived from them and return the same strings as before.
+- `Sanitizer.run` no longer throws when a file cannot be written. The conversion that needed it is dropped and recorded in `SanitizeResult.writeFailures`, which library callers must now check; the CLI exits 74.
 
 ### Added
 
@@ -19,6 +20,7 @@
 - A file whose library already has an error-severity diagnostic is skipped by default and listed on stderr (`SanitizeResult.skippedWithErrors`): verification cannot tell a rewrite's damage apart inside code that does not compile. Pass `--allow-errors` to process it anyway.
 - `--skip=Type.member` also matches the declaring type, so `--skip=Fit.cover` keeps `m.Fit.cover` (an import prefix) and `Mode.cover` (a typedef of `Fit`) prefixed too.
 - Report file lines show the path relative to the working directory when the file is inside it, else absolute (`FileResult.path` stays absolute).
+- The report lists every file a run writes. A library pruned for one of its parts gets its own entry, in text and JSON, with its own `removedImports`, and with `sites: []` when it has no conversion of its own. `SanitizeResult.files` therefore no longer lists only files with a conversion, as 0.9.0's did.
 - The agent skill directory is renamed to `skills/shorthand-sanitizer-dotsan/` (skill name `shorthand-sanitizer-dotsan`). Install it with `dart run skills@ get --package shorthand_sanitizer --agent claude --all` (name your agent with `--agent`; without it, a project with no agent directory yet gets nothing installed).
 
 ### Fixed
@@ -38,10 +40,9 @@
 - A path argument that does not exist, or a file that is not a `.dart` file, is a usage error (exit 64) instead of a silent no-op.
 - An invalid `--exclude` glob is a usage error (exit 64) instead of an unhandled exception.
 - Windows: an installed `dotsan` (AOT, no `DART_SDK`) crashed looking up `dart` with `which`; it now uses `where` there and takes the first match. When no SDK is found at all, `dotsan` says so and exits 69.
-- Pruning a part's orphaned import never edits a library file the run leaves alone: one that is `--exclude`d, has a generated header, or is not among the given paths. The part's sites stay prefixed instead, with the reason `pruning its orphaned imports would edit lib.dart, which is excluded`. Before, `dotsan lib --exclude=lib/lib.dart` still rewrote `lib/lib.dart`.
-- The report lists every file a run writes. A library pruned for one of its parts now gets its own entry, in text and JSON, with its own `removedImports`. Before, only the part was named, and it carried the library's count.
-- A file `dotsan` cannot write (a read-only library unit, for example) is an error on stderr with exit code 74, and nothing of that library is written. Every target is checked as writable before the first write. Before, the part was rewritten, then an unhandled `PathAccessException` left its library with two new `unused_import` warnings. Library: `SanitizeResult.writeFailures`.
-- With two imports of the same URI, pruning now removes the one the rewrite orphaned and keeps the one you had already left unused. Before, it went by position, so it deleted `import 'fit.dart' as keep_me;` and kept the now-unused `import 'fit.dart' show Mode;`.
+- Pruning a part's orphaned import never edits a library file the run leaves alone: one that is `--exclude`d, has a generated header, or is not among the given paths. The part's sites stay prefixed instead, with the reason `pruning its orphaned imports would edit lib.dart, which is excluded`.
+- A file `dotsan` cannot write (read-only, for example) is an error on stderr with exit code 74 instead of an unhandled `PathAccessException` that aborted the run. Each file's conversion, together with the imports it prunes elsewhere in its library, is written all or nothing: every target is checked as writable before the first write. Files converted earlier in the run, even in the same library, stay written. Library: `SanitizeResult.writeFailures`.
+- With two imports of the same URI, pruning removes the one the rewrite orphaned and keeps the one you had already left unused.
 - A library processed after one of its parts now sees the part's rewritten text. Each file is written while its overlay still holds the same text, so the analyzer no longer re-reads the pre-write disk and leaves an orphaned import behind in the library.
 
 ### Removed
