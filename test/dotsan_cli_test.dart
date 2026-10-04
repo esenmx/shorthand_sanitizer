@@ -46,12 +46,7 @@ void main() {
     // Full-string equality is the oracle: piped stdout is the parseable
     // report, so no progress/spinner text and no ANSI codes may leak into
     // either stream when they are not terminals.
-    final run = Process.runSync('dart', [
-      'run',
-      'bin/dotsan.dart',
-      '--dry-run',
-      p.join(pkg.path, 'lib'),
-    ]);
+    final run = dotsan(['--dry-run', p.join(pkg.path, 'lib')]);
     expect(run.exitCode, 0, reason: '${run.stderr}');
     expect(run.stdout, 'would convert 0 site(s) in 0 file(s)\n');
     final root = p.normalize(p.absolute(pkg.path));
@@ -262,5 +257,11 @@ void main() {
   return file;
 }
 
-ProcessResult dotsan(List<String> args) =>
-    Process.runSync('dart', ['run', 'bin/dotsan.dart', ...args]);
+/// dotsan writes UTF-8; the default decoding is the system code page, which
+/// is not UTF-8 on Windows (the warning's `—` came back as `â€”`).
+ProcessResult dotsan(List<String> args) => Process.runSync(
+  'dart',
+  ['run', 'bin/dotsan.dart', ...args],
+  stdoutEncoding: utf8,
+  stderrEncoding: utf8,
+);
