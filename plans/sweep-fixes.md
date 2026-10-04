@@ -16,18 +16,18 @@ updated: 2026-10-03
 - [x] Phase 6: `--set-exit-if-changed` and `--format=json`
 - [x] Phase 7: CI, dependency safety net, Windows SDK discovery
 - [x] Phase 8: Docs, skill, repo meta, packaging
-- [ ] Review round 1 (coordinator, 4c99706..4db5a2e). Each fix is a new commit, commit only, with a test that goes red first:
+- [x] Review round 1 (coordinator, 4c99706..4db5a2e). Each fix is a new commit, commit only, with a test that goes red first:
   - [x] R-SS-1: same-element static type compared by a library-qualified structural key, not the display string (`display_collision`)
   - [x] R-SS-2: refuse a licensed rebind whose target gains an access annotation (`vft_warning`)
   - [x] R-SS-3: refuse a cut in an excluded, generated or out-of-scope unit; report every written file (`part_prune`)
   - [x] R-SS-4: check every target is writable before a multi-file write; no unhandled exception
   - [x] R-SS-5: match baseline unused imports to their directive (`dup_uri_prune`)
   - [x] R-SS-6: drop private doc comments that restate the code
-- [ ] Review round 2 (coordinator, 4db5a2e..4896513). New commits, commit only:
+- [x] Review round 2 (coordinator, 4db5a2e..4896513). New commits, commit only:
   - [x] R2-SS-1: pin the multiset diagnostic comparison with a test that goes red under the set-based mutant
   - [x] R2-SS-2: README CI platforms (Linux and Windows in CI; macOS locally)
   - [x] R2-SS-3: skill install hint with `--agent`
-- [ ] Re-run format, analyze, `dart test`, the downgrade leg and pana over both rounds
+- [x] Re-run format, analyze, `dart test`, the downgrade leg and pana over both rounds
 - [ ] Phase 9: Release 0.10.0
 
 ## Problem
@@ -857,6 +857,7 @@ Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- 
 - R2-SS-1: the multiset count had no test. SS-B3 and e2e `masked_error` are cascades, which the typed-slot rule refuses before the diagnostic check runs. The reviewer's mutant (`if (!baseline.containsKey(key))`, the old set check) left the suite green. The reviewer's fixture (`@Deprecated static const Geo zero`, cross-package) no longer isolates it: since R-SS-2, `_restrictionsOf` refuses that rebind first (`rebinds to Geo2.zero, which is @Deprecated`, checked under the mutant). The new e2e `duplicate_info` uses a forwarder with no restricting annotation of its own whose optional named parameter is `@Deprecated` (a deprecated *required* parameter gets no diagnostic). `take(Box.all(v: 2))` passes every node-level check and adds a second copy of the info that `final pre = Geo.all(v: 1);` already has. Proof, built from `git archive HEAD` into a scratch copy, never in the repo: under the mutant, `duplicate_info` fails with a surplus `INFO|DEPRECATED_MEMBER_USE|…/use.dart|'v' is deprecated…`, and it is the suite's only failure (87 pass, 1 fails). At HEAD it is green. The SS-B3 and `masked_error` comments now say the typed-slot rule refuses them.
 - R2-SS-2 resolves a conflict between two plan texts. Phase 8 dictated "Runs on macOS, Linux and Windows (all three in CI)", while the Phase 7 `ci.yaml` runs only ubuntu and windows. The README now reads "Linux and Windows in CI; macOS locally"; `ci.yaml` is unchanged.
 - R2-SS-3: the plan's install line `dart run skills@ get --package shorthand_sanitizer --all` auto-detects the agent, so in a project with no agent directory yet it prints "Could not auto-detect agent", exits 0 and installs nothing. README and CHANGELOG now show `--agent claude` with a note. This matches the Phase 8 oracle, which already passed `--agent claude`.
+- Both review rounds re-verified on `1cb272d`: format reported 0 changed; analyze reported no issues; 88/88 tests passed on the upgrade resolve and 88/88 on the downgrade resolve (analyzer 14.0.0, package_config 2.2.0). pana scored 160/160, and `dart pub publish --dry-run` reported 0 warnings.
 
 ## Execution prompt
 
