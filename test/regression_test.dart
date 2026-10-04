@@ -428,4 +428,79 @@ void run() {
       '5: Box.zero kept: rebinds to Geo.zero, which is @visibleForTesting',
     ]);
   });
+
+  group('SS-R3 pruning a part', () {
+    /// A part whose two sites orphan both of its library's imports of
+    /// `<tag>_fit.dart`; returns the library and the part.
+    (File, File) partPrune(String tag, {String header = ''}) {
+      write(
+        pkg,
+        'lib/${tag}_fit.dart',
+        'enum Fit { cover }\nenum Mode { a }\n',
+      );
+      write(
+        pkg,
+        'lib/${tag}_sink.dart',
+        "import '${tag}_fit.dart';\n"
+            'void take(Fit f) {}\nvoid takeMode(Mode m) {}\n',
+      );
+      final lib = write(
+        pkg,
+        'lib/${tag}_lib.dart',
+        "${header}import '${tag}_fit.dart' as f;\n"
+            "import '${tag}_fit.dart' show Mode;\n"
+            "import '${tag}_sink.dart';\n"
+            "export '${tag}_fit.dart';\n"
+            "part '${tag}_part.dart';\n",
+      );
+      final part = write(
+        pkg,
+        'lib/${tag}_part.dart',
+        "part of '${tag}_lib.dart';\n"
+            'void runPart() {\n  take(f.Fit.cover);\n  takeMode(Mode.a);\n}\n',
+      );
+      return (lib, part);
+    }
+
+    for (final (tag, why, header, excluded, onlyPart) in [
+      ('r3x', 'excluded', '', true, false),
+      (
+        'r3g',
+        'generated',
+        '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
+        false,
+        false,
+      ),
+      ('r3o', 'not among the given paths', '', false, true),
+    ]) {
+      test('never edits a library that is $why', () async {
+        final (lib, part) = partPrune(tag, header: header);
+        final libBefore = lib.readAsStringSync();
+        final partBefore = part.readAsStringSync();
+        final result = await Sanitizer(
+          excludes: [if (excluded) '${tag}_lib.dart'],
+          explain: true,
+        ).run([if (!onlyPart) lib.path, part.path]);
+        expect(lib.readAsStringSync(), libBefore);
+        expect(part.readAsStringSync(), partBefore);
+        expect(
+          result.files.single.kept,
+          everyElement(endsWith('would edit ${tag}_lib.dart, which is $why')),
+        );
+      });
+    }
+
+    test('reports every file it writes', () async {
+      final (lib, part) = partPrune('r3w');
+      final result = await Sanitizer(dryRun: true).run([lib.path, part.path]);
+      expect(
+        {for (final f in result.files) f.path: f.removedImports},
+        {
+          p.normalize(p.absolute(part.path)): 0,
+          p.normalize(p.absolute(lib.path)): 2,
+        },
+      );
+      expect(result.convertedCount, 2);
+    });
+  });
 }
