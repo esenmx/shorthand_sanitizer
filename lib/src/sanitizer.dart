@@ -210,10 +210,13 @@ final class SanitizeResult {
   /// diagnostic, as canonical paths; see [Sanitizer.allowErrors].
   final List<String> skippedWithErrors = [];
 
-  /// Files left unchanged because a file their conversion had to write could
-  /// not be written: `path` is that file (`file` itself, or a unit of its
-  /// library losing an orphaned import), `error` the OS's reason. Nothing of
-  /// that library is written.
+  /// Conversions dropped because a file they had to write could not be
+  /// written; [Sanitizer.run] records them here instead of throwing. `file`
+  /// is the file whose conversion was dropped, `path` the one that could not
+  /// be written (`file` itself, or a unit of its library losing an orphaned
+  /// import), `error` the OS's reason. Such a conversion and the imports it
+  /// prunes are written all or nothing; files converted before it, even in
+  /// the same library, stay written.
   final List<({String file, String path, String error})> writeFailures = [];
 
   /// Total converted sites.
