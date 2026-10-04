@@ -657,9 +657,12 @@ final class _FileSanitizer({
   final String content = original.content;
 
   /// Every diagnostic of [file]'s library before the rewrite, counted per
-  /// key. A rewrite may add none; imports already unused here are the user's
-  /// to keep, so only orphans the rewrite newly creates get pruned.
+  /// key. A rewrite may add none.
   final Map<_DiagKey, int> baseline = _census(library);
+
+  /// Imports already unused (or unnecessary) before the rewrite: the user's
+  /// to keep, so only orphans the rewrite newly creates get pruned.
+  final Set<_ImportIssue> _userImportIssues = _importIssuesOf(library);
   final _constCache = <(String, String, String), DartObject?>{};
 
   /// Candidates still in the running; once [_clean] is set, exactly the ones
@@ -863,7 +866,7 @@ final class _FileSanitizer({
 
   void _accept(_Attempt a) {
     _clean = a.rewritten;
-    _orphanCuts = _orphanRanges(a.library, baseline);
+    _orphanCuts = _orphanRanges(a.library, _userImportIssues);
   }
 
   /// The texts to write — [_clean] and every unit losing an orphaned import,
@@ -1408,37 +1411,63 @@ const _removableImportCodes = {
 bool _isRemovableImport(Diagnostic d) =>
     _removableImportCodes.contains(d.diagnosticCode.lowerCaseName);
 
+/// A removable-import diagnostic by unit path, directive index and code.
+/// A rewrite deletes no directive, so the index survives it, and it tells
+/// two imports of one URI apart where their messages are identical.
+typedef _ImportIssue = (String path, int directive, String code);
+
+Set<_ImportIssue> _importIssuesOf(ResolvedLibraryResult lib) => {
+  for (final unit in lib.units)
+    for (final d in unit.diagnostics)
+      if (_isRemovableImport(d))
+        if (_importAt(unit, d.offset) case final index?)
+          (unit.path, index, d.diagnosticCode.lowerCaseName),
+};
+
+/// Index in [unit]'s directives of the import spanning [offset].
+int? _importAt(ResolvedUnitResult unit, int offset) {
+  final directives = unit.unit.directives;
+  for (var i = 0; i < directives.length; i++) {
+    final directive = directives[i];
+    if (directive is ImportDirective &&
+        offset >= directive.offset &&
+        offset < directive.end) {
+      return i;
+    }
+  }
+  return null;
+}
+
 /// Directive ranges (each spanning `import … ;` plus its line ending) for
-/// imports the rewrite orphaned — removable-import diagnostics a unit of
-/// [check] has more of than [baseline] — keyed by unit path. Coordinates are
-/// each unit's content in [check]: the rewritten text for the edited unit,
-/// the untouched text for every other.
+/// imports the rewrite orphaned — a removable-import diagnostic of [check]
+/// not among [userIssues] — keyed by unit path. Coordinates are each unit's
+/// content in [check]: the rewritten text for the edited unit, the untouched
+/// text for every other.
 Map<String, List<(int, int)>> _orphanRanges(
   ResolvedLibraryResult check,
-  Map<_DiagKey, int> baseline,
+  Set<_ImportIssue> userIssues,
 ) {
   final cuts = <String, List<(int, int)>>{};
   for (final unit in check.units) {
     final text = unit.content;
-    final imports = unit.unit.directives.whereType<ImportDirective>().toList();
-    if (imports.isEmpty) continue;
-
-    final counts = <_DiagKey, int>{};
-    final seen = <int>{};
-    for (final d in _byPosition(unit.diagnostics)) {
+    final cut = <int>{};
+    for (final d in unit.diagnostics) {
       if (!_isRemovableImport(d)) continue;
-      final key = _keyOf(unit.path, d);
-      final count = counts.update(key, (n) => n + 1, ifAbsent: () => 1);
-      if (count <= (baseline[key] ?? 0)) continue;
-      for (final directive in imports) {
-        if (d.offset < directive.offset || d.offset >= directive.end) continue;
-        if (!seen.add(directive.offset)) break;
-        var end = directive.end;
-        if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
-        if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
-        (cuts[unit.path] ??= []).add((directive.offset, end));
-        break;
+      final index = _importAt(unit, d.offset);
+      if (index == null ||
+          userIssues.contains((
+            unit.path,
+            index,
+            d.diagnosticCode.lowerCaseName,
+          )) ||
+          !cut.add(index)) {
+        continue;
       }
+      final directive = unit.unit.directives[index];
+      var end = directive.end;
+      if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
+      if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
+      (cuts[unit.path] ??= []).add((directive.offset, end));
     }
   }
   return cuts;

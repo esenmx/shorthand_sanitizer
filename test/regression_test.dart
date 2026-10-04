@@ -513,4 +513,29 @@ void run() {
     expect(result.convertedCount, 0);
     expect(result.writeFailures.single.path, p.normalize(p.absolute(lib.path)));
   }, testOn: '!windows');
+
+  test(
+    'SS-R5 pruning keeps the import the user had already left unused',
+    () async {
+      write(pkg, 'lib/r5_fit.dart', 'enum Fit { cover }\nenum Mode { a }\n');
+      write(
+        pkg,
+        'lib/r5_sink.dart',
+        "import 'r5_fit.dart';\nvoid takeMode(Mode m) {}\n",
+      );
+      final out = await sanitize('''
+import 'r5_fit.dart' show Mode;
+import 'r5_fit.dart' as keep_me;
+import 'r5_sink.dart';
+
+void run() => takeMode(Mode.a);
+''');
+      expect(out, '''
+import 'r5_fit.dart' as keep_me;
+import 'r5_sink.dart';
+
+void run() => takeMode(.a);
+''');
+    },
+  );
 }
