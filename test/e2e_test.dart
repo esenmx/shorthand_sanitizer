@@ -20,6 +20,7 @@ void main() {
   e2e('part_orphan', partOrphan, converted: 1);
   e2e('display_collision', displayCollision);
   e2e('vft_warning', vftWarning);
+  e2e('duplicate_info', duplicateInfo);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -263,6 +264,8 @@ environment:
 ''',
 };
 
+// Refused by the typed-slot rule (a cascade) before the multiset check runs;
+// `duplicateInfo` pins the multiset.
 const maskedError = {
   'lib/geo.dart': '''
 class Geo {
@@ -607,6 +610,47 @@ dependencies:
   'lib/.keep': '',
   'pubspec.yaml': '''
 name: vft
+environment:
+  sdk: ^3.10.0
+dependencies:
+  geo_pkg:
+    path: geo_pkg
+''',
+};
+
+// `.all(v: 2)` passes every node-level check (a licensed forwarder in a slot
+// typed as it, with no restricting annotation of its own), but its argument
+// lands on the forwarder's deprecated parameter: a second copy of the info
+// `pre` already has. Only the multiset count catches it. It must be
+// cross-package: within a package, the deprecation code is a lint.
+const duplicateInfo = {
+  'geo_pkg/lib/geo.dart': '''
+class Geo {
+  const Geo();
+  const factory Geo.all({@Deprecated('use v2') int? v}) = Box.all;
+}
+
+class Box extends Geo {
+  const Box.all({this.v});
+  final int? v;
+}
+''',
+  'geo_pkg/pubspec.yaml': '''
+name: geo_pkg
+environment:
+  sdk: ^3.10.0
+''',
+  'lib/use.dart': '''
+import 'package:geo_pkg/geo.dart';
+
+final pre = Geo.all(v: 1);
+
+void take(Geo g) => print(g);
+
+void run() => take(Box.all(v: 2));
+''',
+  'pubspec.yaml': '''
+name: duplicate_info
 environment:
   sdk: ^3.10.0
 dependencies:
