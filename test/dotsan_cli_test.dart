@@ -87,4 +87,57 @@ void main() {
       'installed SDK does not decide this.\n',
     );
   });
+
+  test('SS-B10 a path that does not exist is an error, not a no-op', () {
+    final run = dotsan(['-n', 'lib/does_not_exist.dart']);
+    expect(run.exitCode, 64);
+    expect(run.stderr, contains('does_not_exist'));
+  });
+
+  test('SS-B11 an invalid --exclude glob is a usage error (exit 64)', () {
+    final run = dotsan(['-n', 'lib', '--exclude=[']);
+    expect(run.exitCode, 64);
+    expect(run.stderr, isNot(contains('Unhandled exception')));
+  });
+
+  test('SS-M4 file lines are relative to the working directory', () {
+    final fixture = Directory.systemTemp.createTempSync('dotsan_relative');
+    addTearDown(() => fixture.deleteSync(recursive: true));
+    Directory(p.join(fixture.path, 'lib')).createSync();
+    const spec = 'name: relative_fixture\nenvironment:\n  sdk: ^3.10.0\n';
+    File(p.join(fixture.path, 'pubspec.yaml')).writeAsStringSync(spec);
+    File(p.join(fixture.path, 'lib', 'main.dart')).writeAsStringSync('''
+enum Fit { cover, contain }
+void main() {
+  Fit f = Fit.cover;
+  print(f);
 }
+''');
+    final get = Process.runSync('dart', [
+      'pub',
+      'get',
+    ], workingDirectory: fixture.path);
+    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+
+    final run = Process.runSync(Platform.resolvedExecutable, [
+      '--packages=${p.absolute('.dart_tool/package_config.json')}',
+      p.absolute('bin/dotsan.dart'),
+      '-n',
+      'lib',
+    ], workingDirectory: fixture.path);
+    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(run.stdout, startsWith('${p.join('lib', 'main.dart')}\n'));
+  });
+
+  test('--version prints the pubspec version', () {
+    final version = RegExp(
+      r'^version:\s*(\S+)',
+      multiLine: true,
+    ).firstMatch(File('pubspec.yaml').readAsStringSync())?.group(1);
+    expect(version, isNotNull);
+    expect(dotsan(['--version']).stdout, 'dotsan $version\n');
+  });
+}
+
+ProcessResult dotsan(List<String> args) =>
+    Process.runSync('dart', ['run', 'bin/dotsan.dart', ...args]);
