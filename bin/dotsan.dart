@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:args/args.dart';
 import 'package:cli_util/cli_logging.dart';
+import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
 const _version = '0.9.0';
@@ -115,12 +116,22 @@ Future<void> main(List<String> args) async {
   final ansi = Ansi(
     stderr.supportsAnsiEscapes && stdioType(stderr) == .terminal,
   );
-  for (final entry in result.skippedBelowFloor.entries) {
+  for (final MapEntry(key: (:root, :version), value: n)
+      in result.skippedBelowFloor.entries) {
     stderr.writeln(
-      '${ansi.yellow}warning:${ansi.none} skipped ${entry.value} file(s) at '
-      'language version ${entry.key} — dot shorthands need 3.10. Raise '
-      "`environment: sdk:` in that package's pubspec.yaml; the installed SDK "
-      'does not decide this.',
+      '${ansi.yellow}warning:${ansi.none} skipped $n file(s) in '
+      '${_display(root)} at language version $version — dot shorthands need '
+      '3.10. Raise `environment: sdk:` in '
+      '${p.join(_display(root), 'pubspec.yaml')} (or drop a `// @dart=` '
+      'override); the installed SDK does not decide this.',
+    );
+  }
+  for (final MapEntry(key: root, value: n)
+      in result.skippedUnconfigured.entries) {
+    stderr.writeln(
+      '${ansi.yellow}warning:${ansi.none} skipped $n file(s) in '
+      '${_display(root)}: no package config entry — run `dart pub get` there '
+      'first.',
     );
   }
   final changed = result.files.where((f) => f.converted.isNotEmpty).length;
@@ -135,4 +146,12 @@ Future<void> main(List<String> args) async {
     '${skipped > 0 ? ', $skipped skip-listed' : ''}'
     '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
   );
+}
+
+/// [path] relative to the working directory when inside it (`.` for the
+/// directory itself), else absolute; native separators either way.
+String _display(String path) {
+  final absolute = p.normalize(p.absolute(path));
+  if (p.equals(absolute, p.current)) return '.';
+  return p.isWithin(p.current, absolute) ? p.relative(absolute) : absolute;
 }

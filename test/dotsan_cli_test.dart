@@ -59,7 +59,7 @@ void main() {
     expect(run.exitCode, 0, reason: '${run.stderr}');
     expect(
       run.stdout,
-      '${p.canonicalize(file.path)}\n'
+      '${p.normalize(p.absolute(file.path))}\n'
       '  4: Fit.cover -> .cover\n'
       '  3: Fit.contain kept: no context type\n'
       'would convert 1 site(s) in 1 file(s), 1 kept\n',
@@ -78,11 +78,13 @@ void main() {
     ]);
     expect(run.exitCode, 0, reason: '${run.stderr}');
     expect(run.stdout, 'would convert 0 site(s) in 0 file(s)\n');
+    final root = p.normalize(p.absolute(pkg.path));
     expect(
       run.stderr,
-      'warning: skipped 1 file(s) at language version 3.0 — dot shorthands '
-      "need 3.10. Raise `environment: sdk:` in that package's pubspec.yaml; "
-      'the installed SDK does not decide this.\n',
+      'warning: skipped 1 file(s) in $root at language version 3.0 — dot '
+      'shorthands need 3.10. Raise `environment: sdk:` in '
+      '${p.join(root, 'pubspec.yaml')} (or drop a `// @dart=` override); the '
+      'installed SDK does not decide this.\n',
     );
   });
 }
