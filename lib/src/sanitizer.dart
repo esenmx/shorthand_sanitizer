@@ -1018,6 +1018,13 @@ final class _FileSanitizer({
         _why[candidate] =
             _errorOn(check, offset, candidate.memberName) ??
             'the shorthand does not resolve';
+      } else if (resolved.useResult) {
+        // `dart analyze` reports `unused_result` on such a shorthand even
+        // where its value is used; the bundled analyzer does not.
+        culprits.add(candidate);
+        _why[candidate] =
+            'resolves to a @useResult member, whose shorthand dart analyze '
+            'reports as unused';
       } else if (resolved.matches(candidate)) {
         if (resolved.staticType != candidate.staticType) {
           culprits.add(candidate);
@@ -1250,6 +1257,7 @@ final class _ResolvedShorthand(
   final String? staticType,
   final String? shownType,
   final Set<String> restrictions = const {},
+  final bool useResult = false,
 }) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
@@ -1340,13 +1348,9 @@ String _parameterKey(FormalParameterElement p) => switch (p) {
 /// Annotations that restrict where [element] may be used. A licensed rebind
 /// onto a member carrying one the original lacks is a new restricted use,
 /// which the analyzer does not always report: analyzer 14.4 skips its
-/// `@visibleForTesting` check on a dot-shorthand constructor invocation. A
-/// field's annotations sit on the field, not on its getter.
+/// `@visibleForTesting` check on a dot-shorthand constructor invocation.
 Set<String> _restrictionsOf(Element? element) => {
-  for (final holder in [
-    ?element,
-    if (element is PropertyAccessorElement) element.variable,
-  ]) ...{
+  for (final holder in _holdersOf(element)) ...{
     if (holder.metadata.hasDeprecated) '@Deprecated',
     if (holder.metadata.hasDoNotSubmit) '@doNotSubmit',
     if (holder.metadata.hasExperimental) '@experimental',
@@ -1357,6 +1361,12 @@ Set<String> _restrictionsOf(Element? element) => {
     if (holder.metadata.hasVisibleOutsideTemplate) '@visibleOutsideTemplate',
   },
 };
+
+/// A field's annotations sit on the field, not on its getter.
+List<Element> _holdersOf(Element? element) => [
+  ?element,
+  if (element is PropertyAccessorElement) element.variable,
+];
 
 int _byOffset(Candidate a, Candidate b) =>
     a.deleteStart.compareTo(b.deleteStart);
@@ -1489,6 +1499,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       staticType: type == null ? null : _typeKey(type),
       shownType: type?.getDisplayString(),
       restrictions: _restrictionsOf(element),
+      useResult: _holdersOf(element).any((e) => e.metadata.hasUseResult),
     );
   }
 
