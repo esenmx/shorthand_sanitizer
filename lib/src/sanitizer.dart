@@ -21,6 +21,7 @@ import 'package:analyzer/src/dart/analysis/byte_store.dart';
 import 'package:analyzer/src/dart/analysis/file_byte_store.dart';
 import 'package:cli_util/cli_util.dart';
 import 'package:glob/glob.dart';
+import 'package:package_config/package_config.dart';
 import 'package:path/path.dart' as p;
 
 String? _cachedSdkPath;
@@ -131,10 +132,15 @@ final class SanitizeResult {
   int skippedByList = 0;
 
   /// Files skipped whole because their package's language version predates
-  /// dot shorthands, counted per `major.minor` version. Such a package cannot
-  /// hold the rewrite at all, so an otherwise convertible run reports zero
-  /// conversions — this is what makes that visible.
-  final Map<String, int> skippedBelowFloor = {};
+  /// dot shorthands, counted per package root and `major.minor` version (the
+  /// file's directory when no `pubspec.yaml` encloses it). Such a package
+  /// cannot hold the rewrite at all, so an otherwise convertible run reports
+  /// zero conversions — this is what makes that visible.
+  final Map<({String root, String version}), int> skippedBelowFloor = {};
+
+  /// Files skipped whole per package root: no entry in the package config the
+  /// analyzer used; run `dart pub get` in `root`.
+  final Map<String, int> skippedUnconfigured = {};
 
   /// Total converted sites.
   int get convertedCount => files.fold(0, (n, f) => n + f.converted.length);
@@ -249,7 +255,7 @@ final class Sanitizer({
     // hides those files from `contextFor`, so contexts are picked by root
     // below — every collected file is analyzed, as before.
     final collection = AnalysisContextCollectionImpl(
-      includedPaths: paths.map(p.canonicalize).toSet().toList(),
+      includedPaths: paths.map(_canonical).toSet().toList(),
       resourceProvider: overlay,
       sdkPath: sdkPath(),
       byteStore: _byteStore(),
@@ -268,11 +274,18 @@ final class Sanitizer({
         ),
       );
 
-    for (final file in files.map(p.canonicalize)) {
+    final gate = _PackageGate();
+    for (final file in files.map(_canonical)) {
       final context = contexts.firstWhere(
         (c) => c.contextRoot.root.isOrContains(file),
       );
-      final fileResult = await _sanitizeFile(context, overlay, file, result);
+      final fileResult = await _sanitizeFile(
+        context,
+        overlay,
+        file,
+        result,
+        gate,
+      );
       if (fileResult != null) result.files.add(fileResult);
     }
     return result;
@@ -309,7 +322,16 @@ final class Sanitizer({
     OverlayResourceProvider overlay,
     String file,
     SanitizeResult result,
+    _PackageGate gate,
   ) async {
+    // Without its own package config a package is analyzed as part of
+    // whichever one encloses it, at that package's language version.
+    final root = gate.rootOf(file);
+    if (root != null && !await gate.isConfigured(context, file, root)) {
+      result.skippedUnconfigured.update(root, (n) => n + 1, ifAbsent: () => 1);
+      return null;
+    }
+
     final library = await context.currentSession.getResolvedLibraryContaining(
       file,
     );
@@ -325,7 +347,10 @@ final class Sanitizer({
     if (language.major < _floorMajor ||
         (language.major == _floorMajor && language.minor < _floorMinor)) {
       result.skippedBelowFloor.update(
-        '${language.major}.${language.minor}',
+        (
+          root: root ?? p.dirname(file),
+          version: '${language.major}.${language.minor}',
+        ),
         (n) => n + 1,
         ifAbsent: () => 1,
       );
@@ -376,7 +401,7 @@ final class Sanitizer({
     final globs = [for (final e in excludes) Glob(e)];
     bool isExcludedPath(String path) {
       final relative = p
-          .relative(p.canonicalize(path))
+          .relative(_canonical(path))
           .replaceAll(p.separator, '/');
       final base = p.basename(path);
       return globs.any((g) => g.matches(relative) || g.matches(base));
@@ -418,6 +443,51 @@ final class Sanitizer({
       }
     }
     return files..sort();
+  }
+}
+
+/// Absolute and normalized, case kept: `p.canonicalize` lowercases on
+/// Windows, where package-config roots keep their case.
+String _canonical(String path) => p.normalize(p.absolute(path));
+
+/// Which package a file belongs to, and whether the analyzer was handed that
+/// package's own config. One per [Sanitizer.run]; lookups are memoised.
+final class _PackageGate() {
+  final _roots = <String, String?>{};
+  final _configs = <String, PackageConfig?>{};
+
+  /// The nearest directory above [file] holding a `pubspec.yaml`.
+  String? rootOf(String file) => _rootOfDir(p.dirname(file));
+
+  String? _rootOfDir(String dir) {
+    if (_roots.containsKey(dir)) return _roots[dir];
+    final parent = p.dirname(dir);
+    return _roots[dir] = switch (dir) {
+      _ when File(p.join(dir, 'pubspec.yaml')).existsSync() => dir,
+      _ when parent == dir => null,
+      _ => _rootOfDir(parent),
+    };
+  }
+
+  /// Whether [c]'s package config has an entry whose root is [root] and
+  /// which holds [file]. A nested package without its own config joins the
+  /// enclosing package's context, whose config attributes the file to the
+  /// enclosing package — so a config merely existing proves nothing.
+  Future<bool> isConfigured(AnalysisContext c, String file, String root) async {
+    final packagesFile = c.contextRoot.packagesFile;
+    if (packagesFile == null) return false;
+    final config = await _configOf(packagesFile.path);
+    final pkg = config?.packageOf(Uri.file(file));
+    return pkg != null && _canonical(p.fromUri(pkg.root)) == root;
+  }
+
+  Future<PackageConfig?> _configOf(String path) async {
+    if (_configs.containsKey(path)) return _configs[path];
+    try {
+      return _configs[path] = await loadPackageConfig(File(path));
+    } on Exception {
+      return _configs[path] = null;
+    }
   }
 }
 

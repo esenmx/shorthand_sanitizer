@@ -160,5 +160,5 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
 
 ## Requirements
 
-- Target package language version ≥ **3.10** (packages below this are safely skipped as a clean no-op).
+- Target packages need language version ≥ **3.10**; packages below it, or with no package config (run `dart pub get`), are skipped with a warning naming the package.
 - Compatible with Dart & Flutter projects on macOS, Linux, and Windows.

@@ -826,7 +826,9 @@ Fit f() => Fit.cover;
 
     // Untouched, and the run says why rather than reporting an empty success.
     expect(file.readAsStringSync(), contains('Fit.cover'));
-    expect(result.skippedBelowFloor, {'3.9': 1});
+    expect(result.skippedBelowFloor, {
+      (root: p.normalize(p.absolute(old.path)), version: '3.9'): 1,
+    });
     expect(result.convertedCount, 0);
   });
 

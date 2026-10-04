@@ -125,6 +125,61 @@ final Geo fresh = Box.all(1)..boxOnly();
     expect(out, contains('Box.all(1)..boxOnly()'));
   });
 
+  test('SS-B4 package below 3.10 without package_config is skipped', () async {
+    final old = makePackage(
+      'nocfg',
+      'name: nocfg\nenvironment:\n  sdk: ^3.9.0\n',
+      pubGet: false,
+    );
+    addTearDown(() => old.deleteSync(recursive: true));
+    const source = '''
+enum Fit { cover, contain }
+void take(Fit f) {}
+void run() => take(Fit.cover);
+''';
+    final file = write(old, 'lib/a.dart', source);
+    final result = await Sanitizer().run([file.path]);
+    expect(file.readAsStringSync(), source);
+    expect(result.skippedUnconfigured, {p.normalize(p.absolute(old.path)): 1});
+  });
+
+  test(
+    'SS-B4 a nested example without its own package config is skipped',
+    () async {
+      final outer = makePackage(
+        'outer',
+        'name: outer\nenvironment:\n  sdk: ^3.10.0\n',
+      );
+      addTearDown(() => outer.deleteSync(recursive: true));
+      write(
+        outer,
+        'example/pubspec.yaml',
+        'name: ex\nenvironment:\n  sdk: ^3.9.0\n'
+            'dependencies:\n  outer:\n    path: ..\n',
+      );
+      const source = '''
+enum Fit { cover, contain }
+void take(Fit f) {}
+void run() => take(Fit.cover);
+''';
+      final main = write(outer, 'example/lib/main.dart', source);
+      final get = Process.runSync('dart', [
+        'pub',
+        'get',
+      ], workingDirectory: outer.path);
+      if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+      Directory(p.join(outer.path, 'example', '.dart_tool'))
+          .deleteSync(recursive: true);
+      File(p.join(outer.path, 'example', 'pubspec.lock')).deleteSync();
+
+      final result = await Sanitizer().run([outer.path]);
+      expect(main.readAsStringSync(), source);
+      expect(result.skippedUnconfigured, {
+        p.normalize(p.absolute(p.join(outer.path, 'example'))): 1,
+      });
+    },
+  );
+
   test('SS-B6 a rebind onto a @Deprecated alias stays prefixed', () async {
     final dep = makePackage(
       'geo_pkg',
