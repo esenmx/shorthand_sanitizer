@@ -75,6 +75,47 @@ void main() {
   });
   tearDownAll(() => pkg.deleteSync(recursive: true));
 
+  test('SS-B1 typedef with fixed type arguments keeps its prefix', () async {
+    // `IntG.of(1)` builds a G<int>; `.of(1)` in a G<num> slot builds a
+    // G<num> — same element, different reified type argument.
+    final out = await sanitize('''
+class G<T> {
+  G.of(this.value);
+  T value;
+}
+typedef IntG = G<int>;
+typedef IntList = List<int>;
+final G<num> g = IntG.of(1);
+final List<num> l = IntList.filled(1, 0);
+''');
+    expect(out, contains('IntG.of(1)'));
+    expect(out, contains('IntList.filled(1, 0)'));
+  });
+
+  test('SS-B2 licensed rebind must not change a cascade target type', () async {
+    // Box.all(1)..tag() dispatches BoxTag; .all(1) is typed Geo -> GeoTag.
+    final out = await sanitize('''
+import 'geo.dart';
+final Geo a = Box.all(1)..tag();
+final Geo b = Box.zero..tag();
+''');
+    expect(out, contains('Box.all(1)..tag()'));
+    expect(out, contains('Box.zero..tag()'));
+  });
+
+  test('SS-B2 licensed rebind must not drop assignment promotion', () async {
+    final out = await sanitize('''
+import 'geo.dart';
+String f() {
+  Geo g = const Geo();
+  if (g is Box) return '';
+  g = Box.all(2);
+  return g.tag(); // BoxTag before, GeoTag after the rewrite
+}
+''');
+    expect(out, contains('g = Box.all(2);'));
+  });
+
   test('SS-B3 a new error matching a baseline message is not masked', () async {
     final out = await sanitize('''
 import 'geo.dart';

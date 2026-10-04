@@ -3,6 +3,8 @@
 ### Fixed
 
 - Verification compares the whole library's diagnostics as a multiset across errors, warnings and infos. A duplicate of an existing error, or a new deprecation info, now keeps the site prefixed.
+- A typedef that fixes type arguments (`typedef IntG = G<int>`) no longer converts: `IntG.of(1)` builds a `G<int>`, while `.of(1)` in a `G<num>` slot builds a `G<num>`. A same-element shorthand must now keep the site's static type, so these sites stay prefixed.
+- A licensed rebind (a const alias or a redirecting-factory forwarder) converts only in a slot typed exactly as the rebind: an argument, a typed declaration, a return, a collection element or a parameter default. A cascade target (`Box.all(1)..log()`) or an assignment (`g = Box.all(2)`) observed the forwarder's wider static type and could dispatch another extension or lose a promotion; these sites now stay prefixed with `rebinds to Geo.all outside a typed slot`.
 
 # 0.9.0
 

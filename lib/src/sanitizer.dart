@@ -81,6 +81,13 @@ final class Candidate({
   /// redirecting-factory forwarder is accepted only against an identical one.
   final String? signature,
 
+  /// The site's static type as displayed; the shorthand must keep it.
+  final String? staticType,
+
+  /// The slot type a licensed rebind must land in exactly (see
+  /// `_Viability.typedSlotOf`); null outside a typed slot.
+  final String? typedSlot,
+
   /// Offset of the enclosing statement (or declaration, outside a body).
   /// Type inference does not cross that boundary, so two candidates with
   /// different keys cannot affect each other's resolution — which is what
@@ -686,13 +693,27 @@ final class _FileSanitizer({
         _why[candidate] =
             _errorOn(check, offset, candidate.memberName) ??
             'the shorthand does not resolve';
-      } else if (!resolved.matches(candidate) &&
-          !resolved.forwardsTo(candidate) &&
-          !await _isConstAlias(candidate, resolved, selfUri)) {
-        culprits.add(candidate);
-        _why[candidate] =
-            'rebinds to '
-            '${[?resolved.containerName, resolved.memberName].join('.')}';
+      } else if (resolved.matches(candidate)) {
+        if (resolved.staticType != candidate.staticType) {
+          culprits.add(candidate);
+          _why[candidate] =
+              'changes the static type from '
+              '${candidate.staticType} to ${resolved.staticType}';
+        }
+      } else {
+        final target = [?resolved.containerName, resolved.memberName].join('.');
+        final licensed =
+            resolved.forwardsTo(candidate) ||
+            await _isConstAlias(candidate, resolved, selfUri);
+        final inSlot =
+            candidate.typedSlot != null &&
+            candidate.typedSlot == resolved.staticType;
+        if (!licensed || !inSlot) {
+          culprits.add(candidate);
+          _why[candidate] = licensed
+              ? 'rebinds to $target outside a typed slot'
+              : 'rebinds to $target';
+        }
       }
     }
 
@@ -878,6 +899,9 @@ final class _ResolvedShorthand(
   /// forwarded call constructs and what it accepts.
   final _ResolvedShorthand? redirectTarget,
   final String? signature,
+
+  /// The shorthand node's static type as displayed.
+  final String? staticType,
 }) {
   bool matches(Candidate c) =>
       memberName == c.memberName &&
@@ -890,10 +914,9 @@ final class _ResolvedShorthand(
   /// only way the rewrite could differ from the original is a parameter type
   /// that changes an argument's context type (`Geo.all(double)` redirecting
   /// to `Box.all(num)` turns `Box.all(1)`'s `int` into a `double`) — the
-  /// signature comparison refuses that. The invocation's own static type
-  /// widens to the factory's class, which cannot leak: a candidate is never a
-  /// receiver, and the shorthand only resolves where that class is already
-  /// the context type.
+  /// signature comparison refuses that. Its static type is the factory's
+  /// class; `_verdict` accepts that only where `Candidate.typedSlot` is
+  /// exactly that type, so no cascade, assignment or inference observes it.
   bool forwardsTo(Candidate c) =>
       redirectTarget != null &&
       redirectTarget!.matches(c) &&
@@ -1016,7 +1039,7 @@ String _stripRanges(String text, List<(int, int)> ranges) {
 final class _ShorthandIndex extends RecursiveAstVisitor<void> {
   final byOffset = <int, _ResolvedShorthand>{};
 
-  void _add(int offset, String memberName, Element? element) {
+  void _add(int offset, String memberName, Element? element, DartType? type) {
     byOffset[offset] = _ResolvedShorthand(
       memberName,
       element?.enclosingElement?.displayName,
@@ -1024,6 +1047,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       redirectTarget: element is ConstructorElement
           ? _redirectTargetOf(element)
           : null,
+      staticType: type?.getDisplayString(),
     );
   }
 
@@ -1052,13 +1076,23 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
 
   @override
   void visitDotShorthandPropertyAccess(DotShorthandPropertyAccess node) {
-    _add(node.period.offset, node.propertyName.name, node.propertyName.element);
+    _add(
+      node.period.offset,
+      node.propertyName.name,
+      node.propertyName.element,
+      node.staticType,
+    );
     super.visitDotShorthandPropertyAccess(node);
   }
 
   @override
   void visitDotShorthandInvocation(DotShorthandInvocation node) {
-    _add(node.period.offset, node.memberName.name, node.memberName.element);
+    _add(
+      node.period.offset,
+      node.memberName.name,
+      node.memberName.element,
+      node.staticType,
+    );
     super.visitDotShorthandInvocation(node);
   }
 
@@ -1070,6 +1104,7 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
       node.period.offset,
       node.constructorName.name,
       node.constructorName.element,
+      node.staticType,
     );
     super.visitDotShorthandConstructorInvocation(node);
   }
@@ -1115,6 +1150,8 @@ final class _CandidateCollector(TypeProvider typeProvider)
         signature: memberElement is ConstructorElement
             ? _constructorSignature(memberElement)
             : null,
+        staticType: node.staticType?.getDisplayString(),
+        typedSlot: _viability.typedSlotOf(node),
       ),
     );
   }
@@ -1287,6 +1324,54 @@ final class _Viability(final TypeProvider typeProvider) {
     return 'neither ${type.getDisplayString()} nor a supertype declares '
         'static $member';
   }
+
+  /// The slot type of [site] when a licensed rebind may land there: an
+  /// argument, a typed declaration, a return, a collection element or a
+  /// parameter default whose context type is an interface type, reached only
+  /// through wrappers that pass the value on unobserved ([_isTransparent]).
+  /// Displayed without one trailing `?`: a nullable slot types the shorthand
+  /// as its non-null class. Null elsewhere — a cascade target, an assignment
+  /// or an inferred declaration observes the shorthand's own static type.
+  String? typedSlotOf(Expression site) {
+    AstNode head = site;
+    for (
+      var parent = head.parent;
+      parent != null && _isTransparent(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    if (head.parent
+        case ArgumentList() ||
+            VariableDeclaration() ||
+            ReturnStatement() ||
+            ExpressionFunctionBody() ||
+            ListLiteral() ||
+            SetOrMapLiteral() ||
+            MapLiteralEntry() ||
+            FormalParameterDefaultClause()) {
+      if (_contextOf(head) case final InterfaceType slot) {
+        final shown = slot.getDisplayString();
+        return shown.endsWith('?')
+            ? shown.substring(0, shown.length - 1)
+            : shown;
+      }
+    }
+    return null;
+  }
+
+  /// Whether [parent] passes [child]'s value through to its own slot
+  /// unobserved. A switch scrutinee is observed by its patterns.
+  static bool _isTransparent(AstNode parent, AstNode child) => switch (parent) {
+    ParenthesizedExpression() || NamedArgument() || ForElement() => true,
+    ConditionalExpression(:final thenExpression, :final elseExpression) =>
+      identical(thenExpression, child) || identical(elseExpression, child),
+    SwitchExpressionCase(:final expression) => identical(expression, child),
+    SwitchExpression(:final expression) => !identical(expression, child),
+    IfElement(:final thenElement, :final elseElement) =>
+      identical(thenElement, child) || identical(elseElement, child),
+    _ => false,
+  };
 
   /// Whether [parent] hands its own context type down to [child] — as the
   /// head of a selector chain, or as a syntactic wrapper the context type

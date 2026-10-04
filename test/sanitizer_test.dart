@@ -1028,7 +1028,7 @@ void main() {
         // reads a getter the forwarder's class lacks).
         '32: Sub.a kept: rebinds to Base.a',
         matches(r'^33: Box\.zero kept: .*context type'),
-        matches(r"^34: Box\.all kept: introduces an error: .*'v'"),
+        '34: Box.all kept: rebinds to Geo.all outside a typed slot',
         '35: Box.unit kept: skip-listed',
       ]);
       expect(fileResult.converted, hasLength(5));
