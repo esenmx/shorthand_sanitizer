@@ -1,5 +1,5 @@
 ---
-status: approved
+status: in-progress
 created: 2026-10-03
 updated: 2026-10-03
 ---
@@ -8,7 +8,7 @@ updated: 2026-10-03
 
 ## Progress
 
-- [ ] Phase 1: Diagnostic oracle
+- [x] Phase 1: Diagnostic oracle
 - [ ] Phase 2: Element and static-type identity
 - [ ] Phase 3: Language-version gate
 - [ ] Phase 4: Library-scoped pruning and write ordering
@@ -821,6 +821,9 @@ The executor never runs `dart pub publish`, never creates tags or GitHub release
 ## Found
 
 Tracker: `/Users/mehmetesen/pub-dev/SWEEP.md` § Deferred, one row per item: `- [SS] <ID> — <one line> — <why deferred>`.
+
+- Phase 1: the plan rewords only the bisection reason (559-561). The `_recover` reason keeps its template with the new `stray` text: `not verifiable alongside the other rewrites: an error: …` (likewise `a warning` / `an info`).
+- Phase 1: e2e `battery` measured 69 on 0.9.0 code before the change and 69 after; oracle 53/53 tests green.
 
 ## Execution prompt
 

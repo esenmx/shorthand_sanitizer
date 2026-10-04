@@ -105,7 +105,7 @@ dotsan -v
 
 1. Rewrites candidate expressions speculatively in memory.
 2. Re-resolves the AST in memory.
-3. Keeps a rewrite **only** if the shorthand resolves to the exact same element with **zero new diagnostics or errors**. If ambiguous or changed, it safely reverts.
+3. Keeps a rewrite **only** if the shorthand resolves to the same element with the same static type (or to a const alias / redirecting forwarder in a slot typed exactly as it), and the file's library gains **no analyzer diagnostic of any severity** (a multiset of severity, code and message; lint rules don't run).
 4. Prunes any `import` directives left unused when prefixes are dropped.
 
 ### Converts Cleanly
