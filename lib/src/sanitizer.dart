@@ -100,27 +100,67 @@ final class Candidate({
   this;
 }
 
+/// One reported `Type.member` site: converted, or (with [Sanitizer.explain])
+/// left prefixed.
+final class Site({
+  /// 1-based line of the `Type` prefix.
+  required final int line,
+
+  /// 1-based column of the `Type` prefix.
+  required final int column,
+
+  /// `Type.member` as written.
+  required final String before,
+
+  /// `.member` when the site converted; null when it was kept.
+  final String? after,
+
+  /// Why the site stayed prefixed; null when it converted.
+  final String? keptReason,
+}) {
+  /// Creates a site report.
+  this;
+}
+
 /// Per-file outcome of a sanitize run.
 final class FileResult(
   /// Canonical path of the rewritten file.
   final String path,
-
-  /// One `"line: Type.member -> .member"` entry per converted site.
-  final List<String> converted,
+  List<Site> sites,
 
   /// Candidates that failed verification and were left prefixed.
   final int reverted, {
 
   /// Imports the conversion orphaned and this run pruned (see [Sanitizer]).
   final int removedImports = 0,
+}) {
+  /// Creates a result for [path]; [sites] are kept sorted by line, then
+  /// column.
+  this;
+
+  /// Every converted site and, with [Sanitizer.explain], every site left
+  /// prefixed — skip-listed, ruled out by the static pre-check, or refused by
+  /// the verify loop — by line, then column.
+  final List<Site> sites = [...sites]
+    ..sort(
+      (a, b) => a.line != b.line
+          ? a.line.compareTo(b.line)
+          : a.column.compareTo(b.column),
+    );
+
+  /// One `"line: Type.member -> .member"` entry per converted site.
+  List<String> get converted => [
+    for (final s in sites)
+      if (s.after case final after?) '${s.line}: ${s.before} -> $after',
+  ];
 
   /// With [Sanitizer.explain], one `"line: Type.member kept: reason"` entry
-  /// per site left prefixed — skip-listed, ruled out by the static pre-check,
-  /// or refused by the verify loop; empty otherwise.
-  final List<String> kept = const [],
-}) {
-  /// Creates a result for [path].
-  this;
+  /// per site left prefixed; empty otherwise.
+  List<String> get kept => [
+    for (final s in sites)
+      if (s.keptReason case final reason?)
+        '${s.line}: ${s.before} kept: $reason',
+  ];
 }
 
 /// Aggregate outcome across all files of a run.
@@ -407,9 +447,8 @@ final class Sanitizer({
       return explain && kept.isNotEmpty
           ? FileResult(
               file,
-              const [],
+              _keptSites(original.lineInfo, kept),
               collector.unviable.length,
-              kept: _keptLines(original.lineInfo, kept),
             )
           : null;
     }
@@ -606,25 +645,28 @@ final class _FileSanitizer({
       file,
       [
         for (final c in converted)
-          '${_lineOf(c.deleteStart)}: ${c.display} -> .${c.memberName}',
+          _siteAt(
+            original.lineInfo,
+            c.deleteStart,
+            c.display,
+            after: '.${c.memberName}',
+          ),
+        if (kept case final kept?)
+          ..._keptSites(original.lineInfo, [
+            ...kept,
+            for (final c in candidates)
+              if (!done.contains(c))
+                (
+                  offset: c.deleteStart,
+                  display: c.display,
+                  reason: _why[c] ?? _unverified,
+                ),
+          ]),
       ],
       candidates.length - converted.length + unviable,
       removedImports: texts == null
           ? 0
           : _orphanCuts.values.fold(0, (n, cuts) => n + cuts.length),
-      kept: switch (kept) {
-        null => const [],
-        final kept => _keptLines(original.lineInfo, [
-          ...kept,
-          for (final c in candidates)
-            if (!done.contains(c))
-              (
-                offset: c.deleteStart,
-                display: c.display,
-                reason: _why[c] ?? _unverified,
-              ),
-        ]),
-      },
     );
   }
 
@@ -993,8 +1035,6 @@ final class _FileSanitizer({
         library.element.getExtensionType(container);
     return _constCache[key] = holder?.getField(member)?.computeConstantValue();
   }
-
-  int _lineOf(int offset) => original.lineInfo.getLocation(offset).lineNumber;
 }
 
 /// One verified rewrite of a candidate set: the text, its library's resolve
@@ -1018,11 +1058,28 @@ typedef _Kept = ({int offset, String display, String reason});
 /// Fallback reason for a candidate that only ever failed as part of a set.
 const _unverified = 'not verifiable alongside the other rewrites';
 
-/// `"line: Type.member kept: reason"` for each of [kept], in source order.
-List<String> _keptLines(LineInfo lines, List<_Kept> kept) => [
-  for (final k in [...kept]..sort((a, b) => a.offset.compareTo(b.offset)))
-    '${lines.getLocation(k.offset).lineNumber}: ${k.display} kept: ${k.reason}',
+/// A [Site] for each of [kept].
+List<Site> _keptSites(LineInfo lines, List<_Kept> kept) => [
+  for (final k in kept)
+    _siteAt(lines, k.offset, k.display, keptReason: k.reason),
 ];
+
+Site _siteAt(
+  LineInfo lines,
+  int offset,
+  String before, {
+  String? after,
+  String? keptReason,
+}) {
+  final location = lines.getLocation(offset);
+  return Site(
+    line: location.lineNumber,
+    column: location.columnNumber,
+    before: before,
+    after: after,
+    keptReason: keptReason,
+  );
+}
 
 /// The analyzer's error on the shorthand head `.member` whose `.` sits at
 /// [offset] in [check] — why that shorthand failed, in the analyzer's words.

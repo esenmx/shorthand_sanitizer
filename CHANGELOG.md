@@ -4,10 +4,14 @@
 
 - `SanitizeResult.skippedBelowFloor` is keyed by `({String root, String version})`: the package root (the file's directory when no `pubspec.yaml` encloses it) and the `major.minor` language version.
 - `Candidate` is no longer exported; it was an internal detail of the AST pass.
+- `FileResult(path, sites, reverted, {removedImports})` takes a list of `Site`s; `converted` and `kept` are now getters derived from them and return the same strings as before.
 
 ### Added
 
 - `--allow-errors` (`Sanitizer(allowErrors: true)`) also rewrites files whose library already has analysis errors.
+- `--set-exit-if-changed` exits 1 when at least one site converted, or with `--dry-run` would convert, so `dotsan -n --set-exit-if-changed` can gate CI. Without `--dry-run` the files are still written, as with `dart format`.
+- `--format=json` prints the report as one JSON document on stdout: `dryRun`, `files` (each with `path`, `removedImports` and `sites`), `converted`, `kept`, `skipListed` and `removedImports`. Each site has a 1-based `line` and `column`, `before`, `after` (or null) and `keptReason` (or null); kept sites appear only with `--explain`. Warnings stay on stderr.
+- `Site` (exported): one reported site, with its 1-based position, `before`, `after` and `keptReason`; `FileResult.sites` lists them by line, then column.
 
 ### Changed
 

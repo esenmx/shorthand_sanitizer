@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:args/args.dart';
@@ -53,6 +54,17 @@ ArgParser _buildParser() {
       abbr: 'e',
       negatable: false,
       help: 'Also list every site left prefixed, with the reason.',
+    )
+    ..addFlag(
+      'set-exit-if-changed',
+      negatable: false,
+      help: 'Exit 1 if any site was converted (or, with --dry-run, would be).',
+    )
+    ..addOption(
+      'format',
+      allowed: ['text', 'json'],
+      defaultsTo: 'text',
+      help: 'Report format on stdout.',
     )
     ..addFlag('version', abbr: 'v', negatable: false, help: 'Print version.')
     ..addFlag('help', abbr: 'h', negatable: false, help: 'Print this usage.');
@@ -115,9 +127,11 @@ Future<void> main(List<String> args) async {
   }
 
   final dryRun = opts.flag('dry-run');
+  final json = opts.option('format') == 'json';
   // Piped stdout is the parseable report; the non-ANSI Progress fallback
-  // prints its message there, so the spinner is TTY-only.
-  final progress = stdout.hasTerminal
+  // prints its message there, so the spinner is TTY-only — and never over
+  // JSON, which stays pure even on a terminal.
+  final progress = !json && stdout.hasTerminal
       ? Logger.standard().progress('analyzing')
       : null;
   final result = await Sanitizer(
@@ -129,10 +143,12 @@ Future<void> main(List<String> args) async {
     allowErrors: opts.flag('allow-errors'),
   ).run(paths);
   progress?.finish(showTiming: true);
-  for (final file in result.files) {
-    stdout.writeln(_display(file.path));
-    for (final line in [...file.converted, ...file.kept]) {
-      stdout.writeln('  $line');
+  if (!json) {
+    for (final file in result.files) {
+      stdout.writeln(_display(file.path));
+      for (final line in [...file.converted, ...file.kept]) {
+        stdout.writeln('  $line');
+      }
     }
   }
   final ansi = Ansi(
@@ -166,19 +182,55 @@ Future<void> main(List<String> args) async {
       stderr.writeln('  ${_display(path)}');
     }
   }
-  final changed = result.files.where((f) => f.converted.isNotEmpty).length;
-  final kept = result.keptCount;
-  final skipped = result.skippedByList;
-  final removed = result.removedImportCount;
-  final verb = dryRun ? 'would convert' : 'converted';
-  final pruneVerb = dryRun ? 'would prune' : 'pruned';
-  stdout.writeln(
-    '$verb ${result.convertedCount} site(s) in $changed file(s)'
-    '${kept > 0 ? ', $kept kept' : ''}'
-    '${skipped > 0 ? ', $skipped skip-listed' : ''}'
-    '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
-  );
+  if (json) {
+    stdout.writeln(
+      const JsonEncoder.withIndent('  ').convert(_json(result, dryRun)),
+    );
+  } else {
+    final changed = result.files.where((f) => f.converted.isNotEmpty).length;
+    final kept = result.keptCount;
+    final skipped = result.skippedByList;
+    final removed = result.removedImportCount;
+    final verb = dryRun ? 'would convert' : 'converted';
+    final pruneVerb = dryRun ? 'would prune' : 'pruned';
+    stdout.writeln(
+      '$verb ${result.convertedCount} site(s) in $changed file(s)'
+      '${kept > 0 ? ', $kept kept' : ''}'
+      '${skipped > 0 ? ', $skipped skip-listed' : ''}'
+      '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
+    );
+  }
+  // Not exit(): it can cut off a large report still being flushed.
+  if (opts.flag('set-exit-if-changed') && result.convertedCount > 0) {
+    exitCode = 1;
+  }
 }
+
+/// The `--format=json` document; its schema is in the README.
+Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
+  'dryRun': dryRun,
+  'converted': result.convertedCount,
+  'kept': result.keptCount,
+  'skipListed': result.skippedByList,
+  'removedImports': result.removedImportCount,
+  'files': [
+    for (final file in result.files)
+      {
+        'path': _display(file.path),
+        'removedImports': file.removedImports,
+        'sites': [
+          for (final site in file.sites)
+            {
+              'line': site.line,
+              'column': site.column,
+              'before': site.before,
+              'after': site.after,
+              'keptReason': site.keptReason,
+            },
+        ],
+      },
+  ],
+};
 
 /// Why [pattern] is not a valid `--exclude` glob, or null when it is.
 String? _globError(String pattern) {
