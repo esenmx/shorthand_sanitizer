@@ -22,6 +22,7 @@ void main() {
   e2e('vft_warning', vftWarning);
   e2e('duplicate_info', duplicateInfo);
   e2e('use_result', useResult);
+  e2e('generic_function', genericFunction, converted: 2);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -725,5 +726,39 @@ environment:
 dependencies:
   geo_pkg:
     path: geo_pkg
+''',
+};
+
+// A generic function type's own type parameters have no declaration of
+// their own: identical types must key identically, bounds included.
+const genericFunction = {
+  'bin/main.dart': r'''
+import 'package:generic_function/g.dart';
+
+void main() {
+  final G<T Function<T>(T)> gen = GGen.of(idf);
+  print('gen ${gen.show}');
+  final G<T Function<T extends num>(T)> genNum = GGenNum.of(
+    <T extends num>(T x) => x,
+  );
+  print('genNum ${genNum.show}');
+}
+''',
+  'lib/g.dart': r'''
+class G<T> {
+  G.of(this.value);
+  T value;
+  String get show => 'G<$T>';
+}
+
+T idf<T>(T x) => x;
+
+typedef GGen = G<T Function<T>(T)>;
+typedef GGenNum = G<T Function<T extends num>(T)>;
+''',
+  'pubspec.yaml': '''
+name: generic_function
+environment:
+  sdk: ^3.10.0
 ''',
 };

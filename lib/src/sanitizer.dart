@@ -1028,13 +1028,12 @@ final class _FileSanitizer({
       } else if (resolved.matches(candidate)) {
         if (resolved.staticType != candidate.staticType) {
           culprits.add(candidate);
-          // Same display, different types (two classes named `X`): only the
-          // library-qualified keys tell them apart.
-          final shown = resolved.shownType != candidate.shownType;
+          // Same display, different types: two classes named `X`.
+          final to = resolved.shownType == candidate.shownType
+              ? 'a different ${resolved.shownType}'
+              : resolved.shownType;
           _why[candidate] =
-              'changes the static type from '
-              '${shown ? candidate.shownType : candidate.staticType} to '
-              '${shown ? resolved.shownType : resolved.staticType}';
+              'changes the static type from ${candidate.shownType} to $to';
         }
       } else {
         final target = [?resolved.containerName, resolved.memberName].join('.');
@@ -1306,30 +1305,30 @@ String _parametersOf(ConstructorElement e) {
 /// without its library, so two distinct classes called `X` display alike;
 /// this key names every interface by library URI and name, recursively over
 /// type arguments, function and record types, with nullability.
-String _typeKey(DartType type) {
+String _typeKey(
+  DartType type, [
+  Map<TypeParameterElement, String> local = const {},
+]) {
   final nullable = switch (type.nullabilitySuffix) {
     .question => '?',
     .star => '*',
     .none => '',
   };
-  String keys(Iterable<DartType> types) => types.map(_typeKey).join(', ');
-  String named(RecordTypeNamedField f) => '${_typeKey(f.type)} ${f.name}';
+  String key(DartType t) => _typeKey(t, local);
+  String keys(Iterable<DartType> types) => types.map(key).join(', ');
+  String named(RecordTypeNamedField f) => '${key(f.type)} ${f.name}';
   return switch (type) {
     InterfaceType(:final element, :final typeArguments) =>
       '${element.library.uri}::${element.name}'
           '${typeArguments.isEmpty ? '' : '<${keys(typeArguments)}>'}'
           '$nullable',
-    TypeParameterType(:final element) =>
-      '${element.library?.uri}::${element.enclosingElement?.displayName}'
-          '.${element.name}$nullable',
-    FunctionType(
-      :final returnType,
-      :final typeParameters,
-      :final formalParameters,
-    ) =>
-      '${_typeKey(returnType)} '
-          'Function<${typeParameters.map((t) => t.name).join(', ')}>'
-          '(${formalParameters.map(_parameterKey).join(', ')})$nullable',
+    TypeParameterType(:final element) => switch (local[element]) {
+      final position? => '$position$nullable',
+      null =>
+        '${element.library?.uri}::${element.enclosingElement?.displayName}'
+            '.${element.name}$nullable',
+    },
+    FunctionType() => '${_functionKey(type, local)}$nullable',
     RecordType(:final positionalFields, :final namedFields) =>
       '(${keys(positionalFields.map((f) => f.type))}; '
           '${namedFields.map(named).join(', ')})$nullable',
@@ -1338,11 +1337,31 @@ String _typeKey(DartType type) {
   };
 }
 
-String _parameterKey(FormalParameterElement p) => switch (p) {
+/// A generic function type's own type parameters have no declaration that
+/// identifies them across two resolves, so they are keyed by position,
+/// bounds included: `T Function<T>(T)` keys alike wherever it is written.
+String _functionKey(FunctionType f, Map<TypeParameterElement, String> outer) {
+  final local = {
+    ...outer,
+    for (final (i, t) in f.typeParameters.indexed) t: '#${outer.length + i}',
+  };
+  String typeParameter(TypeParameterElement t) => switch (t.bound) {
+    final bound? => '${local[t]} extends ${_typeKey(bound, local)}',
+    null => '${local[t]}',
+  };
+  return '${_typeKey(f.returnType, local)} '
+      'Function<${f.typeParameters.map(typeParameter).join(', ')}>'
+      '(${f.formalParameters.map((p) => _parameterKey(p, local)).join(', ')})';
+}
+
+String _parameterKey(
+  FormalParameterElement p, [
+  Map<TypeParameterElement, String> local = const {},
+]) => switch (p) {
   _ when p.isNamed =>
-    '{${p.isRequired ? 'required ' : ''}${_typeKey(p.type)} ${p.name}}',
-  _ when p.isOptionalPositional => '[${_typeKey(p.type)}]',
-  _ => _typeKey(p.type),
+    '{${p.isRequired ? 'required ' : ''}${_typeKey(p.type, local)} ${p.name}}',
+  _ when p.isOptionalPositional => '[${_typeKey(p.type, local)}]',
+  _ => _typeKey(p.type, local),
 };
 
 /// Annotations that restrict where [element] may be used. A licensed rebind
