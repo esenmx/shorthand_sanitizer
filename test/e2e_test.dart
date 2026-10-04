@@ -23,6 +23,12 @@ void main() {
   e2e('duplicate_info', duplicateInfo);
   e2e('use_result', useResult);
   e2e('generic_function', genericFunction, converted: 2);
+  e2e(
+    'restrict_scope',
+    restrictScope,
+    converted: 2,
+    roots: ['lib', 'bin', 'test'],
+  );
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -35,6 +41,7 @@ void e2e(
   Map<String, String> files, {
   int? converted,
   bool allowErrors = false,
+  List<String> roots = const ['lib', 'bin'],
 }) {
   test('e2e $name', () async {
     final root = Directory.systemTemp.createTempSync('dotsan_e2e_');
@@ -67,7 +74,7 @@ void e2e(
     final diagnosticsBefore = _diagnostics(root);
     final runBefore = _run(root);
     final result = await Sanitizer(allowErrors: allowErrors).run([
-      for (final dir in ['lib', 'bin'])
+      for (final dir in roots)
         if (Directory(p.join(root.path, dir)).existsSync())
           p.join(root.path, dir),
     ]);
@@ -760,5 +767,83 @@ typedef GGenNum = G<T Function<T extends num>(T)>;
 name: generic_function
 environment:
   sdk: ^3.10.0
+''',
+};
+
+// `@internal` is fine within its package and `@visibleForTesting` under the
+// package's `test/`; a cross-package `@internal` and a `lib/` use of
+// `@visibleForTesting` stay refused.
+const restrictScope = {
+  'bin/main.dart': '''
+import 'package:restrict_scope/src/user.dart';
+
+void main() => internalUser();
+''',
+  'geo_pkg/lib/src/geo.dart': r'''
+import 'package:meta/meta.dart';
+
+class Geo {
+  const Geo();
+  @internal
+  const factory Geo.ext(int v) = Box.ext;
+}
+
+class Box extends Geo {
+  const Box.ext(this.v);
+  final int v;
+}
+
+void useGeo(Geo g) => print('geo ${g.runtimeType}');
+''',
+  'geo_pkg/pubspec.yaml': '''
+name: geo_pkg
+environment:
+  sdk: ^3.10.0
+dependencies:
+  meta: ^1.15.0
+''',
+  'lib/src/local.dart': r'''
+import 'package:meta/meta.dart';
+
+class Local {
+  const Local();
+  @internal
+  const factory Local.all(int v) = LBox.all;
+  @visibleForTesting
+  const factory Local.vft(int v) = LBox.vft;
+}
+
+class LBox extends Local {
+  const LBox.all(this.v);
+  const LBox.vft(this.v);
+  final int v;
+}
+
+void useLocal(Local g) => print('local ${g.runtimeType}');
+''',
+  'lib/src/user.dart': '''
+// ignore_for_file: implementation_imports
+import 'package:geo_pkg/src/geo.dart';
+import 'package:restrict_scope/src/local.dart';
+
+void internalUser() {
+  useLocal(LBox.all(1));
+  useLocal(LBox.vft(2));
+  useGeo(Box.ext(3));
+}
+''',
+  'pubspec.yaml': '''
+name: restrict_scope
+environment:
+  sdk: ^3.10.0
+dependencies:
+  geo_pkg:
+    path: geo_pkg
+  meta: ^1.15.0
+''',
+  'test/vft_user.dart': '''
+import 'package:restrict_scope/src/local.dart';
+
+void main() => useLocal(LBox.vft(4));
 ''',
 };
