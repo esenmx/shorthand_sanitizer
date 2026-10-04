@@ -424,7 +424,10 @@ final G<b.X> g = AG.of(const a.X());
       explain: true,
     ).run([file.path]);
     expect(result.convertedCount, 0);
-    expect(result.files.single.kept.single, contains('r1_a.dart::X>'));
+    expect(
+      result.files.single.kept.single,
+      '5: AG.of kept: changes the static type from G<X> to a different G<X>',
+    );
   });
 
   test('SS-R2 a rebind onto a @visibleForTesting member is refused', () async {
