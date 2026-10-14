@@ -45,9 +45,10 @@ void main() {
   test('piped streams carry only the report and plain warning', () {
     // Full-string equality is the oracle: piped stdout is the parseable
     // report, so no progress/spinner text and no ANSI codes may leak into
-    // either stream when they are not terminals.
+    // either stream when they are not terminals. A skipped package fails the
+    // run (65).
     final run = dotsan(['--dry-run', p.join(pkg.path, 'lib')]);
-    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(run.exitCode, 65, reason: '${run.stderr}');
     expect(run.stdout, 'would convert 0 site(s) in 0 file(s)\n');
     final root = p.normalize(p.absolute(pkg.path));
     expect(
@@ -69,11 +70,9 @@ void main() {
     });
 
     test('a run with nothing to convert exits 0', () {
-      final run = dotsan([
-        '-n',
-        '--set-exit-if-changed',
-        p.join(pkg.path, 'lib'),
-      ]);
+      final file = explainFixture()
+        ..writeAsStringSync('enum Fit { cover }\nvoid main() {}\n');
+      final run = dotsan(['-n', '--set-exit-if-changed', file.parent.path]);
       expect(run.exitCode, 0, reason: '${run.stderr}');
     });
 
@@ -89,17 +88,28 @@ void main() {
     final file = explainFixture();
     final run = dotsan(['-n', '--explain', '--format=json', file.parent.path]);
     expect(run.exitCode, 0, reason: '${run.stderr}');
-    expect(run.stderr, isEmpty);
+    expect(run.stderr, startsWith('note: using Dart SDK '));
+    expect(LineSplitter.split(run.stderr as String), hasLength(1));
     expect(jsonDecode(run.stdout as String), {
       'dryRun': true,
       'converted': 1,
       'kept': 1,
       'skipListed': 0,
       'removedImports': 0,
+      'skippedWithErrors': <Object?>[],
+      'skippedBelowFloor': <Object?>[],
+      'skippedUnconfigured': <Object?>[],
+      'skippedOrphanParts': <Object?>[],
+      'unreadableDirectories': <Object?>[],
+      'skippedGenerated': <Object?>[],
+      'writeFailures': <Object?>[],
+      'unmatchedSkips': <Object?>[],
+      'unmatchedExcludes': <Object?>[],
       'files': [
         {
           'path': p.normalize(p.absolute(file.path)),
           'removedImports': 0,
+          'prunedImports': <Object?>[],
           'sites': [
             {
               'line': 3,
@@ -229,6 +239,100 @@ void main() {
     ).firstMatch(File('pubspec.yaml').readAsStringSync())?.group(1);
     expect(version, isNotNull);
     expect(dotsan(['--version']).stdout, 'dotsan $version\n');
+  });
+
+  test('SS-I1 names the pruned import and counts its file in changed', () {
+    final dir = Directory.systemTemp.createTempSync('dotsan_part_orphan');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    Directory(p.join(dir.path, 'lib')).createSync();
+    File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync('''
+name: part_orphan_cli
+environment:
+  sdk: ^3.10.0
+''');
+    File(p.join(dir.path, 'lib', 'fit.dart')).writeAsStringSync('''
+enum Fit { cover }
+''');
+    File(p.join(dir.path, 'lib', 'sink.dart')).writeAsStringSync('''
+import 'fit.dart';
+void take(Fit f) {}
+''');
+    final libFile = File(p.join(dir.path, 'lib', 'lib.dart'))
+      ..writeAsStringSync('''
+import 'fit.dart';
+import 'sink.dart';
+part 'part.dart';
+''');
+    final partFile = File(p.join(dir.path, 'lib', 'part.dart'))
+      ..writeAsStringSync('''
+part of 'lib.dart';
+void run() => take(Fit.cover);
+''');
+    final get = Process.runSync('dart', [
+      'pub',
+      'get',
+    ], workingDirectory: dir.path);
+    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+
+    final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(
+      run.stdout,
+      '${p.normalize(p.absolute(partFile.path))}\n'
+      '  2: Fit.cover -> .cover\n'
+      '${p.normalize(p.absolute(libFile.path))}\n'
+      "  1: import 'fit.dart' -> removed\n"
+      'would convert 1 site(s) in 2 file(s), '
+      'would prune 1 orphaned import(s)\n',
+    );
+  });
+
+  test("explain names the pruned import beside a library's kept sites", () {
+    final dir = Directory.systemTemp.createTempSync('dotsan_part_orphan');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    Directory(p.join(dir.path, 'lib')).createSync();
+    File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync('''
+name: part_orphan_kept_cli
+environment:
+  sdk: ^3.10.0
+''');
+    File(p.join(dir.path, 'lib', 'fit.dart')).writeAsStringSync('''
+enum Fit { cover }
+''');
+    File(p.join(dir.path, 'lib', 'sink.dart')).writeAsStringSync('''
+import 'fit.dart';
+void take(Fit f) {}
+''');
+    final libFile = File(p.join(dir.path, 'lib', 'lib.dart'))
+      ..writeAsStringSync('''
+import 'fit.dart';
+import 'sink.dart';
+part 'part.dart';
+void other() => print(Duration.zero);
+''');
+    final partFile = File(p.join(dir.path, 'lib', 'part.dart'))
+      ..writeAsStringSync('''
+part of 'lib.dart';
+void run() => take(Fit.cover);
+''');
+    final get = Process.runSync('dart', [
+      'pub',
+      'get',
+    ], workingDirectory: dir.path);
+    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+
+    final run = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
+    expect(run.exitCode, 0, reason: '${run.stderr}');
+    expect(
+      run.stdout,
+      '${p.normalize(p.absolute(libFile.path))}\n'
+      '  4: Duration.zero kept: context type Object? declares no static zero\n'
+      "  1: import 'fit.dart' -> removed\n"
+      '${p.normalize(p.absolute(partFile.path))}\n'
+      '  2: Fit.cover -> .cover\n'
+      'would convert 1 site(s) in 2 file(s), 1 kept, '
+      'would prune 1 orphaned import(s)\n',
+    );
   });
 }
 

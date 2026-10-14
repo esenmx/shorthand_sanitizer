@@ -27,34 +27,42 @@ import 'package:path/path.dart' as p;
 
 String? _cachedSdkPath;
 
-/// Locates the Dart SDK for the analyzer, or null when none is found. Inside
-/// a JIT run the executable lives in the SDK; an AOT-compiled binary does
-/// not, so fall back to `DART_SDK`, then to the `dart` on PATH (`which`, or
-/// `where` on Windows; following the Flutter shim, whose SDK sits under
-/// `bin/cache/dart-sdk`). `package:cli_util`'s `sdkPath` is
-/// the resolvedExecutable step alone — no validity check, no AOT or shim
+/// Locates the Dart SDK for the analyzer, or null when none is found. A set
+/// `DART_SDK` decides alone: null when it names no SDK, never a silent
+/// fallback to another one. Unset, inside a JIT run the executable lives in
+/// the SDK; an AOT-compiled binary does not, so fall back to the `dart` on
+/// PATH (`which`, or `where` on Windows; following the Flutter shim, whose SDK
+/// sits under `bin/cache/dart-sdk`). `package:cli_util`'s `sdkPath` is the
+/// resolvedExecutable step alone — no validity check, no AOT or shim
 /// fallback — so it cannot replace this.
 String? sdkPath() {
   if (_cachedSdkPath != null) return _cachedSdkPath;
 
-  bool isSdk(String dir) =>
-      File(p.join(dir, 'version')).existsSync() &&
-      Directory(p.join(dir, 'lib', '_internal')).existsSync();
-
   final env = Platform.environment['DART_SDK'];
-  if (env != null && isSdk(env)) return _cachedSdkPath = env;
+  if (env != null) return isDartSdk(env) ? _cachedSdkPath = env : null;
 
   final exeSdk = p.dirname(p.dirname(Platform.resolvedExecutable));
-  if (isSdk(exeSdk)) return _cachedSdkPath = exeSdk;
+  if (isDartSdk(exeSdk)) return _cachedSdkPath = exeSdk;
 
   final which = _dartOnPath();
   if (which == null) return null;
-  final bin = p.dirname(File(which).resolveSymbolicLinksSync());
+  final String resolved;
+  try {
+    resolved = File(which).resolveSymbolicLinksSync();
+  } on FileSystemException {
+    return null;
+  }
+  final bin = p.dirname(resolved);
   for (final candidate in [p.join(bin, 'cache', 'dart-sdk'), p.dirname(bin)]) {
-    if (isSdk(candidate)) return _cachedSdkPath = candidate;
+    if (isDartSdk(candidate)) return _cachedSdkPath = candidate;
   }
   return null;
 }
+
+/// Whether [dir] is a Dart SDK: it holds `version` and `lib/_internal`.
+bool isDartSdk(String dir) =>
+    File(p.join(dir, 'version')).existsSync() &&
+    Directory(p.join(dir, 'lib', '_internal')).existsSync();
 
 /// `where` lists every match, with CRLF line endings.
 String? _dartOnPath() {
@@ -64,6 +72,7 @@ String? _dartOnPath() {
   } on ProcessException {
     return null;
   }
+  if (lookup.exitCode != 0) return null;
   for (final line in LineSplitter.split(lookup.stdout.toString())) {
     if (line.trim() case final path when path.isNotEmpty) return path;
   }
@@ -71,7 +80,7 @@ String? _dartOnPath() {
 }
 
 /// One `Type.member` occurrence that may convert to `.member`.
-final class Candidate({
+final class _Candidate({
   /// Start of the `Type` prefix to delete.
   required final int deleteStart,
 
@@ -80,6 +89,10 @@ final class Candidate({
 
   /// Offset of the `.` — where the shorthand node begins after the rewrite.
   required final int shorthandOffset,
+
+  /// `Type` or `prefix.Type` as written — the imported reference the rewrite
+  /// drops.
+  required final String owner,
 
   /// `Type.member` as written, for reporting and skip-list matching.
   required final String display,
@@ -124,10 +137,10 @@ final class Candidate({
 /// One reported `Type.member` site: converted, or (with [Sanitizer.explain])
 /// left prefixed.
 final class Site({
-  /// 1-based line of the `Type` prefix.
+  /// 1-based line of the `Type` prefix, in the file as the run found it.
   required final int line,
 
-  /// 1-based column of the `Type` prefix.
+  /// 1-based column of the `Type` prefix, in the file as the run found it.
   required final int column,
 
   /// `Type.member` as written.
@@ -143,6 +156,38 @@ final class Site({
   this;
 }
 
+/// One import directive pruned because a conversion orphaned it, with every
+/// edit made beside it.
+final class PrunedImport({
+  /// 1-based line of the `import` keyword, in the file as the run found it.
+  required final int line,
+
+  /// The import's URI as written, without quotes.
+  required final String uri,
+
+  /// `library;` when the directive was replaced to keep the file's leading
+  /// doc comment or annotation on the library; null when it was removed.
+  final String? replacement,
+
+  /// The trailing `//` comment deleted with the directive.
+  final String? deletedComment,
+
+  /// The trailing `// ignore_for_file:` comment left on the line, since it
+  /// covers the whole file.
+  final String? keptComment,
+}) {
+  /// Creates a pruned-import report.
+  this;
+
+  /// `"line: import 'uri' -> removed"`, naming any side edit.
+  String get description => [
+    "$line: import '$uri' -> ${replacement ?? 'removed'}",
+    if (deletedComment case final c?) ', with its trailing comment $c',
+    if (keptComment case final c?)
+      ', keeping its trailing comment $c on the line',
+  ].join();
+}
+
 /// Per-file outcome of a sanitize run.
 final class FileResult(
   /// Canonical path of the rewritten file.
@@ -153,12 +198,19 @@ final class FileResult(
   final int reverted, {
 
   /// Imports pruned from this file because a conversion — here or in another
-  /// unit of its library — orphaned them (see [Sanitizer]).
-  final int removedImports = 0,
+  /// unit of its library — orphaned them (see [Sanitizer]), by line.
+  List<PrunedImport> prunedImports = const [],
 }) {
   /// Creates a result for [path]; [sites] are kept sorted by line, then
   /// column.
   this;
+
+  /// Imports pruned from this file, by line.
+  final List<PrunedImport> prunedImports = [...prunedImports]
+    ..sort((a, b) => a.line.compareTo(b.line));
+
+  /// How many imports were pruned from this file.
+  int get removedImports => prunedImports.length;
 
   /// Every converted site and, with [Sanitizer.explain], every site left
   /// prefixed — skip-listed, ruled out by the static pre-check, or refused by
@@ -219,6 +271,39 @@ final class SanitizeResult {
   /// the same library, stay written.
   final List<({String file, String path, String error})> writeFailures = [];
 
+  /// Part files skipped whole because the library they declare `part of`
+  /// does not exist, as canonical paths.
+  final List<String> skippedOrphanParts = [];
+
+  /// Directories whose listing failed, with the OS's reason: none of their
+  /// files were processed.
+  final List<({String path, String error})> unreadableDirectories = [];
+
+  /// Files skipped because their leading comment declares them generated
+  /// ([Sanitizer.isGenerated]), as canonical paths.
+  final List<String> skippedGenerated = [];
+
+  /// Files left alone by [Sanitizer.excludes] or an `analysis_options.yaml`
+  /// exclude, as canonical paths, with the rule that matched.
+  final List<({String path, String reason})> excluded = [];
+
+  /// [Sanitizer.skips] entries that matched no site in the run.
+  final Set<String> unmatchedSkips = {};
+
+  /// [Sanitizer.excludes] globs that matched no file in the run.
+  final List<String> unmatchedExcludes = [];
+
+  /// Whether a file the run should have processed was skipped instead: below
+  /// the language floor, unconfigured, with analysis errors, an orphan part,
+  /// or under an unreadable directory. Generated and excluded files are left
+  /// alone by request and do not count.
+  bool get hasSkips =>
+      skippedBelowFloor.isNotEmpty ||
+      skippedUnconfigured.isNotEmpty ||
+      skippedWithErrors.isNotEmpty ||
+      skippedOrphanParts.isNotEmpty ||
+      unreadableDirectories.isNotEmpty;
+
   /// Total converted sites.
   int get convertedCount => files.fold(0, (n, f) => n + f.converted.length);
 
@@ -235,22 +320,29 @@ final class SanitizeResult {
 
 /// Rewrites `Type.member` to dot-shorthand `.member` (enum values, static
 /// getters/fields/methods, named — incl. factory/const — constructors) at
-/// every site where the rewrite provably resolves to the SAME element.
+/// every site where the rewrite provably resolves to the SAME element with the
+/// SAME static type.
 ///
-/// Strategy per file: resolve once, rewrite every syntactic candidate, resolve
-/// the rewritten text once, then keep only candidates whose shorthand node
-/// resolved back to the original element with no new diagnostics. Anything
-/// else — unwitnessed context (`Object`, generics), members living on a
-/// sibling namespace (`Colors.red` in a `Color` slot, `Curves.easeIn` in a
-/// `Curve` slot), silent rebinds to a same-named static — is reverted.
+/// Strategy per file: filter out sites that cannot verify statically, rewrite
+/// every remaining candidate, resolve the rewritten text, then keep only
+/// candidates whose shorthand node resolved back to the original element with
+/// the same static type, no new use-restricting annotations (`@useResult`,
+/// `@Deprecated`, `@visibleForTesting`, `@internal`, `@protected`, etc.), and
+/// no new diagnostics in the library. Anything else — unwitnessed context
+/// (`Object`, generics), typedefs fixing type arguments
+/// (`typedef IntG = G<int>`), members living on a sibling namespace
+/// (`Colors.red` in a `Color` slot), silent rebinds to a same-named static —
+/// is reverted.
 ///
-/// Two rebinds are licensed, both observably no-ops:
+/// Two cross-type rebinds are licensed, both observably no-ops when they land
+/// in a typed slot of the target type (`_Viability.typedSlotOf`) and add no
+/// disallowed restriction:
 /// - a `static const` alias of the original
 ///   (`AlignmentGeometry.topCenter = Alignment.topCenter`) — a different
 ///   element holding the identical canonicalized constant. Const-value
 ///   identity, not element identity, decides — see `_isConstAlias`.
 /// - a redirecting factory whose chain ends at the original constructor with
-///   the same formal parameters (`const factory EdgeInsetsGeometry.all(double
+///   compatible formal parameters (`const factory EdgeInsetsGeometry.all(double
 ///   value) = EdgeInsets.all`) — the language forwards the arguments
 ///   untouched, so `.all(8)` in an `EdgeInsetsGeometry` slot constructs the
 ///   very `EdgeInsets` the prefix did. See `_ResolvedShorthand.forwardsTo`.
@@ -260,12 +352,14 @@ final class SanitizeResult {
 /// reports that the original did not is self-inflicted, so its directive is
 /// pruned. Imports the file already left unused are the user's — they stay.
 final class Sanitizer({
-  /// `Type.member` or bare `member` names that must stay prefixed.
-  final Set<String> skips = const {},
+  /// `Type.member`, `prefix.Type.member` or bare `member` names that must
+  /// stay prefixed; anything else throws an [ArgumentError].
+  Set<String> skips = const {},
 
-  /// Glob patterns of files to leave alone. Each glob is matched against
-  /// both the CWD-relative path (`/` separators) and the basename
-  /// (`firebase_options.dart`, `**/legacy/**`).
+  /// Glob patterns of files to leave alone. A glob with a `/` matches the
+  /// path relative to the working directory, like the paths handed to [run]
+  /// (`lib/legacy/**`, `**/legacy/**`); one without matches the file name
+  /// (`firebase_options.dart`, `*.g.dart`).
   final List<String> excludes = const [],
 
   /// Report what would convert without writing any file.
@@ -282,9 +376,37 @@ final class Sanitizer({
   /// diagnostic; otherwise they are listed in
   /// [SanitizeResult.skippedWithErrors] and left alone.
   final bool allowErrors = false,
+
+  /// Leave alone files matching the `analyzer: exclude:` globs of their own
+  /// package's `analysis_options.yaml`. Unlike `dart analyze`, a parent
+  /// package's excludes never reach a nested package. They are listed in
+  /// [SanitizeResult.excluded].
+  final bool analyzerExcludes = true,
 }) {
   /// Creates a sanitizer; see [run].
   this;
+
+  /// `Type.member`, `prefix.Type.member` or bare `member` names that must
+  /// stay prefixed.
+  final Set<String> skips = {
+    for (final entry in skips)
+      if (isSkipEntry(entry))
+        entry
+      else
+        throw ArgumentError.value(
+          entry,
+          'skips',
+          'expected Type.member, prefix.Type.member or member',
+        ),
+  };
+
+  static final _skipShape = RegExp(
+    r'^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*){0,2}$',
+  );
+
+  /// Whether [entry] is a valid [skips] entry: `Type.member`,
+  /// `prefix.Type.member` or `member`, as written — no padding, no list.
+  static bool isSkipEntry(String entry) => _skipShape.hasMatch(entry);
 
   /// Language version that introduced dot shorthands.
   static const _floorMajor = 3;
@@ -295,84 +417,143 @@ final class Sanitizer({
     caseSensitive: false,
   );
 
+  /// [_generatedMarker] opening a doc comment's text.
+  static final _docMarker = RegExp(
+    r'^(auto[-\s]?generated|generated\s+(code|file|by))\b',
+    caseSensitive: false,
+  );
+
   /// Generated-code filter: the file's leading comment says so (build_runner,
   /// FlutterFire, pigeon, protoc, slang). Filename shape (`*.g.dart` vs a
   /// handwritten `*.preview.dart`) proves nothing, the header does.
   ///
-  /// Scanning stops at the first line that is neither blank nor a comment
-  /// (`//`, `#`, or a `/* … */` block): a generator writes its marker in the
-  /// banner, so a comment sitting below the first declaration is ordinary
-  /// prose no matter what it says. A leading BOM is skipped, and a banner of
-  /// any length is read whole. The marker matches `generated`/`auto-generated`,
-  /// never the bare stem — that would flag a handwritten header merely noting
-  /// that something *regenerates* and silently skip the whole file.
+  /// The banner is the run of `//`, `#` and `/* … */` comments before the
+  /// first other token: a generator writes its marker there, so a comment
+  /// below the first declaration is ordinary prose no matter what it says. A
+  /// doc comment (`///` or `/** … */`) documents the library or the first
+  /// declaration, so it ends the banner, and counts only when its text opens
+  /// with the marker (`/// Generated file. Do not edit.`, as slang writes):
+  /// a library doc merely mentioning "generated code" is prose. A leading BOM
+  /// is skipped, and a banner of any length is read whole. The marker matches
+  /// `generated`/`auto-generated`, never the bare stem — that would flag a
+  /// handwritten header merely noting that something *regenerates*.
   static bool isGenerated(String path) {
     final file = File(path);
     if (!file.existsSync()) return false;
-    final raw = utf8.decode(file.readAsBytesSync(), allowMalformed: true);
-    final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
-    var inBlock = false;
-    for (final line in text.split('\n')) {
-      final trimmed = line.trim();
-      final opens = !inBlock && trimmed.startsWith('/*');
-      if (!inBlock &&
-          !opens &&
-          trimmed.isNotEmpty &&
-          !trimmed.startsWith('//') &&
-          !trimmed.startsWith('#')) {
-        return false;
-      }
-      if (_generatedMarker.hasMatch(trimmed)) return true;
-      if (opens) {
-        inBlock = !trimmed.substring(2).contains('*/');
-      } else if (inBlock) {
-        inBlock = !trimmed.contains('*/');
-      }
+    final List<int> bytes;
+    try {
+      bytes = file.readAsBytesSync();
+    } on FileSystemException {
+      return false;
     }
-    return false;
+    final raw = utf8.decode(bytes, allowMalformed: true);
+    final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
+    String lineFrom(int start) {
+      final end = text.indexOf('\n', start);
+      return text.substring(start, end == -1 ? text.length : end);
+    }
+
+    var i = 0;
+    while (true) {
+      while (i < text.length && text[i].trim().isEmpty) {
+        i++;
+      }
+      final rest = text.substring(i);
+      if (rest.startsWith('///')) {
+        return _docMarker.hasMatch(lineFrom(i).substring(3).trimLeft());
+      }
+      if (rest.startsWith('/**') && !rest.startsWith('/**/')) {
+        final close = text.indexOf('*/', i + 3);
+        final body = text.substring(i + 3, close == -1 ? text.length : close);
+        return _docMarker.hasMatch(body.replaceFirst(RegExp(r'^[\s*]*'), ''));
+      }
+      if (rest.startsWith('//') || rest.startsWith('#')) {
+        final line = lineFrom(i);
+        if (_generatedMarker.hasMatch(line)) return true;
+        i += line.length;
+        continue;
+      }
+      if (rest.startsWith('/*')) {
+        final close = text.indexOf('*/', i + 2);
+        final body = text.substring(i + 2, close == -1 ? text.length : close);
+        if (_generatedMarker.hasMatch(body)) return true;
+        if (close == -1) return false;
+        i = close + 2;
+        continue;
+      }
+      return false;
+    }
   }
 
   /// Sanitizes every non-generated `.dart` file under [paths]
   /// (files or directories).
+  ///
+  /// Throws a [StateError] when no Dart SDK is found (see [sdkPath]).
   Future<SanitizeResult> run(List<String> paths) async {
-    final globs = [for (final e in excludes) Glob(e)];
+    final sdk = sdkPath();
+    if (sdk == null) {
+      throw StateError(switch (Platform.environment['DART_SDK']) {
+        final env? => 'DART_SDK is set to $env, which is not a Dart SDK',
+        null => 'could not locate the Dart SDK: set DART_SDK to its directory',
+      });
+    }
+    final globs = {for (final e in excludes) e: Glob(e)};
+    final matchedGlobs = <String>{};
     final cwd = _real(p.current);
-    bool isExcluded(String path) {
+    String? excludedBy(String path) {
       final relative = p
           .relative(_real(path), from: cwd)
           .replaceAll(p.separator, '/');
-      return globs.any(
-        (g) => g.matches(relative) || g.matches(p.basename(path)),
-      );
+      for (final MapEntry(key: pattern, value: glob) in globs.entries) {
+        final subject = pattern.contains('/') ? relative : p.basename(path);
+        if (glob.matches(subject)) {
+          matchedGlobs.add(pattern);
+          return 'matches --exclude "$pattern"';
+        }
+      }
+      return null;
     }
 
-    final files = _collectFiles(paths, isExcluded);
     final result = SanitizeResult();
-    if (files.isEmpty) return result;
+    final collected = _collectFiles(paths, excludedBy, result);
+    final matchedSkips = <String>{};
+    try {
+      if (collected.isEmpty) return result;
+      await _runOn(collected, paths, sdk, excludedBy, result, matchedSkips);
+      return result;
+    } finally {
+      result.unmatchedSkips.addAll(skips.difference(matchedSkips));
+      result.unmatchedExcludes.addAll(
+        excludes.where((e) => !matchedGlobs.contains(e)),
+      );
+    }
+  }
 
-    // Pruning may edit another unit of a file's library: only one this run
-    // would have processed itself.
-    final scope = files.map(_real).toSet();
-    String? offLimits(String path) => switch (path) {
-      _ when scope.contains(_real(path)) => null,
-      _ when isExcluded(path) => 'excluded',
-      _ when skipGenerated && isGenerated(path) => 'generated',
-      _ => 'not among the given paths',
-    };
-
+  Future<void> _runOn(
+    List<String> collected,
+    List<String> paths,
+    String sdk,
+    String? Function(String path) excludedBy,
+    SanitizeResult result,
+    Set<String> matchedSkips,
+  ) async {
     final overlay = OverlayResourceProvider(PhysicalResourceProvider.INSTANCE);
+    final gate = _PackageGate();
     // Roots, not files: the locator spends ~2ms per included path, a second
-    // per 500 files. An `analyzer: exclude:` in the package's options then
-    // hides those files from `contextFor`, so contexts are picked by root
-    // below — every collected file is analyzed, as before.
-    final roots = paths.map(_canonical).toSet();
+    // per 500 files. Every discovered package root is included explicitly so
+    // each nested package gets its own AnalysisContext, language version and
+    // package config.
+    final packageRoots = {for (final f in collected) ?gate.rootOf(f)};
+    final roots = {...paths.map(_canonical), ...packageRoots};
     final collection = AnalysisContextCollectionImpl(
       includedPaths: [
         for (final root in roots)
-          if (!roots.any((other) => p.isWithin(other, root))) root,
+          if (packageRoots.contains(root) ||
+              !roots.any((other) => p.isWithin(other, root)))
+            root,
       ],
       resourceProvider: overlay,
-      sdkPath: sdkPath(),
+      sdkPath: sdk,
       byteStore: _byteStore(),
       // Lint rules run on every speculative resolve and inform no verdict —
       // only errors and the analyzer's own import warnings do.
@@ -382,42 +563,91 @@ final class Sanitizer({
           ..lintRules = [];
       },
     );
-    final contexts = [...collection.contexts]
-      ..sort(
-        (a, b) => b.contextRoot.root.path.length.compareTo(
-          a.contextRoot.root.path.length,
-        ),
-      );
-
-    final gate = _PackageGate();
-    // A file pruned for one of its parts may convert sites of its own too.
-    final byPath = <String, FileResult>{};
-    for (final file in files) {
-      final context = contexts.firstWhere(
-        (c) => c.contextRoot.root.isOrContains(file),
-      );
-      for (final r in await _sanitizeFile(
-        context,
-        overlay,
-        file,
-        result,
-        gate,
-        offLimits,
-      )) {
-        byPath.update(
-          r.path,
-          (prior) => FileResult(
-            r.path,
-            [...prior.sites, ...r.sites],
-            prior.reverted + r.reverted,
-            removedImports: prior.removedImports + r.removedImports,
+    try {
+      final contexts = [...collection.contexts]
+        ..sort(
+          (a, b) => b.contextRoot.root.path.length.compareTo(
+            a.contextRoot.root.path.length,
           ),
-          ifAbsent: () => r,
         );
+      AnalysisContext contextOf(String file) => contexts.firstWhere(
+        (c) =>
+            c.contextRoot.root.isOrContains(file) ||
+            c.contextRoot.root.isOrContains(_real(file)),
+      );
+      // Unlike `dart analyze`, a package obeys only its own options file: one
+      // inherited from an enclosing package (its `example/**`) excludes
+      // nothing here.
+      String? analyzerExcluded(String file) {
+        if (!analyzerExcludes) return null;
+        final root = contextOf(file).contextRoot;
+        final options = root.optionsFile?.path;
+        final package = gate.rootOf(file);
+        if (options == null ||
+            package == null ||
+            !(p.isWithin(package, options) ||
+                p.isWithin(_real(package), _real(options)))) {
+          return null;
+        }
+        if (root.isAnalyzed(file) || root.isAnalyzed(_real(file))) return null;
+        return 'excluded by $options';
       }
+
+      final files = <String>[];
+      for (final file in collected) {
+        if (analyzerExcluded(file) case final reason?) {
+          result.excluded.add((path: file, reason: reason));
+        } else {
+          files.add(file);
+        }
+      }
+
+      // Pruning may edit another unit of a file's library: only one this run
+      // would have processed itself.
+      final scope = files.map(_real).toSet();
+      String? offLimits(String path) => switch (path) {
+        _ when scope.contains(_real(path)) => null,
+        _ when excludedBy(path) != null => 'excluded',
+        _ when analyzerExcluded(path) != null => 'excluded',
+        _ when skipGenerated && isGenerated(path) => 'generated',
+        _ => 'not among the given paths',
+      };
+
+      // A dry run writes nothing, so each verified rewrite stays in the
+      // overlay for the rest of the run: every later file of its library is
+      // judged against the text a real run would have written.
+      final verified = <String, String>{};
+      final origins = _Origins();
+      // A file pruned for one of its parts may convert sites of its own too.
+      final byPath = <String, FileResult>{};
+      for (final file in files) {
+        for (final r in await _sanitizeFile(
+          contextOf(file),
+          overlay,
+          file,
+          result,
+          gate,
+          offLimits,
+          verified,
+          origins,
+          matchedSkips,
+        )) {
+          byPath.update(
+            r.path,
+            (prior) => FileResult(
+              r.path,
+              [...prior.sites, ...r.sites],
+              prior.reverted + r.reverted,
+              prunedImports: [...prior.prunedImports, ...r.prunedImports],
+            ),
+            ifAbsent: () => r,
+          );
+        }
+      }
+      result.files.addAll(byPath.values);
+    } finally {
+      await collection.dispose();
     }
-    result.files.addAll(byPath.values);
-    return result;
   }
 
   /// Linked element models — the SDK's, every package's, every library's —
@@ -453,6 +683,9 @@ final class Sanitizer({
     SanitizeResult result,
     _PackageGate gate,
     String? Function(String path) offLimits,
+    Map<String, String> verified,
+    _Origins origins,
+    Set<String> matchedSkips,
   ) async {
     // Without its own package config a package is analyzed as part of
     // whichever one encloses it, at that package's language version.
@@ -465,9 +698,16 @@ final class Sanitizer({
     final library = await context.currentSession.getResolvedLibraryContaining(
       file,
     );
-    if (library is! ResolvedLibraryResult) return const [];
-    final original = library.unitWithPath(file);
-    if (original == null) return const [];
+    if (library is NotLibraryButPartResult) {
+      result.skippedOrphanParts.add(file);
+      return const [];
+    }
+    if (library is! ResolvedLibraryResult) {
+      throw StateError('could not resolve $file: ${library.runtimeType}');
+    }
+    final original =
+        library.unitWithPath(file) ??
+        (throw StateError('$file is missing from its own library'));
 
     // The installed SDK does not decide this — the package's own `environment:
     // sdk:` constraint does. Below the floor every rewrite fails to parse, so
@@ -497,7 +737,10 @@ final class Sanitizer({
 
     final collector = _CandidateCollector(original.typeProvider);
     original.unit.accept(collector);
-    final candidates = <Candidate>[];
+    for (final site in collector.sites) {
+      matchedSkips.addAll(_skipsMatching(site));
+    }
+    final candidates = <_Candidate>[];
     final kept = [...collector.unviable];
     for (final c in collector.candidates) {
       if (_isSkipped(c)) {
@@ -516,7 +759,10 @@ final class Sanitizer({
         if (explain && kept.isNotEmpty)
           FileResult(
             file,
-            _keptSites(original.lineInfo, kept),
+            _keptSites(
+              (offset) => origins.locate(file, original.lineInfo, offset),
+              kept,
+            ),
             collector.unviable.length,
           ),
       ];
@@ -532,6 +778,8 @@ final class Sanitizer({
       unviable: collector.unviable.length,
       kept: explain ? kept : null,
       dryRun: dryRun,
+      verified: verified,
+      origins: origins,
       offLimits: offLimits,
       result: result,
       packageRootOf: gate.rootOf,
@@ -540,28 +788,47 @@ final class Sanitizer({
 
   /// [c] as written, by its declaring type (`m.Fit.cover` and a typedef's
   /// `Mode.cover` both match `Fit.cover`), or by its bare member name.
-  bool _isSkipped(Candidate c) =>
-      skips.contains(c.display) ||
-      skips.contains(c.memberName) ||
-      (c.containerName != null &&
-          skips.contains('${c.containerName}.${c.memberName}'));
+  bool _isSkipped(_Candidate c) => _skipsMatching((
+    display: c.display,
+    memberName: c.memberName,
+    containerName: c.containerName,
+  )).isNotEmpty;
 
-  /// Canonical paths of the files under [paths], each once, sorted.
+  /// The [skips] entries naming [site]; see [_isSkipped].
+  Iterable<String> _skipsMatching(_SiteName site) => [
+    site.display,
+    site.memberName,
+    if (site.containerName case final container?)
+      '$container.${site.memberName}',
+  ].where(skips.contains);
+
+  /// Canonical paths of the files under [paths], each once, sorted. Files
+  /// left alone — excluded, generated — and unreadable directories are
+  /// recorded in [result].
   List<String> _collectFiles(
     List<String> paths,
-    bool Function(String path) isExcluded,
+    String? Function(String path) excludedBy,
+    SanitizeResult result,
   ) {
     // Keyed by real path: one file reached through a symlink and directly
     // is still one file.
     final files = <String, String>{};
-    void add(String path) => files.putIfAbsent(_real(path), () => path);
+    final seen = <String>{};
+    void consider(String path) {
+      final canonical = _canonical(path);
+      if (!seen.add(_real(canonical))) return;
+      if (excludedBy(canonical) case final reason?) {
+        result.excluded.add((path: canonical, reason: reason));
+      } else if (skipGenerated && isGenerated(canonical)) {
+        result.skippedGenerated.add(canonical);
+      } else {
+        files.putIfAbsent(_real(canonical), () => canonical);
+      }
+    }
+
     for (final rootPath in paths) {
       if (FileSystemEntity.isFileSync(rootPath)) {
-        if (rootPath.endsWith('.dart') &&
-            !isExcluded(_canonical(rootPath)) &&
-            (!skipGenerated || !isGenerated(rootPath))) {
-          add(_canonical(rootPath));
-        }
+        if (rootPath.endsWith('.dart')) consider(rootPath);
         continue;
       }
       if (!FileSystemEntity.isDirectorySync(rootPath)) continue;
@@ -572,19 +839,25 @@ final class Sanitizer({
         final List<FileSystemEntity> entities;
         try {
           entities = dir.listSync(followLinks: false);
-        } on FileSystemException {
+        } on FileSystemException catch (e) {
+          result.unreadableDirectories.add((
+            path: _canonical(dir.path),
+            error: e.osError?.message ?? e.message,
+          ));
           continue;
         }
-
+        // A package's own build output, not a `build/` directory of sources.
+        final isPackageRoot = File(p.join(dir.path, 'pubspec.yaml'))
+            .existsSync();
         for (final entity in entities) {
           final base = p.basename(entity.path);
           if (entity is Directory) {
-            if (base.startsWith('.') || base == 'build') continue;
+            if (base.startsWith('.') || (isPackageRoot && base == 'build')) {
+              continue;
+            }
             dirQueue.add(entity);
           } else if (entity is File && entity.path.endsWith('.dart')) {
-            if (isExcluded(_canonical(entity.path))) continue;
-            if (skipGenerated && isGenerated(entity.path)) continue;
-            add(_canonical(entity.path));
+            consider(entity.path);
           }
         }
       }
@@ -614,7 +887,8 @@ final class _PackageGate() {
   final _roots = <String, String?>{};
   final _configs = <String, PackageConfig?>{};
 
-  String? rootOf(String file) => _rootOfDir(p.dirname(file));
+  String? rootOf(String file) =>
+      _rootOfDir(p.dirname(file)) ?? _rootOfDir(p.dirname(_real(file)));
 
   String? _rootOfDir(String dir) {
     if (_roots.containsKey(dir)) return _roots[dir];
@@ -634,8 +908,12 @@ final class _PackageGate() {
     final packagesFile = c.contextRoot.packagesFile;
     if (packagesFile == null) return false;
     final config = await _configOf(packagesFile.path);
-    final pkg = config?.packageOf(Uri.file(file));
-    return pkg != null && _canonical(p.fromUri(pkg.root)) == root;
+    final pkg =
+        config?.packageOf(Uri.file(file)) ??
+        config?.packageOf(Uri.file(_real(file)));
+    return pkg != null &&
+        (p.equals(_canonical(p.fromUri(pkg.root)), root) ||
+            p.equals(_real(p.fromUri(pkg.root)), _real(root)));
   }
 
   Future<PackageConfig?> _configOf(String path) async {
@@ -656,7 +934,7 @@ final class _FileSanitizer({
   required final AnalysisContext context,
   required final OverlayResourceProvider overlay,
   required final String file,
-  required final List<Candidate> candidates,
+  required final List<_Candidate> candidates,
 
   /// Sites the collector's static pre-check ruled out before any resolve;
   /// reported as reverted, since they too stay prefixed.
@@ -666,6 +944,15 @@ final class _FileSanitizer({
   /// loop's refusals join them in [FileResult.kept]. Null: not explaining.
   required final List<_Kept>? kept,
   required final bool dryRun,
+
+  /// The dry run's verified texts so far, by path: they stand in for the
+  /// writes it does not make, so an overlay this file leaves is restored to
+  /// one of them instead of to the disk.
+  required final Map<String, String> verified,
+
+  /// The run's edits so far, which every reported line is mapped back
+  /// through; this file's are added once its own are reported.
+  required final _Origins origins,
   required final ResolvedLibraryResult library,
   required final ResolvedUnitResult original,
   required final String? Function(String path) offLimits,
@@ -685,20 +972,19 @@ final class _FileSanitizer({
 
   /// Candidates still in the running; once [_clean] is set, exactly the ones
   /// it converts.
-  List<Candidate> _active = [...candidates]..sort(_byOffset);
-  final _dropped = <Candidate>[];
+  List<_Candidate> _active = [...candidates]..sort(_byOffset);
+  final _dropped = <_Candidate>[];
   _Rewritten? _clean;
+  ResolvedLibraryResult? _cleanLibrary;
 
   /// The latest verdict's reason for each refused candidate.
-  final _why = <Candidate, String>{};
+  final _why = <_Candidate, String>{};
 
-  /// Directive ranges to strip on write, per unit path of [file]'s library;
+  /// Directive edits to apply on write, per unit path of [file]'s library;
   /// [file]'s in [_clean]'s coordinates, every other unit's in its own.
-  var _orphanCuts = const <String, List<(int, int)>>{};
+  var _orphanCuts = const <String, List<_DirectiveCut>>{};
 
   final _overlaid = <String>{};
-
-  var _stamp = 0;
 
   Future<List<FileResult>> run() async {
     Map<String, String>? texts;
@@ -722,34 +1008,41 @@ final class _FileSanitizer({
     } finally {
       // Unconditional: an overlay holds speculative text, so bailing out with
       // it still installed leaks an unverified rewrite into every file
-      // resolved after it in the same context.
+      // resolved after it in the same context. A dry run keeps its verified
+      // text instead, standing in for the write it does not make.
       for (final path in _overlaid) {
-        overlay.removeOverlay(path);
+        if (texts?[path] case final text? when dryRun) verified[path] = text;
+        if (verified[path] case final text?) {
+          overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
+        } else {
+          overlay.removeOverlay(path);
+        }
         context.changeFile(path);
       }
       await context.applyPendingFileChanges();
     }
 
     // No verified set: nothing converts and the files stay untouched.
-    final converted = texts == null ? const <Candidate>[] : _active;
+    final converted = texts == null ? const <_Candidate>[] : _active;
     final cuts = texts == null
-        ? const <String, List<(int, int)>>{}
+        ? const <String, List<_DirectiveCut>>{}
         : _orphanCuts;
     final done = converted.toSet();
-    return [
+    final deletions = [
+      for (final c in converted)
+        (start: c.deleteStart, end: c.deleteEnd, length: 0),
+    ];
+    CharacterLocation at(int offset) =>
+        origins.locate(file, original.lineInfo, offset);
+    final results = [
       if (converted.isNotEmpty || kept != null)
         FileResult(
           file,
           [
             for (final c in converted)
-              _siteAt(
-                original.lineInfo,
-                c.deleteStart,
-                c.display,
-                after: '.${c.memberName}',
-              ),
+              _siteAt(at, c.deleteStart, c.display, after: '.${c.memberName}'),
             if (kept case final kept?)
-              ..._keptSites(original.lineInfo, [
+              ..._keptSites(at, [
                 ...kept,
                 for (final c in candidates)
                   if (!done.contains(c))
@@ -761,12 +1054,41 @@ final class _FileSanitizer({
               ]),
           ],
           candidates.length - converted.length + unviable,
-          removedImports: cuts[file]?.length ?? 0,
+          prunedImports: [
+            for (final cut in cuts[file] ?? const <_DirectiveCut>[])
+              cut.info(at(_unapply(deletions, cut.keyword)).lineNumber),
+          ],
         ),
-      for (final MapEntry(key: path, value: pruned) in cuts.entries)
-        if (path != file)
-          FileResult(path, const [], 0, removedImports: pruned.length),
+      for (final unit in library.units)
+        if (cuts[unit.path] case final pruned? when unit.path != file)
+          FileResult(
+            unit.path,
+            const [],
+            0,
+            prunedImports: [
+              for (final cut in pruned)
+                cut.info(
+                  origins
+                      .locate(unit.path, unit.lineInfo, cut.keyword)
+                      .lineNumber,
+                ),
+            ],
+          ),
     ];
+    if (texts != null) {
+      origins.record(file, original.lineInfo, [
+        deletions,
+        [for (final cut in cuts[file] ?? const <_DirectiveCut>[]) _editOf(cut)],
+      ]);
+      for (final unit in library.units) {
+        if (cuts[unit.path] case final pruned? when unit.path != file) {
+          origins.record(unit.path, unit.lineInfo, [
+            [for (final cut in pruned) _editOf(cut)],
+          ]);
+        }
+      }
+    }
+    return results;
   }
 
   /// Narrows [_active] to a set that verifies clean, if one exists. Returns
@@ -819,7 +1141,7 @@ final class _FileSanitizer({
   /// needs no proximity constant: a subset that verifies is accepted whole,
   /// and one that does not is split until each half either verifies or is a
   /// single candidate standing alone with its own verdict.
-  Future<List<Candidate>> _largestClean(List<Candidate> set) async {
+  Future<List<_Candidate>> _largestClean(List<_Candidate> set) async {
     if (set.isEmpty) return set;
     final a = await _attempt(set);
     if (a == null) return const [];
@@ -840,7 +1162,7 @@ final class _FileSanitizer({
   /// Re-offers the dropped candidates: one may have been unresolvable only
   /// because a broken neighbour in the same statement starved it of a context
   /// type (`Pad.all(1) + Pad.only(2)`: the context-less LHS takes the RHS down
-  /// with it). Candidates under different [Candidate.groupKey]s cannot
+  /// with it). Candidates under different [_Candidate.groupKey]s cannot
   /// interact, so a whole wave is judged at once and the pass costs the
   /// largest statement's candidate count, not the number of dropped sites.
   ///
@@ -853,11 +1175,15 @@ final class _FileSanitizer({
     var pending = _dropped;
     while (pending.isNotEmpty) {
       final seen = <int>{};
-      final wave = <Candidate>[];
-      final rest = <Candidate>[];
+      final wave = <_Candidate>[];
+      final rest = <_Candidate>[];
       for (final c in pending) {
         (seen.add(c.groupKey) ? wave : rest).add(c);
       }
+      pending = rest;
+      // Skip a redundant full-set resolve when the trial would re-test the
+      // exact initial candidate set that already failed in [_converge].
+      if (_active.isEmpty && wave.length == candidates.length) continue;
 
       final trial = [..._active, ...wave]..sort(_byOffset);
       final a = await _attempt(trial);
@@ -877,12 +1203,12 @@ final class _FileSanitizer({
           }
         }
       }
-      pending = rest;
     }
   }
 
   void _accept(_Attempt a) {
     _clean = a.rewritten;
+    _cleanLibrary = a.library;
     _orphanCuts = _orphanRanges(a.library, _userImportIssues);
   }
 
@@ -890,20 +1216,65 @@ final class _FileSanitizer({
   /// pruned — or null when nothing converts. Pruning is re-verified: if the
   /// pruned library gains any diagnostic, nothing in [file] converts.
   Future<Map<String, String>?> _finalize() async {
-    final clean = _clean;
-    if (clean == null) return null;
-    if (_orphanCuts.isEmpty) return {file: clean.text};
+    while (true) {
+      final clean = _clean;
+      if (clean == null) return null;
+      if (_orphanCuts.isEmpty) return {file: clean.text};
 
-    for (final path in _orphanCuts.keys.where((other) => other != file)) {
-      if (offLimits(path) case final why?) {
-        final shown = p.relative(path, from: p.dirname(file));
-        _refuseAll(
-          'pruning its orphaned imports would edit $shown, which is $why',
-        );
-        return null;
+      var retried = false;
+      for (final path in _orphanCuts.keys.where((other) => other != file)) {
+        if (offLimits(path) case final why?) {
+          final shown = p.relative(path, from: p.dirname(file));
+          final reason =
+              'pruning its orphaned imports would edit $shown, which is $why';
+          final checkUnit = _cleanLibrary?.unitWithPath(path);
+          final orphanImports = <ImportDirective>[
+            if (checkUnit != null)
+              for (final d in checkUnit.diagnostics)
+                if (_isRemovableImport(d))
+                  if (_importAt(checkUnit, d.offset) case final index?
+                      when !_userImportIssues.contains((
+                        path,
+                        index,
+                        d.diagnosticCode.lowerCaseName,
+                      )))
+                    if (checkUnit.unit.directives[index]
+                        case final ImportDirective imp)
+                      imp,
+          ];
+          final offenders = {
+            for (final c in _active)
+              if (orphanImports.any(
+                (imp) => imp.libraryImport?.namespace.get2(c.owner) != null,
+              ))
+                c,
+          };
+          if (offenders.isEmpty || offenders.length == _active.length) {
+            _refuseAll(reason);
+            return null;
+          }
+          for (final c in offenders) {
+            _why[c] = reason;
+          }
+          _active = [
+            for (final c in _active)
+              if (!offenders.contains(c)) c,
+          ];
+          final retry = await _attempt(_active);
+          if (retry == null || !retry.isClean) {
+            _refuseAll(reason);
+            return null;
+          }
+          _accept(retry);
+          retried = true;
+          break;
+        }
       }
+      if (!retried) break;
     }
 
+    final clean = _clean;
+    if (clean == null) return null;
     final texts = {file: clean.text};
     for (final MapEntry(key: path, value: cuts) in _orphanCuts.entries) {
       final text = path == file
@@ -984,7 +1355,7 @@ final class _FileSanitizer({
 
   /// Rewrites the file with [set] applied and resolves the result, or null if
   /// that text no longer resolves.
-  Future<_Attempt?> _attempt(List<Candidate> set) async {
+  Future<_Attempt?> _attempt(List<_Candidate> set) async {
     final rewritten = _apply(set);
     _overlay(file, rewritten.text);
     await context.applyPendingFileChanges();
@@ -997,9 +1368,9 @@ final class _FileSanitizer({
     return await _verdict(rewritten, check, unit);
   }
 
-  _Rewritten _apply(List<Candidate> set) {
+  _Rewritten _apply(List<_Candidate> set) {
     final buffer = StringBuffer();
-    final newOffsets = <Candidate, int>{};
+    final newOffsets = <_Candidate, int>{};
     var cursor = 0;
     var shift = 0;
     for (final c in [...set]..sort(_byOffset)) {
@@ -1031,7 +1402,7 @@ final class _FileSanitizer({
     check.unit.accept(shorthands);
     final selfUri = check.libraryElement.uri.toString();
 
-    final culprits = <Candidate>{};
+    final culprits = <_Candidate>{};
     for (final MapEntry(key: candidate, value: offset)
         in rewritten.newOffsets.entries) {
       final resolved = shorthands.byOffset[offset];
@@ -1119,7 +1490,10 @@ final class _FileSanitizer({
   /// Whether [file] may use a member restricted by [annotation], as the SDK
   /// analyzer rules it: `@internal` within its own package,
   /// `@visibleForTesting` in its declaring library or under the package's
-  /// `test/`. Every other restriction stays a refusal.
+  /// `test/` or `integration_test/`, and `@protected` / `@visibleForTemplate` /
+  /// `@visibleForOverriding` in its declaring library (or when a
+  /// `@visibleForTesting` exemption also applies). Every other restriction
+  /// stays a refusal.
   bool _mayUse(String annotation, _ResolvedShorthand target, String selfUri) {
     final root = packageRootOf(file);
     return switch (annotation) {
@@ -1132,7 +1506,14 @@ final class _FileSanitizer({
       },
       '@visibleForTesting' =>
         target.libraryUri == selfUri ||
-            (root != null && p.isWithin(p.join(root, 'test'), file)),
+            (root != null &&
+                (p.isWithin(p.join(root, 'test'), file) ||
+                    p.isWithin(p.join(root, 'integration_test'), file))),
+      '@protected' || '@visibleForTemplate' =>
+        target.libraryUri == selfUri ||
+            (target.restrictions.contains('@visibleForTesting') &&
+                _mayUse('@visibleForTesting', target, selfUri)),
+      '@visibleForOverriding' => target.libraryUri == selfUri,
       _ => false,
     };
   }
@@ -1164,7 +1545,7 @@ final class _FileSanitizer({
   /// overlay, so its constants are pristine; same-library aliases never
   /// rescue.
   Future<bool> _isConstAlias(
-    Candidate candidate,
+    _Candidate candidate,
     _ResolvedShorthand resolved,
     String selfUri,
   ) async {
@@ -1211,6 +1592,10 @@ final class _FileSanitizer({
   }
 }
 
+/// Overlay modification stamps, rising across every file of every run: a
+/// path overlaid by one file and restored by another never repeats a stamp.
+var _stamp = 0;
+
 /// One verified rewrite of a candidate set: the text, its library's resolve
 /// and the edited [unit] within it, the candidates node-level evidence
 /// convicts, and the first new diagnostic none of them accounts for (see
@@ -1220,7 +1605,7 @@ final class _Attempt(
   final _Rewritten rewritten,
   final ResolvedLibraryResult library,
   final ResolvedUnitResult unit,
-  final Set<Candidate> culprits, {
+  final Set<_Candidate> culprits, {
   required final String? stray,
 }) {
   bool get isClean => culprits.isEmpty && stray == null;
@@ -1229,22 +1614,79 @@ final class _Attempt(
 /// A site left prefixed, and why — for [FileResult.kept].
 typedef _Kept = ({int offset, String display, String reason});
 
+/// What a skip entry can name a site by; see [Sanitizer._isSkipped].
+typedef _SiteName = ({
+  String display,
+  String memberName,
+  String? containerName,
+});
+
+/// [start, end) of a text replaced by [length] characters.
+typedef _Edit = ({int start, int end, int length});
+
+/// The offset in the text before [edits] of [offset] in the text after them;
+/// an offset inside a replacement maps to the start of the range it replaced.
+int _unapply(List<_Edit> edits, int offset) {
+  var delta = 0;
+  for (final e in [...edits]..sort((a, b) => a.start.compareTo(b.start))) {
+    final start = e.start + delta;
+    if (offset < start) break;
+    if (offset < start + e.length) return e.start;
+    delta += e.length - (e.end - e.start);
+  }
+  return offset - delta;
+}
+
+/// Each file's text as the run first read it, and the edits the run has made
+/// to it since: a library processed after its part was already pruned by
+/// the part's pass, yet reports lines of the file the user ran it on.
+final class _Origins {
+  final _input = <String, LineInfo>{};
+  final _edits = <String, List<List<_Edit>>>{};
+  final _keys = <String, String>{};
+
+  String _key(String path) => _keys[path] ??= _real(path);
+
+  /// Records [batches], applied in order to the text [before] describes.
+  void record(String path, LineInfo before, List<List<_Edit>> batches) {
+    final key = _key(path);
+    _input.putIfAbsent(key, () => before);
+    (_edits[key] ??= []).addAll(batches);
+  }
+
+  /// Where [offset] of [path]'s current text, whose lines are [current], was
+  /// in the text the run first read.
+  CharacterLocation locate(String path, LineInfo current, int offset) {
+    final key = _key(path);
+    final input = _input[key];
+    if (input == null) return current.getLocation(offset);
+    var o = offset;
+    for (final edits in _edits[key]?.reversed ?? const <List<_Edit>>[]) {
+      o = _unapply(edits, o);
+    }
+    return input.getLocation(o);
+  }
+}
+
 /// Fallback reason for a candidate that only ever failed as part of a set.
 const _unverified = 'not verifiable alongside the other rewrites';
 
-List<Site> _keptSites(LineInfo lines, List<_Kept> kept) => [
+List<Site> _keptSites(
+  CharacterLocation Function(int offset) locate,
+  List<_Kept> kept,
+) => [
   for (final k in kept)
-    _siteAt(lines, k.offset, k.display, keptReason: k.reason),
+    _siteAt(locate, k.offset, k.display, keptReason: k.reason),
 ];
 
 Site _siteAt(
-  LineInfo lines,
+  CharacterLocation Function(int offset) locate,
   int offset,
   String before, {
   String? after,
   String? keptReason,
 }) {
-  final location = lines.getLocation(offset);
+  final location = locate(offset);
   return Site(
     line: location.lineNumber,
     column: location.columnNumber,
@@ -1283,7 +1725,7 @@ final class _Rewritten(
   final String text,
 
   /// Where each candidate's shorthand `.` landed in [text].
-  final Map<Candidate, int> newOffsets,
+  final Map<_Candidate, int> newOffsets,
 );
 
 /// Identity of what a shorthand node resolved to, keyed by node offset.
@@ -1305,7 +1747,7 @@ final class _ResolvedShorthand(
   final bool useResult = false,
   final String? libraryPath,
 }) {
-  bool matches(Candidate c) =>
+  bool matches(_Candidate c) =>
       memberName == c.memberName &&
       containerName == c.containerName &&
       libraryUri == c.libraryUri;
@@ -1317,9 +1759,9 @@ final class _ResolvedShorthand(
   /// that changes an argument's context type (`Geo.all(double)` redirecting
   /// to `Box.all(num)` turns `Box.all(1)`'s `int` into a `double`) — the
   /// signature comparison refuses that. Its static type is the factory's
-  /// class; `_verdict` accepts that only where `Candidate.typedSlot` is
+  /// class; `_verdict` accepts that only where `_Candidate.typedSlot` is
   /// exactly that type, so no cascade, assignment or inference observes it.
-  bool forwardsTo(Candidate c) =>
+  bool forwardsTo(_Candidate c) =>
       redirectTarget != null &&
       redirectTarget!.matches(c) &&
       redirectTarget!.signature == c.signature;
@@ -1330,20 +1772,20 @@ final class _ResolvedShorthand(
 String _constructorSignature(ConstructorElement e) =>
     '${_typeKey(e.returnType)}${_parametersOf(e)}';
 
-/// The formal parameter list of [e]: kind, type and name of each, positional
-/// in order, named sorted by name — `only({left, right, top, bottom})` and
-/// `only({left, top, right, bottom})` accept the same calls.
+/// The formal parameter list of [e]: kind and type of each (plus name for
+/// named parameters; positional parameter names are ignored because callers
+/// cannot reference them), positional in order, named sorted by name —
+/// `only({left, right, top, bottom})` and `only({left, top, right, bottom})`
+/// accept the same calls.
 String _parametersOf(ConstructorElement e) {
-  String show(FormalParameterElement p) =>
-      '${p.isOptionalPositional ? '[' : ''}'
-      '${_typeKey(p.type)} ${p.name}';
   final positional = [
     for (final p in e.formalParameters)
-      if (!p.isNamed) show(p),
+      if (!p.isNamed) 'p:${p.isOptional ? 'o' : 'r'}:${_typeKey(p.type)}',
   ];
   final named = [
     for (final p in e.formalParameters)
-      if (p.isNamed) '{${show(p)}',
+      if (p.isNamed)
+        'n:${p.name}:${p.isOptional ? 'o' : 'r'}:${_typeKey(p.type)}',
   ]..sort();
   return '(${[...positional, ...named].join(', ')})';
 }
@@ -1423,18 +1865,22 @@ Set<String> _restrictionsOf(Element? element) => {
     if (holder.metadata.hasInternal) '@internal',
     if (holder.metadata.hasProtected) '@protected',
     if (holder.metadata.hasVisibleForOverriding) '@visibleForOverriding',
+    if (holder.metadata.hasVisibleForTemplate) '@visibleForTemplate',
     if (holder.metadata.hasVisibleForTesting) '@visibleForTesting',
     if (holder.metadata.hasVisibleOutsideTemplate) '@visibleOutsideTemplate',
   },
 };
 
-/// A field's annotations sit on the field, not on its getter.
+/// A field's annotations sit on the field, not on its getter; container-level
+/// annotations (e.g. `@internal` or `@visibleForTesting` on the enclosing
+/// class/enum/extension type) also restrict its members.
 List<Element> _holdersOf(Element? element) => [
   ?element,
   if (element is PropertyAccessorElement) element.variable,
+  ?element?.enclosingElement,
 ];
 
-int _byOffset(Candidate a, Candidate b) =>
+int _byOffset(_Candidate a, _Candidate b) =>
     a.deleteStart.compareTo(b.deleteStart);
 
 /// Offsets shift across rewrites — a diagnostic is keyed by its unit,
@@ -1503,48 +1949,144 @@ int? _importAt(ResolvedUnitResult unit, int offset) {
   return null;
 }
 
-/// Directive ranges (each spanning `import … ;` plus its line ending) for
-/// imports the rewrite orphaned — a removable-import diagnostic of [check]
-/// not among [userIssues] — keyed by unit path. Coordinates are each unit's
-/// content in [check]: the rewritten text for the edited unit, the untouched
-/// text for every other.
-Map<String, List<(int, int)>> _orphanRanges(
+typedef _DirectiveCut = ({
+  int start,
+  int end,
+  String replacement,
+  int keyword,
+
+  /// The report, given the keyword's line in the text the run first read.
+  PrunedImport Function(int line) info,
+});
+
+_Edit _editOf(_DirectiveCut cut) =>
+    (start: cut.start, end: cut.end, length: cut.replacement.length);
+
+/// Directive edits for imports the rewrite orphaned — a removable-import
+/// diagnostic of [check] not among [userIssues] — keyed by unit path.
+/// Coordinates are each unit's content in [check]: the rewritten text for the
+/// edited unit, the untouched text for every other.
+///
+/// When the first directive of the file is pruned and carries a doc comment or
+/// metadata annotation, the header is preserved by starting the cut at
+/// `firstTokenAfterCommentAndMetadata.offset` — and when no directive remains
+/// in the unit after pruning, the directive is replaced with `library;` so the
+/// header stays attached to the library rather than moving onto the first
+/// declaration. Trailing `// ignore_for_file:` comments are preserved on their
+/// own line.
+Map<String, List<_DirectiveCut>> _orphanRanges(
   ResolvedLibraryResult check,
   Set<_ImportIssue> userIssues,
 ) {
-  final cuts = <String, List<(int, int)>>{};
+  final cuts = <String, List<_DirectiveCut>>{};
   for (final unit in check.units) {
     final text = unit.content;
     final cut = <int>{};
     for (final d in unit.diagnostics) {
       if (!_isRemovableImport(d)) continue;
       final index = _importAt(unit, d.offset);
-      if (index == null ||
-          userIssues.contains((
+      if (index != null &&
+          !userIssues.contains((
             unit.path,
             index,
             d.diagnosticCode.lowerCaseName,
-          )) ||
-          !cut.add(index)) {
+          ))) {
+        cut.add(index);
+      }
+    }
+    if (cut.isEmpty) continue;
+    final allPruned = cut.length == unit.unit.directives.length;
+    for (final index in cut) {
+      final directive = unit.unit.directives[index];
+      final keyword = directive.firstTokenAfterCommentAndMetadata.offset;
+      final hasHeader =
+          index == 0 &&
+          (directive.documentationComment != null ||
+              directive.metadata.isNotEmpty);
+      final needsLibrary = hasHeader && allPruned;
+      final start = hasHeader ? keyword : directive.offset;
+      var commentStart = directive.end;
+      while (commentStart < text.length &&
+          (text.codeUnitAt(commentStart) == 0x20 ||
+              text.codeUnitAt(commentStart) == 0x09)) {
+        commentStart++;
+      }
+      var commentEnd = commentStart;
+      if (commentStart + 1 < text.length &&
+          text.codeUnitAt(commentStart) == 0x2F &&
+          text.codeUnitAt(commentStart + 1) == 0x2F) {
+        commentEnd = commentStart + 2;
+        while (commentEnd < text.length &&
+            text.codeUnitAt(commentEnd) != 0x0D &&
+            text.codeUnitAt(commentEnd) != 0x0A) {
+          commentEnd++;
+        }
+      }
+      final comment = commentEnd > commentStart
+          ? text.substring(commentStart, commentEnd).trimRight()
+          : null;
+      final hasIgnoreForFile =
+          comment?.substring(2).contains('ignore_for_file:') ?? false;
+      PrunedImport Function(int) info({String? replacement}) =>
+          (line) => PrunedImport(
+            line: line,
+            uri: switch (directive) {
+              ImportDirective(:final uri) => uri.stringValue ?? uri.toSource(),
+              _ => directive.toSource(),
+            },
+            replacement: replacement,
+            deletedComment: hasIgnoreForFile ? null : comment,
+            keptComment: hasIgnoreForFile ? comment : null,
+          );
+      if (needsLibrary) {
+        final end = hasIgnoreForFile ? directive.end : commentEnd;
+        (cuts[unit.path] ??= []).add((
+          start: start,
+          end: end,
+          replacement: 'library;',
+          keyword: keyword,
+          info: info(replacement: 'library;'),
+        ));
         continue;
       }
-      final directive = unit.unit.directives[index];
-      var end = directive.end;
-      if (end < text.length && text.codeUnitAt(end) == 0x0D) end++; // \r
-      if (end < text.length && text.codeUnitAt(end) == 0x0A) end++; // \n
-      (cuts[unit.path] ??= []).add((directive.offset, end));
+      if (hasIgnoreForFile) {
+        (cuts[unit.path] ??= []).add((
+          start: start,
+          end: commentStart,
+          replacement: '',
+          keyword: keyword,
+          info: info(),
+        ));
+        continue;
+      }
+      var end = commentEnd;
+      if (end < text.length && text.codeUnitAt(end) == 0x0D) end++;
+      if (end < text.length && text.codeUnitAt(end) == 0x0A) end++;
+      if (hasHeader && end < text.length) {
+        if (text.codeUnitAt(end) == 0x0D) end++;
+        if (end < text.length && text.codeUnitAt(end) == 0x0A) end++;
+      }
+      (cuts[unit.path] ??= []).add((
+        start: start,
+        end: end,
+        replacement: '',
+        keyword: keyword,
+        info: info(),
+      ));
     }
   }
   return cuts;
 }
 
-/// Splices [ranges] out of [text] in order.
-String _stripRanges(String text, List<(int, int)> ranges) {
-  final sorted = [...ranges]..sort((a, b) => a.$1.compareTo(b.$1));
+/// Applies [ranges] to [text] in order.
+String _stripRanges(String text, List<_DirectiveCut> ranges) {
+  final sorted = [...ranges]..sort((a, b) => a.start.compareTo(b.start));
   final buffer = StringBuffer();
   var cursor = 0;
-  for (final (start, end) in sorted) {
-    buffer.write(text.substring(cursor, start));
+  for (final (:start, :end, :replacement, keyword: _, info: _) in sorted) {
+    buffer
+      ..write(text.substring(cursor, start))
+      ..write(replacement);
     cursor = end;
   }
   buffer.write(text.substring(cursor));
@@ -1632,10 +2174,13 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
 final class _CandidateCollector(TypeProvider typeProvider)
     extends RecursiveAstVisitor<void> {
   final _viability = _Viability(typeProvider);
-  final candidates = <Candidate>[];
+  final candidates = <_Candidate>[];
 
   /// Sites [_Viability] ruled out — they stay prefixed without a resolve.
   final unviable = <_Kept>[];
+
+  /// Every `Type.member` site seen, viable or not — what skip entries match.
+  final sites = <_SiteName>[];
 
   /// `[Type.member]` in a doc comment is prose, not a site.
   @override
@@ -1652,17 +2197,30 @@ final class _CandidateCollector(TypeProvider typeProvider)
     required Element? memberElement,
   }) {
     final display = '$owner.$memberName';
-    if (_viability.whyNot(node, memberName) case final reason?) {
+    sites.add((
+      display: display,
+      memberName: memberName,
+      containerName: memberElement?.enclosingElement?.displayName,
+    ));
+    final typedSlot = _viability.typedSlotOf(node);
+    if (_viability.whyNot(
+          node,
+          memberName,
+          memberElement: memberElement,
+          typedSlot: typedSlot,
+        )
+        case final reason?) {
       unviable.add((offset: deleteStart, display: display, reason: reason));
       return;
     }
     candidates.add(
-      Candidate(
+      _Candidate(
         groupKey: _groupKeyOf(node),
         deleteStart: deleteStart,
         deleteEnd: dotOffset,
         shorthandOffset: dotOffset,
         display: display,
+        owner: owner,
         memberName: memberName,
         containerName: memberElement?.enclosingElement?.displayName,
         libraryUri: memberElement?.library?.uri.toString(),
@@ -1674,7 +2232,7 @@ final class _CandidateCollector(TypeProvider typeProvider)
           null => null,
         },
         shownType: node.staticType?.getDisplayString(),
-        typedSlot: _viability.typedSlotOf(node),
+        typedSlot: typedSlot,
         restrictions: _restrictionsOf(memberElement),
       ),
     );
@@ -1690,6 +2248,9 @@ final class _CandidateCollector(TypeProvider typeProvider)
   /// `Enum.value`, `Type.staticGetterOrField`.
   @override
   void visitPrefixedIdentifier(PrefixedIdentifier node) {
+    // `@Type.member` is an annotation header, where dot-shorthand is a syntax
+    // error (`@.member` does not parse).
+    if (node.parent is Annotation) return;
     final member = node.identifier.element;
     if (_isTypeRef(node.prefix) &&
         _isStaticMember(member) &&
@@ -1751,15 +2312,20 @@ final class _CandidateCollector(TypeProvider typeProvider)
 
   /// `Type.named(...)` — incl. factory and const constructors. Unnamed
   /// constructors stay: `.new(...)` saves nothing over `Type(...)`.
+  /// `new Type.named(...)` also stays: `new .named(...)` is a syntax error.
   @override
   void visitInstanceCreationExpression(InstanceCreationExpression node) {
     final name = node.constructorName.name;
+    final period = node.constructorName.period;
     final type = node.constructorName.type;
-    if (name != null && type.typeArguments == null) {
+    if (name != null &&
+        period != null &&
+        node.keyword?.keyword != .NEW &&
+        type.typeArguments == null) {
       _add(
         node: node,
         deleteStart: node.constructorName.offset,
-        dotOffset: name.offset - 1, // the `.` sits right before the name
+        dotOffset: period.offset,
         owner: type.qualifiedName,
         memberName: name.name,
         memberElement: node.constructorName.element,
@@ -1808,10 +2374,10 @@ final class _CandidateCollector(TypeProvider typeProvider)
 /// costs a speculative resolve per recovery wave before being reverted.
 ///
 /// A shorthand `.member` resolves against the context type of the whole
-/// postfix chain it heads — `.of(context).colorScheme` looks `of` up on
-/// `ColorScheme`, `.tryParse(s)!` on `int` — and the rewrite is a no-op only
-/// if that type declares a static `member` the verdict accepts (the original,
-/// a const alias, a redirecting factory). So:
+/// postfix selector chain it heads — `.of(context).colorScheme` looks `of` up
+/// on `ColorScheme`, `.tryParse(s)!` on `int` — and the rewrite is a no-op
+/// only if that type declares a static `member` the verdict accepts (the
+/// original, a const alias, a redirecting factory). So:
 ///
 /// - where the syntax pins the context type down (an argument's parameter,
 ///   a declared variable type, the enclosing function's return type, an
@@ -1819,8 +2385,9 @@ final class _CandidateCollector(TypeProvider typeProvider)
 ///   declare `member`;
 /// - where the position provably has no context type (an expression
 ///   statement, `var x = …`, an `as`/`is` operand, an interpolation, a
-///   binary left operand) or one that can't declare it (`throw` resolves
-///   against `Object`), the site never converts;
+///   binary left operand, a parenthesized or conditional receiver of a method
+///   call) or one that can't declare it (`throw` resolves against `Object`),
+///   the site never converts;
 /// - otherwise the chain's own static type must be assignable to the context
 ///   type, so one of its supertypes must declare `member`.
 ///
@@ -1830,13 +2397,32 @@ final class _CandidateCollector(TypeProvider typeProvider)
 /// "can't tell" and pass.
 final class _Viability(final TypeProvider typeProvider) {
   /// Why [site] can never verify, or null when it might.
-  String? whyNot(Expression site, String member) {
+  String? whyNot(
+    Expression site,
+    String member, {
+    Element? memberElement,
+    String? typedSlot,
+  }) {
     AstNode head = site;
+    // Selector chains (`PropertyAccess`, `MethodInvocation`, `IndexExpression`,
+    // `CascadeExpression`, `PostfixExpression`) only propagate their context
+    // type to a direct selector target — never through parentheses or a
+    // conditional expression (`(Box.all(5)).let(...)` has no context type).
+    while (_isSelectorFor(head.parent, head)) {
+      head = head.parent!;
+    }
     while (_passesContextTo(head.parent, head)) {
       head = head.parent!;
     }
     final context = _contextOf(head);
-    if (context != null) return _refusal(context, member);
+    if (context != null) {
+      return _refusal(
+        context,
+        member,
+        memberElement: memberElement,
+        typedSlot: typedSlot,
+      );
+    }
     final type = head is Expression ? head.staticType : null;
     if (type is! InterfaceType ||
         type.element.getStatic(member) != null ||
@@ -1850,12 +2436,15 @@ final class _Viability(final TypeProvider typeProvider) {
   }
 
   /// The `_typeKey` of [site]'s slot when a licensed rebind may land there: an
-  /// argument, a typed declaration, a return, a collection element or a
-  /// parameter default whose context type is an interface type, reached only
-  /// through wrappers that pass the value on unobserved ([_isTransparent]).
+  /// argument, a typed declaration, a field initializer, a return or yield, a
+  /// collection element, an index or binary operator operand, a compound
+  /// assignment RHS, or a parameter default whose context type is an interface
+  /// type, reached only through wrappers that pass the value on unobserved
+  /// ([_isTransparent]).
   /// Keyed without one trailing `?`: a nullable slot types the shorthand
-  /// as its non-null class. Null elsewhere — a cascade target, an assignment
-  /// or an inferred declaration observes the shorthand's own static type.
+  /// as its non-null class. Null elsewhere — a cascade target, a simple
+  /// assignment or an inferred declaration observes the shorthand's own static
+  /// type.
   String? typedSlotOf(Expression site) {
     AstNode head = site;
     for (
@@ -1865,18 +2454,42 @@ final class _Viability(final TypeProvider typeProvider) {
     ) {
       head = parent;
     }
-    if (head.parent
-        case ArgumentList() ||
-            VariableDeclaration() ||
-            ReturnStatement() ||
-            ExpressionFunctionBody() ||
-            ListLiteral() ||
-            SetOrMapLiteral() ||
-            MapLiteralEntry() ||
-            FormalParameterDefaultClause()) {
-      if (_contextOf(head) case final InterfaceType slot) {
-        final key = _typeKey(slot);
-        return key.endsWith('?') ? key.substring(0, key.length - 1) : key;
+    final parent = head.parent;
+    final inSlot = switch (parent) {
+      ArgumentList() => !_isUnpinnedGenericArgument(head as Argument),
+      VariableDeclaration() ||
+      ConstructorFieldInitializer() ||
+      ReturnStatement() ||
+      YieldStatement() ||
+      ExpressionFunctionBody() ||
+      ListLiteral() ||
+      SetOrMapLiteral() ||
+      MapLiteralEntry() ||
+      FormalParameterDefaultClause() => true,
+      IndexExpression(:final index) => identical(index, head),
+      BinaryExpression(:final operator, :final rightOperand) =>
+        identical(rightOperand, head) &&
+            operator.type != .EQ_EQ &&
+            operator.type != .BANG_EQ &&
+            operator.type != .QUESTION_QUESTION &&
+            operator.type != .AMPERSAND_AMPERSAND &&
+            operator.type != .BAR_BAR,
+      AssignmentExpression(:final operator, :final rightHandSide) =>
+        identical(rightHandSide, head) &&
+            operator.type != .EQ &&
+            operator.type != .QUESTION_QUESTION_EQ,
+      _ => false,
+    };
+    if (inSlot) {
+      if (_contextOf(head) case final DartType rawSlot) {
+        var slot = rawSlot;
+        while (slot is InterfaceType && slot.isDartAsyncFutureOr) {
+          slot = slot.typeArguments.first;
+        }
+        if (slot is InterfaceType) {
+          final key = _typeKey(slot);
+          return key.endsWith('?') ? key.substring(0, key.length - 1) : key;
+        }
       }
     }
     return null;
@@ -1885,9 +2498,14 @@ final class _Viability(final TypeProvider typeProvider) {
   /// Whether [parent] passes [child]'s value through to its own slot
   /// unobserved. A switch scrutinee is observed by its patterns.
   static bool _isTransparent(AstNode parent, AstNode child) => switch (parent) {
-    ParenthesizedExpression() || NamedArgument() || ForElement() => true,
+    ParenthesizedExpression() ||
+    NamedArgument() ||
+    ForElement() ||
+    NullAwareElement() => true,
     ConditionalExpression(:final thenExpression, :final elseExpression) =>
       identical(thenExpression, child) || identical(elseExpression, child),
+    BinaryExpression(:final operator, :final rightOperand) =>
+      operator.type == .QUESTION_QUESTION && identical(rightOperand, child),
     SwitchExpressionCase(:final expression) => identical(expression, child),
     SwitchExpression(:final expression) => !identical(expression, child),
     IfElement(:final thenElement, :final elseElement) =>
@@ -1895,26 +2513,31 @@ final class _Viability(final TypeProvider typeProvider) {
     _ => false,
   };
 
-  /// Whether [parent] hands its own context type down to [child] — as the
-  /// head of a selector chain, or as a syntactic wrapper the context type
-  /// passes through.
-  static bool _passesContextTo(AstNode? parent, AstNode child) =>
+  /// Whether [parent] is a selector expression whose direct target is [child].
+  static bool _isSelectorFor(AstNode? parent, AstNode child) =>
       switch (parent) {
         PropertyAccess(:final target) => identical(target, child),
         MethodInvocation(:final target) => identical(target, child),
         IndexExpression(:final target) => identical(target, child),
         CascadeExpression(:final target) => identical(target, child),
-        PostfixExpression() ||
+        PostfixExpression(:final operand) => identical(operand, child),
+        _ => false,
+      };
+
+  /// Whether [parent] hands its own context type down to [child] as a
+  /// value-level syntactic wrapper.
+  static bool _passesContextTo(AstNode? parent, AstNode child) =>
+      switch (parent) {
         ParenthesizedExpression() ||
         AwaitExpression() ||
         NamedArgument() ||
-        SwitchExpression() ||
         ForElement() ||
         NullAwareElement() => true,
+        SwitchExpression(:final expression) => !identical(expression, child),
         ConditionalExpression(:final thenExpression, :final elseExpression) =>
           identical(thenExpression, child) || identical(elseExpression, child),
-        BinaryExpression(:final operator) =>
-          operator.type == .QUESTION_QUESTION,
+        BinaryExpression(:final operator, :final rightOperand) =>
+          operator.type == .QUESTION_QUESTION && identical(rightOperand, child),
         SwitchExpressionCase(:final expression) => identical(expression, child),
         IfElement(:final thenElement, :final elseElement) =>
           identical(thenElement, child) || identical(elseElement, child),
@@ -1929,18 +2552,49 @@ final class _Viability(final TypeProvider typeProvider) {
     final bool = typeProvider.boolType;
     final parent = head.parent;
     if (parent == null) return null;
+    if (_isSelectorFor(parent, head)) return none;
     switch (parent) {
       case ExpressionStatement() ||
           AsExpression() ||
           IsExpression() ||
           InterpolationExpression():
         return none;
+      case SwitchExpression(:final expression) ||
+              SwitchStatement(:final expression)
+          when identical(expression, head):
+        return none;
       case VariableDeclaration():
         return (parent.parent! as VariableDeclarationList).type?.type ?? none;
+      case ConstructorFieldInitializer(:final fieldName):
+        final element = fieldName.element;
+        return switch (element) {
+          FieldElement(:final type) => type,
+          PropertyAccessorElement(:final variable) => variable.type,
+          _ => null,
+        };
       case ThrowExpression():
         return typeProvider.objectType;
       case PrefixExpression(:final operator):
         return operator.type == .BANG ? bool : none;
+      case IndexExpression(:final index) when identical(index, head):
+        final method =
+            parent.element ??
+            switch (parent.parent) {
+              AssignmentExpression(:final leftHandSide, :final writeElement)
+                  when identical(leftHandSide, parent) =>
+                writeElement,
+              PostfixExpression(:final operand, :final writeElement)
+                  when identical(operand, parent) =>
+                writeElement,
+              PrefixExpression(:final operand, :final writeElement)
+                  when identical(operand, parent) =>
+                writeElement,
+              _ => null,
+            };
+        final type = method is ExecutableElement
+            ? method.formalParameters.firstOrNull?.type
+            : null;
+        return type is TypeParameterType ? null : type;
       case BinaryExpression(:final operator, :final leftOperand):
         if (operator.type == .AMPERSAND_AMPERSAND ||
             operator.type == .BAR_BAR) {
@@ -1950,7 +2604,8 @@ final class _Viability(final TypeProvider typeProvider) {
         if (operator.type == .EQ_EQ || operator.type == .BANG_EQ) {
           return leftOperand.staticType;
         }
-        return parent.element?.formalParameters.firstOrNull?.type;
+        final type = parent.element?.formalParameters.firstOrNull?.type;
+        return type is TypeParameterType ? null : type;
       case IfStatement(:final expression) ||
               IfElement(:final expression) ||
               WhileStatement(condition: final expression) ||
@@ -1959,22 +2614,76 @@ final class _Viability(final TypeProvider typeProvider) {
           when identical(expression, head):
         return bool;
       case ArgumentList():
-        final type = (head as Argument).correspondingParameter?.type;
-        return type is TypeParameterType ? null : type;
-      case AssignmentExpression(:final rightHandSide)
+        return _argumentContext(head as Argument);
+      case AssignmentExpression(:final operator, :final rightHandSide)
           when identical(rightHandSide, head):
-        return parent.writeType;
+        if (operator.type == .EQ || operator.type == .QUESTION_QUESTION_EQ) {
+          return parent.writeType;
+        }
+        final type = parent.element?.formalParameters.firstOrNull?.type;
+        return type is TypeParameterType ? null : type;
       case FormalParameterDefaultClause(parent: final FormalParameter param):
         return param.declaredFragment?.element.type;
       case ReturnStatement() || ExpressionFunctionBody():
         return _returnContext(parent.thisOrAncestorOfType<FunctionBody>()!);
+      case YieldStatement():
+        return _yieldContext(
+          parent,
+          parent.thisOrAncestorOfType<FunctionBody>()!,
+        );
       case ListLiteral(:final staticType) || SetOrMapLiteral(:final staticType):
         return _elementType(staticType, 0);
-      case MapLiteralEntry(:final key, parent: final Expression literal):
-        return _elementType(literal.staticType, identical(key, head) ? 0 : 1);
+      case MapLiteralEntry(:final key):
+        final literal = parent.thisOrAncestorOfType<SetOrMapLiteral>();
+        return _elementType(literal?.staticType, identical(key, head) ? 0 : 1);
       default:
         return null;
     }
+  }
+
+  bool _isUnpinnedGenericArgument(Argument arg) {
+    final param = arg.correspondingParameter;
+    if (param == null) return false;
+    final call = arg.parent?.parent;
+    final hasExplicitTypeArgs = switch (call) {
+      MethodInvocation(:final typeArguments) ||
+      FunctionExpressionInvocation(
+        :final typeArguments,
+      ) => typeArguments != null,
+      InstanceCreationExpression(:final constructorName) =>
+        constructorName.type.typeArguments != null,
+      _ => true,
+    };
+    if (hasExplicitTypeArgs) return false;
+    return switch (param.baseElement.type) {
+      TypeParameterType(:final element)
+          when element.enclosingElement is! InstanceElement ||
+              call is InstanceCreationExpression =>
+        call is! Expression || typedSlotOf(call) == null,
+      _ => false,
+    };
+  }
+
+  DartType? _argumentContext(Argument arg) {
+    final param = arg.correspondingParameter;
+    if (param == null) return null;
+    if (_isUnpinnedGenericArgument(arg)) {
+      if (param.baseElement.type case TypeParameterType(:final element)) {
+        var callHead = arg.parent!.parent!;
+        while (_isSelectorFor(callHead.parent, callHead)) {
+          callHead = callHead.parent!;
+        }
+        while (_passesContextTo(callHead.parent, callHead)) {
+          callHead = callHead.parent!;
+        }
+        if (_contextOf(callHead) == typeProvider.neverType) {
+          return element.bound ?? typeProvider.neverType;
+        }
+        return null;
+      }
+    }
+    final type = param.type;
+    return type is TypeParameterType ? null : type;
   }
 
   /// The context type of a `return` (or `=>` body) in [body]: its function's
@@ -1995,6 +2704,26 @@ final class _Viability(final TypeProvider typeProvider) {
     return type;
   }
 
+  /// The context type of a `yield` (or `yield*`) in [body]: for plain `yield`,
+  /// the element type `T` of the enclosing generator's `Iterable<T>` or
+  /// `Stream<T>` return type; for `yield*`, the return type itself.
+  static DartType? _yieldContext(YieldStatement node, FunctionBody body) {
+    if (!body.isGenerator) return null;
+    final owner = body.parent;
+    final type = switch (owner) {
+      FunctionExpression() => owner.declaredFragment?.element.returnType,
+      MethodDeclaration() => owner.declaredFragment?.element.returnType,
+      _ => null,
+    };
+    if (node.star != null) return type;
+    if (type is InterfaceType &&
+        (type.isDartCoreIterable || type.isDartAsyncStream) &&
+        type.typeArguments.isNotEmpty) {
+      return type.typeArguments.first;
+    }
+    return null;
+  }
+
   static DartType? _elementType(DartType? literal, int index) =>
       literal is InterfaceType && literal.typeArguments.length > index
       ? literal.typeArguments[index]
@@ -2003,12 +2732,28 @@ final class _Viability(final TypeProvider typeProvider) {
   /// Why a context type [type] cannot hold a static [member] the verdict
   /// would accept, or null when it could. `FutureOr<T>` resolves the
   /// shorthand on `T`; `Never` is [_contextOf]'s "no context type".
-  static String? _refusal(DartType type, String member) {
+  static String? _refusal(
+    DartType type,
+    String member, {
+    Element? memberElement,
+    String? typedSlot,
+  }) {
     var t = type;
-    if (t is InterfaceType && t.isDartAsyncFutureOr) t = t.typeArguments.first;
+    while (t is InterfaceType && t.isDartAsyncFutureOr) {
+      t = t.typeArguments.first;
+    }
+    if (t case InterfaceType(:final element)
+        when element.getStatic(member) != null) {
+      if (typedSlot == null) {
+        final origContainer = memberElement?.enclosingElement;
+        if (origContainer is InterfaceElement &&
+            origContainer.baseElement != element.baseElement) {
+          return 'rebinds to ${element.name}.$member outside a typed slot';
+        }
+      }
+      return null;
+    }
     return switch (t) {
-      InterfaceType(:final element) when element.getStatic(member) != null =>
-        null,
       TypeParameterType() || DynamicType() || InvalidType() => null,
       NeverType() => 'no context type',
       // An interface lacking it; void, function and record types declare
