@@ -557,4 +557,66 @@ void run() => takeMode(.a);
     },
     testOn: '!windows',
   );
+
+  group('R3-SS-n1 a library processed after its part reports input lines', () {
+    for (final dryRun in [true, false]) {
+      test(dryRun ? 'in a dry run' : 'in a write', () async {
+        final tag = dryRun ? 'n1d' : 'n1w';
+        write(pkg, 'lib/${tag}_fit.dart', 'enum Fit { cover, contain }\n');
+        write(pkg, 'lib/${tag}_mode.dart', 'enum Mode { on, off }\n');
+        write(
+          pkg,
+          'lib/${tag}_use.dart',
+          "import '${tag}_fit.dart';\nimport '${tag}_mode.dart';\n"
+              'void take(Fit f) {}\nvoid set(Mode m) {}\n',
+        );
+        final part = write(
+          pkg,
+          'lib/a_${tag}_part.dart',
+          "part of 'z_${tag}_lib.dart';\nvoid run() => take(Fit.cover);\n",
+        );
+        final lib = write(
+          pkg,
+          'lib/z_${tag}_lib.dart',
+          "import '${tag}_fit.dart';\n"
+              "import '${tag}_use.dart';\n"
+              "import '${tag}_mode.dart';\n"
+              "part 'a_${tag}_part.dart';\n"
+              '\n'
+              'void own() => set(Mode.on);\n',
+        );
+        final result = await Sanitizer(dryRun: dryRun)
+            .run([part.path, lib.path]);
+        final own = result.files.singleWhere(
+          (f) => p.basename(f.path) == p.basename(lib.path),
+        );
+        expect(own.converted, ['6: Mode.on -> .on']);
+        expect(
+          [for (final i in own.prunedImports) i.description],
+          [
+            "1: import '${tag}_fit.dart' -> removed",
+            "3: import '${tag}_mode.dart' -> removed",
+          ],
+        );
+      });
+    }
+  });
+
+  test(
+    'R3-SS-n2 a generic forwarder with renamed positionals converts',
+    () async {
+      final out = await sanitize('''
+abstract class Geo<T> {
+  const factory Geo.pair(T a) = Box<T>.pair;
+}
+class Box<T> implements Geo<T> {
+  const Box.pair(this.v);
+  final T v;
+}
+void take(Geo<int> g) {}
+void main() => take(Box.pair(1));
+''');
+      expect(out, contains('take(.pair(1))'));
+    },
+  );
 }

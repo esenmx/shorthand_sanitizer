@@ -2,4 +2,4 @@
 library;
 
 export 'src/sanitizer.dart'
-    show FileResult, SanitizeResult, Sanitizer, Site, sdkPath;
+    show FileResult, PrunedImport, SanitizeResult, Sanitizer, Site, sdkPath;

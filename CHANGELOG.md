@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.11.0 - 2026-10-15
+
+### Breaking
+
+- A run that skipped a file it should have processed exits 65, in every mode: a library with analysis errors, a package below language 3.10, a package with no package config entry, a part whose library does not exist, or a directory that could not be read. Before, such a run exited 0 with only a stderr warning, so `-n --set-exit-if-changed` passed while skipping files. A write failure still exits 74, ahead of 65.
+- `analyzer: exclude:` in `analysis_options.yaml` is honoured by default: a file matching its own package's excludes is left alone. Unlike `dart analyze`, a parent package's excludes never reach a nested package (a parent's `exclude: [example/**]` does not hide an `example/` with its own `pubspec.yaml`). `--no-analyzer-excludes` (`Sanitizer(analyzerExcludes: false)`) processes them; they are listed in `SanitizeResult.excluded`.
+- `--skip` entries must be `Type.member`, `prefix.Type.member` or `member`; anything else is a usage error (exit 64). Padding around the commas of a list is trimmed. `Sanitizer(skips: ...)` takes entries as given and throws an `ArgumentError` for any other shape, instead of splitting commas and trimming.
+- `FileResult` takes `prunedImports` (`List<PrunedImport>`: line, URI, `library;` replacement, deleted or kept trailing comment) instead of a `removedImports` count, which is now a getter. The text report names every pruned import under its file (`1: import 'fit.dart' -> removed`), also in a file that converted sites of its own, together with any trailing comment deleted with it, a `library;` it left, or an `// ignore_for_file:` comment kept on the line; this replaces `pruned N orphaned import(s)`. JSON files carry the same as `prunedImports`.
+- A `///` or `/** … */` doc comment counts as a generated banner only when it opens with the marker (`/// Generated file. Do not edit.`, as slang writes), and ends the banner either way. A handwritten library doc that mentions generated code is no longer skipped as generated.
+- Directory walks skip a `build/` directory only at a package root, where Flutter writes its output; a `build/` directory of sources deeper in a package is processed.
+- A set `DART_SDK` that is not a Dart SDK is an error (exit 69) instead of being ignored in favour of another SDK. `sdkPath()` returns null for it, and `Sanitizer.run` throws a `StateError` when no SDK is found instead of analyzing with an unspecified one.
+
+### Added
+
+- Every file left alone is reported. Generated files are counted on stderr, and listed with `--explain` and in JSON as `skippedGenerated`. A file named on the command line and skipped (generated or excluded) gets a warning saying why. A part whose library does not exist (`SanitizeResult.skippedOrphanParts`) and an unreadable directory (`SanitizeResult.unreadableDirectories`) get warnings too.
+- A `--skip` entry that matched no site and an `--exclude` glob that matched no file get a warning (`SanitizeResult.unmatchedSkips`, `unmatchedExcludes`).
+- `--explain` names the Dart SDK the run analyzes with.
+- The JSON report carries `skippedWithErrors`, `skippedBelowFloor`, `skippedUnconfigured`, `skippedOrphanParts`, `unreadableDirectories`, `skippedGenerated`, `writeFailures`, `unmatchedSkips` and `unmatchedExcludes`.
+- `SanitizeResult.hasSkips`, `Sanitizer.isSkipEntry`.
+
+### Fixed
+
+- Redirecting-factory signature comparisons ignore positional parameter names so forwarders whose positional parameter names differ from the target constructor's still convert.
+- Reported lines and columns refer to the file as the run found it. A library processed after one of its parts, which had already pruned the library's imports, reported lines of that intermediate text instead.
+- Expanded typed slots for licensed rebinds to include constructor field initializers, `yield`/`yield*`, index and binary operator operands, and compound assignment RHS, including across `??` RHS, `?element`, conditional map entries, and `FutureOr<T>`. Cascade targets, simple assignments, and unpinned generic arguments (typed by a type parameter of the called function or method, or of a class being constructed — an extension's type parameters are pinned by the receiver, so `check(x).equals(Fit.cover)` still converts) now stay prefixed in the static pre-check (`rebinds to Geo.all outside a typed slot` / `no context type`) so they cannot poison flow promotion or local type inference in later statements, without bisecting recovery waves across independent statements.
+- Static viability and context-type propagation now distinguish selector chains from value-level wrappers (`(c ? Box.a : Box.b).self` and `switch (Fit.cover)` scrutinees report `no context type` upfront), use the operator parameter's context type for compound assignments (`v += .zero`), skip `@Type.member` metadata annotations and `new Type.named(...)` invocations, and handle whitespace/comments between `Type` and `.named(...)`.
+- Restriction checks on licensed rebinds now also inspect annotations on the enclosing class/enum/extension type, allow `@visibleForTesting` under `integration_test/`, and allow `@protected` / `@visibleForTemplate` / `@visibleForOverriding` in their declaring library (or when a `@visibleForTesting` exemption also applies).
+- Nested packages (such as `example/` with its own `pubspec.yaml`) get their own analysis context, language version and package config, and symlinked paths resolve their enclosing `pubspec.yaml` and `package_config.json` reliably.
+- A dry run predicts the write exactly: each verified rewrite stays in the analyzer overlay for the rest of the run, so an import pruned only once an earlier file of the same library converted is reported by `--dry-run` too.
+- Pruning the first import directive preserves any top-of-file doc comment or metadata annotation attached to it (emitting `library;` when no directive remains so the header does not attach to the first declaration), and strips trailing `//` comments on a pruned import line while preserving trailing `// ignore_for_file:` comments on their own line.
+- Generated-file detection stops as soon as code follows `*/` on the same line as a closing block comment.
+- When conversions in a part file would orphan an import in an off-limits library file, only the offending conversions in the part file are refused; other conversions in the part file still proceed.
+
 ## 0.10.0 - 2026-10-04
 
 ### Breaking

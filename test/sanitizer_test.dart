@@ -1074,4 +1074,555 @@ void main() {
     final path2 = sdkPath();
     expect(path2, equals(path1));
   });
+
+  test('SS-1 licensed rebinds convert in new typed-slot positions', () async {
+    final out = await sanitize('''
+import 'dart:async';
+abstract class Geo {
+  const factory Geo.all(double v) = Box.all;
+  static Geo? maybe(double v) => Box.maybe(v);
+}
+class Box implements Geo {
+  const Box.all(this.v);
+  static Box? maybe(double v) => Box.all(v);
+  final double v;
+}
+class Holder {
+  Holder() : g = Box.all(1);
+  final Geo g;
+}
+class Table {
+  void operator []=(Geo k, int v) {}
+}
+class Vec {
+  Vec operator +(Geo g) => this;
+}
+FutureOr<Geo> futureOrGeo() => Box.all(2);
+Iterable<Geo> genGeo() sync* {
+  yield Box.all(3);
+}
+void f(Geo? custom, bool b, Table t, Vec v) {
+  final Geo coalesced = custom ?? Box.all(4);
+  final Geo leftCoalesced = Box.maybe(5) ?? Box.all(4);
+  final list = <Geo>[?(b ? Box.all(6) : null)];
+  final map = <String, Geo>{if (b) 'k': Box.all(7)};
+  t[Box.all(8)] = 1;
+  final sum = v + Box.all(9);
+  print([coalesced, leftCoalesced, list, map, sum]);
+}
+''');
+    expect(out, contains(': g = .all(1);'));
+    expect(out, contains('futureOrGeo() => .all(2);'));
+    expect(out, contains('yield .all(3);'));
+    expect(out, contains('custom ?? .all(4);'));
+    expect(out, contains('Box.maybe(5) ?? .all(4);'));
+    expect(out, contains('<Geo>[?(b ? .all(6) : null)];'));
+    expect(out, contains("if (b) 'k': .all(7)};"));
+    expect(out, contains('t[.all(8)] = 1;'));
+    expect(out, contains('v + .all(9);'));
+  });
+
+  test('extension type parameters are pinned by the receiver', () async {
+    final out = await sanitize('''
+enum Fit { cover, fill }
+class Subject<T> {}
+extension Checks<T> on Subject<T> {
+  void equals(T other) {}
+  void same<U>(U other) {}
+}
+Subject<Fit> check(Fit a) => Subject<Fit>();
+T id<T>(T x) => x;
+void main() {
+  check(Fit.fill).equals(Fit.cover);
+  check(Fit.fill).same(Fit.cover);
+  print(id(Fit.cover));
+}
+''');
+    expect(out, contains('check(.fill).equals(.cover);'));
+    expect(out, contains('check(.fill).same(Fit.cover);'));
+    expect(out, contains('print(id(Fit.cover));'));
+  });
+
+  test(
+    'SS-2 compound assignment += uses operator parameter context type',
+    () async {
+      final out = await sanitize('''
+class Delta {
+  const Delta(this.v);
+  final int v;
+  static const Delta zero = Delta(0);
+}
+class Vec {
+  Vec operator +(Delta d) => this;
+}
+void main() {
+  var v = Vec();
+  v += Delta.zero;
+  print(v);
+}
+''');
+      expect(out, contains('v += .zero;'));
+    },
+  );
+
+  test('SS-3 switch scrutinee and ternary receiver have no context', () async {
+    final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
+      ..writeAsStringSync('''
+enum Fit { cover, contain }
+class Box {
+  const Box();
+  static const Box a = Box();
+  static const Box b = Box();
+  Box get self => this;
+}
+void f(bool c) {
+  final String s = switch (Fit.cover) { _ => 'b' };
+  final Box x = (c ? Box.a : Box.b).self;
+  print([s, x]);
+}
+''');
+    final result = await Sanitizer(
+      dryRun: true,
+      explain: true,
+    ).run([file.path]);
+    expect(result.skippedWithErrors, isEmpty);
+    expect(result.files.single.kept, [
+      '9: Fit.cover kept: no context type',
+      '10: Box.a kept: no context type',
+      '10: Box.b kept: no context type',
+    ]);
+  });
+
+  test('SS-4 skips @Annot.member and new Type.named(), keeps gap', () async {
+    final out = await sanitize('''
+class MyAnnot {
+  const MyAnnot._();
+  static const MyAnnot instance = MyAnnot._();
+}
+class Inner {
+  const Inner.named(this.v);
+  final int v;
+}
+class Box {
+  const Box.all(this.v) : inner = null;
+  Box.wrap(this.inner) : v = 0;
+  final int v;
+  final Inner? inner;
+}
+@MyAnnot.instance
+void main() {
+  final Box a = new Box.all(1);
+  final Box b = new Box.wrap(Inner.named(2));
+  final Box c = Box.
+    all(3);
+  print([a, b, c]);
+}
+''');
+    expect(out, contains('@MyAnnot.instance'));
+    expect(out, contains('final Box a = new Box.all(1);'));
+    expect(out, contains('final Box b = new Box.wrap(.named(2));'));
+    expect(out, contains('final Box c = .\n    all(3);'));
+  });
+
+  test('SS-5 doomed assignment does not poison later promotion', () async {
+    final out = await sanitize('''
+class Geo {
+  const Geo();
+  const factory Geo.all(int v) = Box.all;
+}
+class Box extends Geo {
+  const Box.all(this.v);
+  const Box.only(this.v);
+  final int v;
+  void boxOnly(Box b) {}
+}
+T id<T>(T x) => x;
+void promoted() {
+  Geo g = const Geo();
+  if (g is Box) return;
+  g = Box.all(2);
+  g.boxOnly(Box.only(3));
+}
+void inferred() {
+  final x = id(Box.all(2));
+  x.boxOnly(Box.only(4));
+}
+''');
+    expect(out, contains('g = Box.all(2);'));
+    expect(out, contains('g.boxOnly(.only(3));'));
+    expect(out, contains('final x = id(Box.all(2));'));
+    expect(out, contains('x.boxOnly(.only(4));'));
+  });
+
+  test(
+    'SS-6 pruning first import keeps /// doc and strips trailing //',
+    () async {
+      File(p.join(pkg.path, 'lib', 'ss6_dep.dart')).writeAsStringSync('''
+class Dep {
+  const Dep._();
+  static const Dep instance = Dep._();
+}
+''');
+      File(p.join(pkg.path, 'lib', 'ss6_sink.dart')).writeAsStringSync('''
+import 'ss6_dep.dart';
+class Sink {
+  Sink(this.d);
+  final Dep d;
+}
+''');
+      final file = File(p.join(pkg.path, 'lib', 'ss6_consumer.dart'))
+        ..writeAsStringSync('''
+/// Library doc comment.
+import 'ss6_dep.dart'; // trailing comment
+import 'ss6_sink.dart';
+
+final sink = Sink(Dep.instance);
+''');
+      await Sanitizer().run([file.path]);
+      final out = file.readAsStringSync();
+      expect(
+        out,
+        startsWith("/// Library doc comment.\nimport 'ss6_sink.dart';"),
+      );
+      expect(out, isNot(contains('trailing comment')));
+      expect(out, contains('Sink(.instance)'));
+    },
+  );
+
+  test(
+    'SS-7 part keeps valid rewrites when another orphans off-limits import',
+    () async {
+      File(p.join(pkg.path, 'lib', 'ss7_dep.dart')).writeAsStringSync('''
+class Dep {
+  const Dep._();
+  static const Dep instance = Dep._();
+}
+''');
+      File(p.join(pkg.path, 'lib', 'ss7_sink.dart')).writeAsStringSync('''
+import 'ss7_dep.dart';
+enum Fit { cover }
+class Sink {
+  Sink(this.d);
+  final Dep d;
+}
+''');
+      File(p.join(pkg.path, 'lib', 'ss7_lib.dart')).writeAsStringSync('''
+import 'ss7_dep.dart';
+import 'ss7_sink.dart';
+part 'ss7_part.dart';
+''');
+      final partFile = File(p.join(pkg.path, 'lib', 'ss7_part.dart'))
+        ..writeAsStringSync('''
+part of 'ss7_lib.dart';
+final Fit f = Fit.cover;
+final sink = Sink(Dep.instance);
+''');
+      final result = await Sanitizer(explain: true).run([partFile.path]);
+      final out = partFile.readAsStringSync();
+      expect(out, contains('final Fit f = .cover;'));
+      expect(out, contains('final sink = Sink(Dep.instance);'));
+      const keptReason =
+          '3: Dep.instance kept: pruning its orphaned imports would edit '
+          'ss7_lib.dart, which is not among the given paths';
+      expect(result.files.single.kept, [keptReason]);
+    },
+  );
+
+  test(
+    'SS-8 allows @protected+@visibleForTesting in test/ and checks class meta',
+    () async {
+      final root = Directory.systemTemp.createTempSync('shorthand_ss8');
+      addTearDown(() => root.deleteSync(recursive: true));
+      for (final d in ['lib', 'test', 'integration_test']) {
+        Directory(p.join(root.path, d)).createSync(recursive: true);
+      }
+      File(p.join(root.path, 'pubspec.yaml')).writeAsStringSync('''
+name: ss8_pkg
+environment:
+  sdk: ^3.10.0
+dependencies:
+  meta: ^1.15.0
+''');
+      File(p.join(root.path, 'lib', 'defs.dart')).writeAsStringSync('''
+import 'package:meta/meta.dart';
+
+class Geo {
+  const Geo();
+  @protected
+  @visibleForTesting
+  const factory Geo.both(int v) = Box.both;
+  @visibleForTesting
+  const factory Geo.vft(int v) = Box.vft;
+}
+class Box extends Geo {
+  const Box.both(this.v);
+  const Box.vft(this.v);
+  final int v;
+}
+@visibleForTesting
+class VftHost {
+  const VftHost();
+  const factory VftHost.make(int v) = VftSub.make;
+}
+class VftSub extends VftHost {
+  const VftSub.make(this.v);
+  final int v;
+}
+void takeGeo(Geo g) {}
+void takeHost(VftHost h) {}
+''');
+      final libUse = File(p.join(root.path, 'lib', 'use.dart'))
+        ..writeAsStringSync('''
+import 'defs.dart';
+void f() {
+  takeGeo(Box.both(1));
+  takeHost(VftSub.make(2));
+}
+''');
+      final testUse = File(p.join(root.path, 'test', 'use_test.dart'))
+        ..writeAsStringSync('''
+import 'package:ss8_pkg/defs.dart';
+void main() {
+  takeGeo(Box.both(1));
+  takeHost(VftSub.make(2));
+}
+''');
+      final itUse = File(p.join(root.path, 'integration_test', 'app_test.dart'))
+        ..writeAsStringSync('''
+import 'package:ss8_pkg/defs.dart';
+void main() {
+  takeGeo(Box.vft(1));
+  takeHost(VftSub.make(2));
+}
+''');
+      final get = Process.runSync('dart', [
+        'pub',
+        'get',
+        '--offline',
+      ], workingDirectory: root.path);
+      if (get.exitCode != 0) {
+        Process.runSync('dart', ['pub', 'get'], workingDirectory: root.path);
+      }
+      await Sanitizer().run([libUse.path, testUse.path, itUse.path]);
+      expect(libUse.readAsStringSync(), contains('takeGeo(Box.both(1));'));
+      expect(libUse.readAsStringSync(), contains('takeHost(VftSub.make(2));'));
+      expect(testUse.readAsStringSync(), contains('takeGeo(.both(1));'));
+      expect(testUse.readAsStringSync(), contains('takeHost(.make(2));'));
+      expect(itUse.readAsStringSync(), contains('takeGeo(.vft(1));'));
+      expect(itUse.readAsStringSync(), contains('takeHost(.make(2));'));
+    },
+  );
+
+  test("SS-9 nested package converts despite the parent's exclude", () async {
+    final root = Directory.systemTemp.createTempSync('shorthand_ss9');
+    addTearDown(() => root.deleteSync(recursive: true));
+    Directory(p.join(root.path, 'lib')).createSync();
+    Directory(p.join(root.path, 'example', 'lib')).createSync(recursive: true);
+    File(p.join(root.path, 'pubspec.yaml')).writeAsStringSync('''
+name: parent_pkg
+environment:
+  sdk: ^3.10.0
+''');
+    File(p.join(root.path, 'analysis_options.yaml')).writeAsStringSync('''
+analyzer:
+  exclude:
+    - example/**
+''');
+    File(p.join(root.path, 'example', 'pubspec.yaml')).writeAsStringSync('''
+name: example_pkg
+environment:
+  sdk: ^3.10.0
+''');
+    final exFile = File(p.join(root.path, 'example', 'lib', 'main.dart'))
+      ..writeAsStringSync('''
+enum Fit { cover }
+Fit f() => Fit.cover;
+''');
+    for (final dir in [root.path, p.join(root.path, 'example')]) {
+      final get = Process.runSync('dart', [
+        'pub',
+        'get',
+      ], workingDirectory: dir);
+      if (get.exitCode != 0) {
+        throw StateError('pub get failed: ${get.stderr}');
+      }
+    }
+    // The nested package obeys only its own options, unlike `dart analyze`:
+    // the parent's example/** excludes nothing there.
+    final result = await Sanitizer().run([root.path]);
+    expect(result.excluded, isEmpty);
+    expect(result.skippedUnconfigured, isEmpty);
+    expect(exFile.readAsStringSync(), contains('=> .cover;'));
+  });
+
+  test(
+    'SS-11 isGenerated stops after single-line block comment before code',
+    () {
+      String write(String name, String content) {
+        final f = File(p.join(pkg.path, 'lib', name))
+          ..writeAsStringSync(content);
+        return f.path;
+      }
+
+      expect(
+        Sanitizer.isGenerated(
+          write(
+            'ss11_code.dart',
+            "/* header */ import 'dart:core';\n"
+                '// GENERATED CODE - DO NOT MODIFY\n',
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        Sanitizer.isGenerated(
+          write('ss11_gen.dart', '/* GENERATED CODE - DO NOT MODIFY */\n'),
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('SS-I3 Sanitizer takes skip entries as given', () async {
+    expect(
+      () => Sanitizer(skips: {' Fit.cover , contain '}),
+      throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'skips')),
+    );
+    final out = await sanitize(
+      '''
+enum Fit { cover, contain, fill }
+void main() {
+  final Fit a = Fit.cover;
+  final Fit b = Fit.contain;
+  final Fit c = Fit.fill;
+  print([a, b, c]);
+}
+''',
+      skips: {'Fit.cover', 'contain'},
+    );
+    expect(out, contains('final Fit a = Fit.cover;'));
+    expect(out, contains('final Fit b = Fit.contain;'));
+    expect(out, contains('final Fit c = .fill;'));
+  });
+
+  test(
+    'E1 forwarder with different positional parameter name converts',
+    () async {
+      final out = await sanitize('''
+abstract class Geo {
+  const factory Geo.pair(double a) = Box.pair;
+}
+class Box implements Geo {
+  const Box.pair(this.v);
+  final double v;
+}
+void take(Geo g) {}
+void main() => take(Box.pair(1));
+''');
+      expect(out, contains('take(.pair(1))'));
+    },
+  );
+
+  test(
+    'pruning import with trailing ignore_for_file keeps comment on own line',
+    () async {
+      File(p.join(pkg.path, 'lib', 'ig_dep.dart')).writeAsStringSync('''
+class Dep {
+  const Dep._();
+  static const Dep instance = Dep._();
+}
+''');
+      File(p.join(pkg.path, 'lib', 'ig_sink.dart')).writeAsStringSync('''
+import 'ig_dep.dart';
+class Sink {
+  Sink(this.d);
+  final Dep d;
+}
+''');
+      final file = File(p.join(pkg.path, 'lib', 'ig_consumer.dart'))
+        ..writeAsStringSync('''
+import 'ig_dep.dart'; // ignore_for_file: avoid_print
+import 'ig_sink.dart';
+
+final sink = Sink(Dep.instance);
+''');
+      await Sanitizer().run([file.path]);
+      final out = file.readAsStringSync();
+      expect(
+        out,
+        startsWith("// ignore_for_file: avoid_print\nimport 'ig_sink.dart';"),
+      );
+      expect(out, contains('Sink(.instance)'));
+    },
+  );
+
+  test(
+    'pruning sole directive with doc comment or annotation emits library;',
+    () async {
+      File(p.join(pkg.path, 'lib', 'sole_aliases.dart')).writeAsStringSync('''
+import 'sole_doc.dart';
+typedef Mode = Fit;
+''');
+      final docFile = File(p.join(pkg.path, 'lib', 'sole_doc.dart'))
+        ..writeAsStringSync('''
+/// Library-level notes.
+import 'sole_aliases.dart';
+
+enum Fit { cover, fill }
+Fit f() => Mode.fill;
+''');
+      File(p.join(pkg.path, 'lib', 'sole_annot_aliases.dart'))
+          .writeAsStringSync('''
+import 'sole_annot.dart';
+typedef Mode2 = Fit2;
+''');
+      final annotFile = File(p.join(pkg.path, 'lib', 'sole_annot.dart'))
+        ..writeAsStringSync('''
+@Deprecated('lib')
+import 'sole_annot_aliases.dart';
+
+enum Fit2 { cover, fill }
+Fit2 f2() => Mode2.fill;
+''');
+      await Sanitizer().run([docFile.path, annotFile.path]);
+      expect(
+        docFile.readAsStringSync(),
+        startsWith('/// Library-level notes.\nlibrary;\n\nenum Fit'),
+      );
+      expect(
+        annotFile.readAsStringSync(),
+        startsWith("@Deprecated('lib')\nlibrary;\n\nenum Fit2"),
+      );
+    },
+  );
+
+  test(
+    'refused rebind wave does not bisect across statements in _recover',
+    () async {
+      final calls = List.generate(40, (_) => '  take(Sub.a);').join('\n');
+      final sw = Stopwatch()..start();
+      final out = await sanitize('''
+class Base {
+  const Base(this.v);
+  static const Base a = Base(1);
+  final int v;
+}
+class Sub extends Base {
+  const Sub() : super(2);
+  static const Sub a = Sub();
+}
+enum Fit { cover }
+void take(Base b) {}
+void takeFit(Fit f) {}
+void main() {
+  takeFit(Fit.cover);
+$calls
+}
+''');
+      sw.stop();
+      expect(out, contains('takeFit(.cover);'));
+      expect(out, contains('take(Sub.a);'));
+      expect(sw.elapsedMilliseconds, lessThan(5000));
+    },
+  );
 }
