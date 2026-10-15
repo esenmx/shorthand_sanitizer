@@ -988,16 +988,25 @@ final class _FileSanitizer({
 
   Future<List<FileResult>> run() async {
     Map<String, String>? texts;
+    // What each unit's text now carries: every unit a dry run stands in for,
+    // or every unit a write reached, even when a later one failed.
+    var applied = const <String, _UnitEdits>{};
     try {
       if (await _converge()) await _recover();
       texts = await _finalize();
+      if (texts != null && dryRun) applied = _editsByUnit();
       // Written while the overlays still hold the same text: removing them
       // first would have the analyzer re-read the pre-write disk, and every
       // later file of the library would be judged against stale text.
       if (texts != null && !dryRun) {
+        final edits = _editsByUnit();
         // All or nothing: a part written without its library leaves the
         // import it orphaned behind.
-        final failure = _unwritable(texts.keys) ?? _writeAll(texts);
+        final unwritable = _unwritable(texts.keys);
+        final (:written, :failure) = unwritable == null
+            ? _writeAll(texts)
+            : (written: const <String>[], failure: unwritable);
+        applied = {for (final path in written) path: ?edits[path]};
         if (failure case (:final path, :final error)) {
           result.writeFailures.add((file: file, path: path, error: error));
           final shown = p.relative(path, from: p.dirname(file));
@@ -1075,21 +1084,39 @@ final class _FileSanitizer({
             ],
           ),
     ];
-    if (texts != null) {
-      origins.record(file, original.lineInfo, [
-        deletions,
-        [for (final cut in cuts[file] ?? const <_DirectiveCut>[]) _editOf(cut)],
-      ]);
-      for (final unit in library.units) {
-        if (cuts[unit.path] case final pruned? when unit.path != file) {
-          origins.record(unit.path, unit.lineInfo, [
-            [for (final cut in pruned) _editOf(cut)],
-          ]);
-        }
-      }
+    for (final MapEntry(key: path, value: (:before, :batches))
+        in applied.entries) {
+      origins.record(path, before, batches);
     }
     return results;
   }
+
+  /// The edits writing the verified set makes to each unit of the library,
+  /// with the lines of the text they apply to.
+  Map<String, _UnitEdits> _editsByUnit() => {
+    file: (
+      before: original.lineInfo,
+      batches: [
+        [
+          for (final c in _active)
+            (start: c.deleteStart, end: c.deleteEnd, length: 0),
+        ],
+        [
+          for (final cut in _orphanCuts[file] ?? const <_DirectiveCut>[])
+            _editOf(cut),
+        ],
+      ],
+    ),
+    for (final MapEntry(key: path, value: cuts) in _orphanCuts.entries)
+      if (path != file)
+        if (library.unitWithPath(path) case final unit?)
+          path: (
+            before: unit.lineInfo,
+            batches: [
+              [for (final cut in cuts) _editOf(cut)],
+            ],
+          ),
+  };
 
   /// Narrows [_active] to a set that verifies clean, if one exists. Returns
   /// false when the speculative text stopped resolving at all.
@@ -1322,16 +1349,22 @@ final class _FileSanitizer({
   }
 
   /// Writes [texts]; a failure past the [_unwritable] check (a full disk) is
-  /// reported, not thrown, though earlier files may already be written.
-  static ({String path, String error})? _writeAll(Map<String, String> texts) {
+  /// reported, not thrown, along with the files already written.
+  static ({List<String> written, ({String path, String error})? failure})
+  _writeAll(Map<String, String> texts) {
+    final written = <String>[];
     for (final MapEntry(key: path, value: text) in texts.entries) {
       try {
         _write(path, text);
       } on FileSystemException catch (e) {
-        return (path: path, error: e.osError?.message ?? e.message);
+        return (
+          written: written,
+          failure: (path: path, error: e.osError?.message ?? e.message),
+        );
       }
+      written.add(path);
     }
-    return null;
+    return (written: written, failure: null);
   }
 
   /// The analyzer's content carries no BOM; one the file had is kept.
@@ -1623,6 +1656,9 @@ typedef _SiteName = ({
 
 /// [start, end) of a text replaced by [length] characters.
 typedef _Edit = ({int start, int end, int length});
+
+/// Edit batches, in order, and the lines of the text the first applies to.
+typedef _UnitEdits = ({LineInfo before, List<List<_Edit>> batches});
 
 /// The offset in the text before [edits] of [offset] in the text after them;
 /// an offset inside a replacement maps to the start of the range it replaced.
