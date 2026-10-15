@@ -4,6 +4,7 @@
 
 Rewrites `Type.member` to [dot shorthand](https://dart.dev/language/dot-shorthands) `.member` across a whole Dart or Flutter project, checking every site by re-resolving it, then prunes the imports the dropped prefixes orphaned. Dart's IDE assist *Convert to dot shorthand* does one site at a time; dotsan does the project in one verified run. Rewrites packages at language version 3.10+; dotsan itself needs Dart 3.13+.
 
+<!-- no-compile -->
 ```dart
 // Before
 return Padding(
@@ -16,6 +17,7 @@ return Padding(
 );
 ```
 
+<!-- no-compile -->
 ```dart
 // After `dotsan && dart format .`
 return Padding(
@@ -178,6 +180,7 @@ dotsan -v
 
 `dotsan` leaves expressions prefixed when context type is ambiguous or would change program semantics:
 
+<!-- no-compile -->
 ```dart
 // Unwitnessed context (type is Object, not Fit)
 final Object o = Fit.cover;
