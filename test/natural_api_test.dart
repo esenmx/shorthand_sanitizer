@@ -308,7 +308,8 @@ void main() {
           ),
         );
 
-        final hit = dotsan(['-n', '--exclude=$a', a], cwd: dir.parent.path);
+        final glob = p.posix.join(p.basename(dir.path), 'lib', 'a.dart');
+        final hit = dotsan(['-n', '--exclude=$glob', a], cwd: dir.parent.path);
         expect(hit.exitCode, 0, reason: '${hit.stderr}');
         expect(hit.stdout, 'would convert 0 site(s) in 0 file(s)\n');
         expect(hit.stderr, contains('warning: skipped $a: matches --exclude'));
