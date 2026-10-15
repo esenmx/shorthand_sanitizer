@@ -602,6 +602,73 @@ void run() => takeMode(.a);
     }
   });
 
+  group('R3-SS-n1 two parts prune a headed library before it runs', () {
+    for (final dryRun in [true, false]) {
+      test(dryRun ? 'in a dry run' : 'in a write', () async {
+        final tag = dryRun ? 'n1hd' : 'n1hw';
+        final fit = '${tag}_fit_with_a_rather_long_file_name.dart';
+        write(pkg, 'lib/$fit', 'enum Fit { cover }\n');
+        write(pkg, 'lib/${tag}_mode.dart', 'enum Mode { on }\n');
+        write(pkg, 'lib/${tag}_tone.dart', 'enum Tone { warm }\n');
+        write(pkg, 'lib/${tag}_keep.dart', 'enum Keep { k }\n');
+        write(
+          pkg,
+          'lib/${tag}_use.dart',
+          "import '$fit';\nimport '${tag}_mode.dart';\n"
+              "import '${tag}_tone.dart';\n"
+              'void take(Fit f) {}\nvoid set(Mode m) {}\n'
+              'void tint(Tone t) {}\n',
+        );
+        final partA = write(
+          pkg,
+          'lib/a_${tag}_part.dart',
+          "part of 'z_${tag}_lib.dart';\nvoid runA() => take(Fit.cover);\n",
+        );
+        final partB = write(
+          pkg,
+          'lib/b_${tag}_part.dart',
+          "part of 'z_${tag}_lib.dart';\nvoid runB() => tint(Tone.warm);\n",
+        );
+        final lib = write(
+          pkg,
+          'lib/z_${tag}_lib.dart',
+          '/// Lib doc.\n'
+              "import '$fit';\n"
+              '\n'
+              "import '${tag}_mode.dart';\n"
+              "import '${tag}_use.dart';\n"
+              "import '${tag}_tone.dart';\n"
+              "import '${tag}_keep.dart';\n"
+              "part 'a_${tag}_part.dart';\n"
+              "part 'b_${tag}_part.dart';\n"
+              '\n'
+              'void own() => set(Mode.on);\n'
+              'final k = Keep.k;\n',
+        );
+        final result = await Sanitizer(
+          dryRun: dryRun,
+          explain: true,
+        ).run([partA.path, partB.path, lib.path]);
+        final own = result.files.singleWhere(
+          (f) => p.basename(f.path) == p.basename(lib.path),
+        );
+        expect(
+          [for (final s in own.sites) (s.line, s.column, s.before)],
+          [(11, 19, 'Mode.on'), (12, 11, 'Keep.k')],
+        );
+        expect(own.kept, ['12: Keep.k kept: no context type']);
+        expect(
+          [for (final i in own.prunedImports) i.description],
+          [
+            "2: import '$fit' -> removed",
+            "4: import '${tag}_mode.dart' -> removed",
+            "6: import '${tag}_tone.dart' -> removed",
+          ],
+        );
+      });
+    }
+  });
+
   test(
     'R3-SS-n2 a generic forwarder with renamed positionals converts',
     () async {
