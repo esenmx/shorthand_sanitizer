@@ -24,6 +24,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
       - run: git ls-files -z -- '*.dart' | xargs -0 dart format --output=none --set-exit-if-changed
+  markdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: npx --yes markdownlint-cli2@0.23.3
   analyze:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -88,7 +94,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
       - run: dart pub downgrade
-      - run: dart analyze --fatal-warnings
+      - run: dart analyze --fatal-infos --fatal-warnings
       - run: dart test
   pana:
     runs-on: ubuntu-latest
