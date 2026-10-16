@@ -7,7 +7,7 @@ import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 
-const _version = '0.11.0';
+const _version = '0.11.1';
 
 const _defaultRoots = [
   'lib',
