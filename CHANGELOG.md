@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.1 - 2026-10-16
+
+### Fixed
+
+- README: the factory-constructor example is `Border.all(width: 2)`.
+  `BorderRadius.circular`, the example before, isn't a factory constructor.
+
+### Changed
+
+- The README opens with what the tool does, why to use it and a short example,
+  and its code blocks fit pub.dev without scrolling sideways.
+
 ## 0.11.0 - 2026-10-15
 
 ### Breaking
