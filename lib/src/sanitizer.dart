@@ -909,8 +909,7 @@ final class _PackageGate() {
     if (packagesFile == null) return false;
     final config = await _configOf(packagesFile.path);
     final pkg =
-        config?.packageOf(Uri.file(file)) ??
-        config?.packageOf(Uri.file(_real(file)));
+        config?.packageOf(.file(file)) ?? config?.packageOf(.file(_real(file)));
     return pkg != null &&
         (p.equals(_canonical(p.fromUri(pkg.root)), root) ||
             p.equals(_real(p.fromUri(pkg.root)), _real(root)));
