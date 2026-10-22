@@ -10,7 +10,7 @@ import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
 void main() {
-  e2e('battery', battery, converted: 69);
+  e2e('battery', battery, converted: 70);
   e2e('masked_error', maskedError, allowErrors: true);
   e2e('deprecated_alias', deprecatedAlias);
   e2e('neg_zero_alias', negZeroAlias);
@@ -90,7 +90,7 @@ void e2e(
     ).isEmpty();
     check(_run(root)).equals(runBefore);
     if (converted != null) check(result.convertedCount).equals(converted);
-  }, timeout: const Timeout(Duration(minutes: 3)));
+  }, timeout: const .new(.new(minutes: 3)));
 }
 
 /// `severity|code|file|message` of each `dart analyze --format=machine` line.

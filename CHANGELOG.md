@@ -2,8 +2,24 @@
 
 ## Unreleased
 
+### Breaking
+
+- `new Type.named(...)` → `.named(...)` and generic static method invocations
+  whose explicit `<T>` is inferred identically (`Type.method<T>(...)` →
+  `.method(...)`) now always convert, so existing
+  `dotsan -n --set-exit-if-changed` CI gates will exit 1 on newly convertible
+  sites; pass `--skip=Type.member` (`Sanitizer(skips: {'Type.member'})`) to keep
+  specific sites prefixed.
+
 ### Added
 
+- Library-batched engine: each library (`library` and all its in-scope `part`
+  files) is resolved once and sanitized in a single batch, eliminating redundant
+  per-part library resolves and cross-part line-offset drift.
+- Git-incremental mode: `--changed` (`Sanitizer(changed: true)`) processes only
+  files with uncommitted git changes (modified, staged, or untracked), and
+  `--since=<ref>` (`Sanitizer(since: '<ref>')`) processes only files changed
+  since `<ref>`.
 - Default path discovery now expands Pub workspace `workspace:` members from the
   root `pubspec.yaml` when `dotsan` is run with no path arguments at a workspace
   root.
@@ -16,12 +32,21 @@
 - Static getter/field selector chains whose intermediate access returns the same
   interface type (`Box.a.self`) now convert at the chain root (`.a.self`).
 
+### Changed
+
+- The `note: skipped N generated file(s)` stderr line is now printed only when
+  `--explain` (`-e`) is passed, keeping standard runs silent on stderr when all
+  skipped files are routine generated outputs; a generated file explicitly named
+  on the command line still warns on stderr.
+
 ### Fixed
 
 - When a shorthand conversion orphans a single identifier in an `import ... show
-  A, B;` combinator (`unused_shown_name`), the unused shown name is silently
-  pruned (`import ... show A;`) instead of refusing the conversion or bisecting
-  the file's candidates.
+  A, B;` combinator (`unused_shown_name`), the unused shown name is pruned
+  (`import ... show A;`) and reported in `prunedImports` instead of refusing the
+  conversion or bisecting the file's candidates.
+- Speculative trial overlay states stay in memory and are no longer persisted to
+  the on-disk analyzer cache (capped at 64 MiB).
 - Prefix tokens separated from `.member` by an interior comment
   (`Foo /* why */ .bar`) stay prefixed so the comment is never silently deleted.
 - Out-of-scope libraries encountered while checking `analyzer: exclude:` no
