@@ -6,6 +6,7 @@ import 'package:cli_util/cli_logging.dart';
 import 'package:glob/glob.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
+import 'package:yaml/yaml.dart';
 
 const _version = '0.11.1';
 
@@ -23,7 +24,7 @@ const _defaultRoots = [
 const _skippedExit = 65;
 
 ArgParser _buildParser() {
-  return ArgParser(usageLineLength: 80)
+  return .new(usageLineLength: 80)
     ..addFlag(
       'dry-run',
       abbr: 'n',
@@ -64,6 +65,20 @@ ArgParser _buildParser() {
       help: 'Also rewrite files whose library already has analysis errors.',
     )
     ..addFlag(
+      'changed',
+      negatable: false,
+      help:
+          'Only process .dart files with uncommitted changes in git '
+          '(modified, staged, or untracked).',
+    )
+    ..addOption(
+      'since',
+      valueHelp: 'ref',
+      help:
+          'Only process .dart files changed in git since <ref> (including '
+          'uncommitted changes).',
+    )
+    ..addFlag(
       'explain',
       abbr: 'e',
       negatable: false,
@@ -92,8 +107,8 @@ Usage: dotsan [paths...] [options]
 ${parser.usage}
 Rewrites Type.member to dot-shorthand .member wherever the rewrite provably
 resolves to the same element, then prunes any import the dropped Type prefix
-orphaned. Files whose leading comment declares them generated are skipped and
-counted; directory walks skip hidden directories and each package's build/.
+orphaned. Files whose leading comment declares them generated are skipped;
+directory walks skip hidden directories and each package's build/.
 Default paths: every conventional root directory that exists
 (${_defaultRoots.join(', ')}).
 
@@ -144,7 +159,13 @@ Future<void> main(List<String> args) async {
 
   final paths = [...opts.rest];
   if (paths.isEmpty) {
-    paths.addAll(_discoverDefaultRoots());
+    final (:roots, :errors) = _discoverDefaultRoots();
+    if (errors.isNotEmpty) {
+      errors.forEach(stderr.writeln);
+      exitCode = 64;
+      return;
+    }
+    paths.addAll(roots);
     if (paths.isEmpty) {
       stderr.writeln('no conventional root directory found (see --help)');
       exit(64);
@@ -171,21 +192,41 @@ Future<void> main(List<String> args) async {
 
   final dryRun = opts.flag('dry-run');
   final json = opts.option('format') == 'json';
+  final Future<SanitizeResult> pending;
+  try {
+    pending = Sanitizer(
+      skips: skips.toSet(),
+      excludes: opts.multiOption('exclude'),
+      dryRun: dryRun,
+      skipGenerated: !opts.flag('include-generated'),
+      explain: explain,
+      allowErrors: opts.flag('allow-errors'),
+      analyzerExcludes: opts.flag('analyzer-excludes'),
+      changed: opts.flag('changed'),
+      since: opts.option('since'),
+    ).run(paths);
+    // CLI boundary: library pre-flight throws ArgumentError / StateError per
+    // package conventions rather than custom Exception subclasses.
+    // ignore: avoid_catching_errors
+  } on ArgumentError catch (e) {
+    stderr.writeln(e.message);
+    exitCode = 64;
+    return;
+    // CLI boundary: library pre-flight throws StateError when target is not a
+    // git repo or git fails.
+    // ignore: avoid_catching_errors
+  } on StateError catch (e) {
+    stderr.writeln(e.message);
+    exitCode = 64;
+    return;
+  }
   // Piped stdout is the parseable report; the non-ANSI Progress fallback
   // prints its message there, so the spinner is TTY-only — and never over
   // JSON, which stays pure even on a terminal.
   final progress = !json && stdout.hasTerminal
       ? Logger.standard().progress('analyzing')
       : null;
-  final result = await Sanitizer(
-    skips: skips.toSet(),
-    excludes: opts.multiOption('exclude'),
-    dryRun: dryRun,
-    skipGenerated: !opts.flag('include-generated'),
-    explain: explain,
-    allowErrors: opts.flag('allow-errors'),
-    analyzerExcludes: opts.flag('analyzer-excludes'),
-  ).run(paths);
+  final result = await pending;
   progress?.finish(showTiming: true);
   if (!json) {
     for (final file in result.files) {
@@ -237,12 +278,14 @@ Set<String> _namedFiles(List<String> rest) => {
 
 /// Existing conventional roots in the current directory and under any Pub
 /// workspace members declared in `pubspec.yaml`.
-List<String> _discoverDefaultRoots() {
+({List<String> roots, List<String> errors}) _discoverDefaultRoots() {
   final roots = [
     for (final d in _defaultRoots)
       if (Directory(d).existsSync()) d,
   ];
-  for (final member in _workspaceMembers()) {
+  final (:members, :errors) = _workspaceMembers();
+  if (errors.isNotEmpty) return (roots: const [], errors: errors);
+  for (final member in members) {
     for (final d in _defaultRoots) {
       final candidate = p.normalize(p.join(member, d));
       if (Directory(candidate).existsSync() &&
@@ -253,37 +296,103 @@ List<String> _discoverDefaultRoots() {
       }
     }
   }
-  return roots;
+  return (roots: roots, errors: const []);
 }
 
-Iterable<String> _workspaceMembers() sync* {
+({List<String> members, List<String> errors}) _workspaceMembers() {
   final pubspec = File('pubspec.yaml');
-  if (!pubspec.existsSync()) return;
+  if (!pubspec.existsSync()) return (members: const [], errors: const []);
   final String text;
   try {
     text = pubspec.readAsStringSync();
   } on FileSystemException {
-    return;
+    return (members: const [], errors: const []);
   }
-  var inWorkspace = false;
-  for (final raw in LineSplitter.split(text)) {
-    final line = raw.replaceFirst(RegExp('#.*'), '').trimRight();
-    if (line.trim().isEmpty) continue;
-    if (!inWorkspace) {
-      if (RegExp(r'^workspace:\s*$').hasMatch(line)) inWorkspace = true;
+  final List<String> declared;
+  try {
+    declared = _declaredWorkspaceMembers(text);
+  } on YamlException catch (e) {
+    return (members: const [], errors: ['$e']);
+  }
+  if (declared.isEmpty) return (members: const [], errors: const []);
+
+  List<String>? candidateDirs;
+  final members = <String>[];
+  final errors = <String>[];
+  for (final entry in declared) {
+    final posixEntry = entry.replaceAll(r'\', '/');
+    if (!RegExp(r'[*?\x5b{]').hasMatch(posixEntry)) {
+      if (Directory(entry).existsSync()) {
+        members.add(p.normalize(entry));
+      } else {
+        errors.add('workspace member "$entry" does not exist');
+      }
       continue;
     }
-    if (RegExp(r'^\s+-\s+(.+)$').firstMatch(line) case final m?) {
-      var entry = m.group(1)?.trim() ?? '';
-      if ((entry.startsWith('"') && entry.endsWith('"')) ||
-          (entry.startsWith("'") && entry.endsWith("'"))) {
-        entry = entry.substring(1, entry.length - 1);
-      }
-      if (entry.isNotEmpty) yield entry;
-    } else if (!line.startsWith(' ') && !line.startsWith('\t')) {
-      inWorkspace = false;
+    final Glob glob;
+    try {
+      glob = Glob(posixEntry, context: p.posix);
+    } on FormatException catch (e) {
+      errors.add('invalid workspace member glob "$entry": ${e.message}');
+      continue;
+    }
+    final allDirs = candidateDirs ??= _walkSubdirectories();
+    final matched = [
+      for (final rel in allDirs)
+        if (glob.matches(p.posix.joinAll(p.split(rel)))) rel,
+    ]..sort();
+    if (matched.isEmpty) {
+      errors.add('workspace member "$entry" matched no directory');
+    } else {
+      members.addAll(matched);
     }
   }
+  return (members: members, errors: errors);
+}
+
+/// The `workspace:` entries of a pubspec, as written. An empty `workspace:`
+/// declares none, as for pub.
+///
+/// Throws a [YamlException] when [text] is not YAML or `workspace` is not a
+/// list of strings.
+List<String> _declaredWorkspaceMembers(String text) {
+  final Object? doc = loadYaml(text, sourceUrl: Uri.file('pubspec.yaml'));
+  if (doc is! YamlMap) return const [];
+  return switch (doc.nodes['workspace']) {
+    null || YamlScalar(value: null) => const [],
+    YamlList(:final nodes) when nodes.every((n) => n.value is String) => [
+      for (final n in nodes)
+        if (n.value case final String entry) entry,
+    ],
+    final node => throw YamlException(
+      '"workspace" must be a list of strings',
+      node.span,
+    ),
+  };
+}
+
+List<String> _walkSubdirectories() {
+  final result = <String>[];
+  final queue = <Directory>[.current];
+  while (queue.isNotEmpty) {
+    final dir = queue.removeLast();
+    final List<FileSystemEntity> children;
+    try {
+      children = dir.listSync(followLinks: false);
+    } on FileSystemException {
+      continue;
+    }
+    final isPkg = File(p.join(dir.path, 'pubspec.yaml')).existsSync();
+    for (final child in children) {
+      if (child is! Directory) continue;
+      final base = p.basename(child.path);
+      if (base.startsWith('.') || (isPkg && base == 'build')) continue;
+      final rel = p.normalize(p.relative(child.path));
+      result.add(rel);
+      queue.add(child);
+    }
+  }
+  return result;
 }
 
 /// Everything the run left undone or unmatched, on stderr. A file [named] on
@@ -317,12 +426,12 @@ void _warn(
         : '';
     warn('skipped ${_display(path)}: $reason$hint');
   }
-  if (result.skippedGenerated.isNotEmpty) {
+  if (explain && result.skippedGenerated.isNotEmpty) {
     stderr.writeln(
       'note: skipped ${result.skippedGenerated.length} generated file(s) '
-      '(--include-generated processes them)${explain ? ':' : ''}',
+      '(--include-generated processes them):',
     );
-    if (explain) list(result.skippedGenerated);
+    list(result.skippedGenerated);
   }
   for (final MapEntry(key: (:root, :version), value: n)
       in result.skippedBelowFloor.entries) {

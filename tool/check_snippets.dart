@@ -30,7 +30,7 @@ final RegExp _declaration = RegExp(
   'Future<void> main)',
 );
 
-final RegExp _variable = RegExp('^(final |const |var |late )');
+final RegExp _variable = .new('^(final |const |var |late )');
 
 final class _Snippet(
   final String file,
@@ -84,7 +84,7 @@ _Rendered _render(_Snippet snippet, List<String> imports) {
     }
     emit('}', -1);
   }
-  return _Rendered(snippet, lines, origins);
+  return .new(snippet, lines, origins);
 }
 
 Future<void> main(List<String> args) async {
@@ -182,7 +182,7 @@ Future<void> main(List<String> args) async {
       if (previous.trim() == _noCompile) {
         skipped++;
       } else {
-        snippets.add(_Snippet(file, start + 1, body));
+        snippets.add(.new(file, start + 1, body));
       }
     }
   }
@@ -198,7 +198,7 @@ Future<void> main(List<String> args) async {
   final workspace = Directory.systemTemp.createTempSync('check_snippets_');
   try {
     final repo = Directory.current.absolute.path;
-    final dependencies = <String, String>{
+    final dependencies = {
       for (final dep in deps) dep: ' any',
       ?included: ' $includedConstraint',
       if (usesFlutter) 'flutter': '\n    sdk: flutter',

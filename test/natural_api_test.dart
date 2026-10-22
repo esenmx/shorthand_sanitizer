@@ -140,7 +140,7 @@ void main() {
           .isTrue();
     });
 
-    test('generated skips are counted on stderr and listed with -e', () {
+    test('generated skips stay silent by default and are listed with -e', () {
       final dir = fixture('au2_count', {
         'lib/a.g.dart':
             '// GENERATED CODE - DO NOT MODIFY BY HAND\n$convertible',
@@ -149,11 +149,11 @@ void main() {
       final gen = canonical(p.join(dir.path, 'lib', 'a.g.dart'));
       final plain = dotsan(['-n', p.join(dir.path, 'lib')]);
       check(because: '${plain.stderr}', plain.exitCode).equals(0);
-      check(plain.stderr as String)
-          .contains('skipped 1 generated file(s) (--include-generated');
-      check(plain.stderr as String).not((it) => it.contains(gen));
+      check(plain.stderr as String).isEmpty();
 
       final explained = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
+      check(explained.stderr as String)
+          .contains('skipped 1 generated file(s) (--include-generated');
       check(explained.stderr as String).contains('  $gen\n');
 
       final json = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);

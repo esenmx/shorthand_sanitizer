@@ -8,11 +8,16 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
-late Directory pkg;
+final Directory pkg = .systemTemp.createTempSync('sweep_shared');
 int fileId = 0;
 
-Directory makePackage(String name, String spec, {bool pubGet = true}) {
-  final dir = Directory.systemTemp.createTempSync('sweep_$name');
+Directory makePackage(
+  String name,
+  String spec, {
+  bool pubGet = true,
+  Directory? target,
+}) {
+  final dir = target ?? .systemTemp.createTempSync('sweep_$name');
   Directory(p.join(dir.path, 'lib')).createSync();
   File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync(spec);
   if (pubGet) {
@@ -110,7 +115,11 @@ extension BoxTag on Box {
 
 void main() {
   setUpAll(() {
-    pkg = makePackage('shared', 'name: sweep\nenvironment:\n  sdk: ^3.10.0\n');
+    makePackage(
+      'shared',
+      'name: sweep\nenvironment:\n  sdk: ^3.10.0\n',
+      target: pkg,
+    );
     write(pkg, 'lib/geo.dart', geoLibrary);
   });
   tearDownAll(() => pkg.deleteSync(recursive: true));
@@ -681,8 +690,8 @@ void main() => take(Box.pair(1));
     },
   );
 
-  test('silently prunes orphaned identifier from show combinator without '
-      'reporting a removed import', () async {
+  test('prunes orphaned identifier from show combinator and reports the '
+      'edited import (including in a prune-only library unit)', () async {
     write(
       pkg,
       'lib/show_defs.dart',
@@ -696,13 +705,103 @@ void run(Mode m) => take(Fit.cover, m);
 ''');
     final result = await Sanitizer().run([file.path]);
     check(result.convertedCount).equals(1);
-    check(result.removedImportCount).equals(0);
+    check(result.removedImportCount).equals(1);
+    check(result.files.single.prunedImports.single.replacement)
+        .equals('show Mode, Unused, take');
     final out = file.readAsStringSync();
     // `Fit` is pruned; pre-existing unused `Unused` and used `Mode`, `take`
     // stay untouched.
     check(out).contains("import 'show_defs.dart' show Mode, Unused, take;");
     check(out).contains('take(.cover, m);');
+
+    final libFile = write(pkg, 'lib/show_lib.dart', '''
+import 'show_defs.dart' show Fit, Mode, take;
+
+part 'show_part.dart';
+''');
+    final partFile = write(pkg, 'lib/show_part.dart', '''
+part of 'show_lib.dart';
+
+void runPart(Mode m) => take(Fit.cover, m);
+''');
+    final multiResult = await Sanitizer().run([libFile.path, partFile.path]);
+    check(multiResult.convertedCount).equals(1);
+    check(multiResult.removedImportCount).equals(1);
+    check(multiResult.files.map((f) => f.path).toList()).deepEquals([
+      p.normalize(p.absolute(partFile.path)),
+      p.normalize(p.absolute(libFile.path)),
+    ]);
+    check(multiResult.files.last.prunedImports.single.replacement)
+        .equals('show Mode, take');
+    check(libFile.readAsStringSync())
+        .contains("import 'show_defs.dart' show Mode, take;");
   });
+
+  test(
+    'keeps generic static method invocation prefixed when dropping <T> changes '
+    'inferred type arguments',
+    () async {
+      final out = await sanitize('''
+class Box<E> {
+  const Box(this.items);
+  final List<E> items;
+  static Box<T> of<T>(T x) => Box(<T>[x]);
+  static RawBox rawOf<T>(T x) => RawBox(<T>[x]);
+}
+
+class RawBox {
+  const RawBox(this.items);
+  final Object items;
+  static RawBox of<T>(T x) => RawBox(<T>[x]);
+}
+
+void main() {
+  final RawBox a = RawBox.of<num>(1);
+  final Box<num> b = Box.of<num>(1);
+  print([a, b]);
+}
+''');
+      // `RawBox` does not constrain `T`, so `.of(1)` would infer `T = int`
+      // instead of `num` and change runtime `<T>[x]` type.
+      check(out).contains('final RawBox a = RawBox.of<num>(1);');
+      // `Box<num>` constrains `T = num`, so `.of(1)` preserves `T = num`.
+      check(out).contains('final Box<num> b = .of(1);');
+    },
+  );
+
+  test(
+    'prunes orphaned import in library when a part has only failing candidates',
+    () async {
+      write(pkg, 'lib/mode_only.dart', 'enum Mode { on, off }\n');
+      write(pkg, 'lib/mode_api.dart', '''
+import 'mode_only.dart';
+enum Fit { cover, contain }
+void takeMode(Mode m) {}
+''');
+      final libFile = write(pkg, 'lib/recover_lib.dart', '''
+import 'mode_api.dart';
+import 'mode_only.dart';
+
+part 'recover_part.dart';
+
+void runLib() => takeMode(Mode.on);
+''');
+      final partFile = write(pkg, 'lib/recover_part.dart', '''
+part of 'recover_lib.dart';
+
+final xs = [Fit.cover, Fit.contain];
+''');
+      final result = await Sanitizer().run([libFile.path, partFile.path]);
+      check(result.skippedWithErrors).isEmpty();
+      check(result.convertedCount).equals(1);
+      check(result.removedImportCount).equals(1);
+      check(libFile.readAsStringSync())
+        ..contains('takeMode(.on);')
+        ..not((it) => it.contains("import 'mode_only.dart';"));
+      check(partFile.readAsStringSync())
+          .contains('final xs = [Fit.cover, Fit.contain];');
+    },
+  );
 
   test('converts licensed rebinds in closure returns, factory bodies, records, '
       'patterns, ?? LHS, and setter/cascade assignments', () async {

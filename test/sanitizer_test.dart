@@ -5,7 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
-late Directory pkg;
+final Directory pkg = .systemTemp.createTempSync('shorthand_sanitizer_test');
 int fileId = 0;
 
 /// Writes [source] into the fixture package, sanitizes it, and returns the
@@ -26,7 +26,6 @@ Future<String> sanitize(
 
 void main() {
   setUpAll(() {
-    pkg = .systemTemp.createTempSync('shorthand_sanitizer_test');
     Directory(p.join(pkg.path, 'lib')).createSync();
     const spec = 'name: fixture\nenvironment:\n  sdk: ^3.10.0\n';
     File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync(spec);
@@ -1182,8 +1181,10 @@ void f(bool c) {
     ]);
   });
 
-  test('SS-4 skips @Annot.member and new Type.named(), keeps gap', () async {
-    final out = await sanitize('''
+  test(
+    'SS-4 skips @Annot.member, converts new Type.named(), keeps gap',
+    () async {
+      final out = await sanitize('''
 class MyAnnot {
   const MyAnnot._();
   static const MyAnnot instance = MyAnnot._();
@@ -1207,11 +1208,12 @@ void main() {
   print([a, b, c]);
 }
 ''');
-    check(out).contains('@MyAnnot.instance');
-    check(out).contains('final Box a = new Box.all(1);');
-    check(out).contains('final Box b = new Box.wrap(.named(2));');
-    check(out).contains('final Box c = .\n    all(3);');
-  });
+      check(out).contains('@MyAnnot.instance');
+      check(out).contains('final Box a = .all(1);');
+      check(out).contains('final Box b = .wrap(.named(2));');
+      check(out).contains('final Box c = .\n    all(3);');
+    },
+  );
 
   test('SS-5 doomed assignment does not poison later promotion', () async {
     final out = await sanitize('''
@@ -1605,4 +1607,317 @@ $calls
       check(sw.elapsedMilliseconds).isLessThan(5000);
     },
   );
+
+  group('library-batched multi-part engine', () {
+    test(
+      'batches library and multiple parts in one pass and prunes shared import',
+      () async {
+        File(p.join(pkg.path, 'lib', 'batch_fit.dart')).writeAsStringSync('''
+enum Fit { cover, contain }
+''');
+        File(p.join(pkg.path, 'lib', 'batch_sink.dart')).writeAsStringSync('''
+import 'batch_fit.dart';
+void take(Fit f) {}
+''');
+        final libFile = File(p.join(pkg.path, 'lib', 'batch_lib.dart'))
+          ..writeAsStringSync('''
+import 'batch_fit.dart';
+import 'batch_sink.dart';
+part 'batch_part_a.dart';
+part 'batch_part_b.dart';
+void fromLib() => take(Fit.cover);
+''');
+        final partA = File(p.join(pkg.path, 'lib', 'batch_part_a.dart'))
+          ..writeAsStringSync('''
+part of 'batch_lib.dart';
+void fromA() => take(Fit.cover);
+''');
+        final partB = File(p.join(pkg.path, 'lib', 'batch_part_b.dart'))
+          ..writeAsStringSync('''
+part of 'batch_lib.dart';
+void fromB() => take(Fit.contain);
+''');
+
+        final result = await Sanitizer().run([
+          partA.path,
+          partB.path,
+          libFile.path,
+        ]);
+        check(result.convertedCount).equals(3);
+        check(result.removedImportCount).equals(1);
+        check(libFile.readAsStringSync()).equals(
+          "import 'batch_sink.dart';\n"
+          "part 'batch_part_a.dart';\n"
+          "part 'batch_part_b.dart';\n"
+          'void fromLib() => take(.cover);\n',
+        );
+        check(partA.readAsStringSync()).equals(
+          "part of 'batch_lib.dart';\n"
+          'void fromA() => take(.cover);\n',
+        );
+        check(partB.readAsStringSync()).equals(
+          "part of 'batch_lib.dart';\n"
+          'void fromB() => take(.contain);\n',
+        );
+      },
+    );
+  });
+
+  test(
+    'leaves unnamed constructor calls alone while converting explicit .new and '
+    'new Type.named(...)',
+    () async {
+      final out = await sanitize('''
+class EdgeInsets {
+  const EdgeInsets(this.v);
+  const EdgeInsets.all(this.v);
+  final double v;
+}
+void main() {
+  const EdgeInsets a = EdgeInsets(8);
+  const EdgeInsets b = EdgeInsets.new(8);
+  final EdgeInsets c = new EdgeInsets.all(8);
+  print([a, b, c]);
+}
+''');
+      check(out).contains('const EdgeInsets a = EdgeInsets(8);');
+      check(out).contains('const EdgeInsets b = .new(8);');
+      check(out).contains('final EdgeInsets c = .all(8);');
+    },
+  );
+
+  group('generic static method shorthands', () {
+    test('converts Type.method<T>(...) when T is inferred and keeps '
+        'non-shorthand <T>', () async {
+      final out = await sanitize('''
+enum Fit { cover, contain }
+class Insets {
+  const Insets.all(this.v);
+  static const Insets zero = Insets.all(0);
+  final double v;
+  static T pick<T>(T a) => a;
+}
+T id<T>(T x) => x;
+void main() {
+  final List<Fit> l = <Fit>[Fit.cover];
+  final Fit f = id<Fit>(Fit.cover);
+  final Insets p = Insets.pick<Insets>(Insets.zero);
+  print([l, f, p]);
+}
+''');
+      check(out).contains('final List<Fit> l = <Fit>[.cover];');
+      check(out).contains('final Fit f = id<Fit>(.cover);');
+      check(out).contains('final Insets p = .pick(.zero);');
+    });
+
+    test(
+      'reports Type.method<T>(...) in --skip and --explain like any shorthand',
+      () async {
+        final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
+          ..writeAsStringSync('''
+class Box {
+  const Box();
+  static T pick<T>(T a) => a;
+  static Box raw<T>(T a) => const Box();
+}
+void main() {
+  final Box a = Box.pick<Box>(const Box());
+  final untyped = Box.pick<Box>(const Box());
+  final Box widened = Box.raw<num>(1);
+  print([a, untyped, widened]);
+}
+''');
+        final res = await Sanitizer(
+          skips: {'Box.pick'},
+          explain: true,
+          dryRun: true,
+        ).run([file.path]);
+        check(res.unmatchedSkips).isEmpty();
+        check(res.skippedByList).equals(1);
+        check(res.files.single.kept).deepEquals([
+          '7: Box.pick kept: skip-listed',
+          '8: Box.pick kept: no context type',
+          '9: Box.raw kept: pruning type arguments changes the inferred type',
+        ]);
+      },
+    );
+  });
+
+  test(
+    'off-limits unused_shown_name reverts only the orphaned shown symbol',
+    () async {
+      File(p.join(pkg.path, 'lib', 'off_defs.dart')).writeAsStringSync('''
+enum Fit { cover, contain }
+enum Mode { on, off }
+void take(Fit f, Mode m) {}
+''');
+      File(p.join(pkg.path, 'lib', 'off_side.dart')).writeAsStringSync('''
+enum Side { l, r }
+void side(Side s) {}
+''');
+      File(p.join(pkg.path, 'lib', 'off_lib.dart')).writeAsStringSync('''
+import 'off_defs.dart' show Fit, Mode, take;
+import 'off_defs.dart' as d show Fit, Mode, take;
+import 'off_side.dart';
+part 'off_part.dart';
+void inLib() {
+  take(.cover, Mode.off);
+  d.take(.cover, d.Mode.off);
+  side(Side.r);
+}
+''');
+      final partFile = File(p.join(pkg.path, 'lib', 'off_part.dart'))
+        ..writeAsStringSync('''
+part of 'off_lib.dart';
+void inPart() {
+  take(Fit.contain, Mode.on);
+  d.take(d.Fit.contain, d.Mode.on);
+  side(Side.l);
+}
+''');
+      final res = await Sanitizer(explain: true).run([partFile.path]);
+      final rewritten = partFile.readAsStringSync();
+      check(rewritten).contains('take(Fit.contain, .on);');
+      check(rewritten).contains('d.take(d.Fit.contain, .on);');
+      check(rewritten).contains('side(.l);');
+      check(res.files.single.converted).deepEquals([
+        '3: Mode.on -> .on',
+        '4: d.Mode.on -> .on',
+        '5: Side.l -> .l',
+      ]);
+      const expectedUnprefixed =
+          '3: Fit.contain kept: pruning its orphaned imports would edit '
+          'off_lib.dart, which is not among the given paths';
+      const expectedPrefixed =
+          '4: d.Fit.contain kept: pruning its orphaned imports would edit '
+          'off_lib.dart, which is not among the given paths';
+      check(res.files.single.kept)
+          .deepEquals([expectedUnprefixed, expectedPrefixed]);
+    },
+  );
+
+  group('git-incremental mode', () {
+    test('changed and since filter to git-modified files', () async {
+      final dir = Directory.systemTemp.createTempSync('dotsan_git_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      Directory(p.join(dir.path, 'lib')).createSync();
+      File(p.join(dir.path, 'pubspec.yaml'))
+          .writeAsStringSync('name: git_pkg\nenvironment:\n  sdk: ^3.10.0\n');
+      final committed = File(p.join(dir.path, 'lib', 'committed.dart'))
+        ..writeAsStringSync('''
+enum Fit { cover }
+Fit f() => Fit.cover;
+''');
+      final modified = File(p.join(dir.path, 'lib', 'modified.dart'))
+        ..writeAsStringSync('''
+enum Fit { cover, contain }
+Fit f() => Fit.cover;
+''');
+      final pubGet = Process.runSync('dart', [
+        'pub',
+        'get',
+        '--offline',
+      ], workingDirectory: dir.path);
+      if (pubGet.exitCode != 0) {
+        Process.runSync('dart', ['pub', 'get'], workingDirectory: dir.path);
+      }
+
+      void git(List<String> args) {
+        final r = Process.runSync('git', args, workingDirectory: dir.path);
+        if (r.exitCode != 0) {
+          throw StateError('git ${args.join(' ')} failed: ${r.stderr}');
+        }
+      }
+
+      git(['init']);
+      git(['config', 'user.email', 'test@example.com']);
+      git(['config', 'user.name', 'Test']);
+      git(['add', '.']);
+      git(['commit', '-m', 'init']);
+
+      modified.writeAsStringSync('''
+enum Fit { cover, contain }
+Fit f() => Fit.contain;
+''');
+      final untracked = File(p.join(dir.path, 'lib', 'untracked.dart'))
+        ..writeAsStringSync('''
+enum Fit { cover }
+Fit g() => Fit.cover;
+''');
+
+      final prevCwd = Directory.current;
+      Directory.current = dir;
+      try {
+        final changedRes = await Sanitizer(
+          changed: true,
+          dryRun: true,
+        ).run([p.join(dir.path, 'lib')]);
+        check(changedRes.files.map((f) => p.basename(f.path)).toList())
+            .deepEquals(['modified.dart', 'untracked.dart']);
+
+        git(['add', 'lib/modified.dart']);
+        git(['commit', '-m', 'second']);
+        untracked.deleteSync();
+
+        final sinceRes = await Sanitizer(
+          since: 'HEAD~1',
+          dryRun: true,
+        ).run([p.join(dir.path, 'lib')]);
+        check(sinceRes.files.map((f) => p.basename(f.path)).toList())
+            .deepEquals(['modified.dart']);
+        check(committed.readAsStringSync()).contains('Fit.cover');
+
+        check(
+          () =>
+              Sanitizer(since: 'nonexistent_ref_xyz')
+                  .run([p.join(dir.path, 'lib')]),
+        ).throws<ArgumentError>();
+
+        // A branch sharing a directory's name (`lib`) must not trigger git's
+        // ambiguous argument failure when `lib` is also passed as a target.
+        git(['branch', 'lib', 'HEAD~1']);
+        final ambiguousBranchRes = await Sanitizer(
+          since: 'lib',
+          dryRun: true,
+        ).run(['lib']);
+        check(ambiguousBranchRes.files.map((f) => p.basename(f.path)).toList())
+            .deepEquals(['modified.dart']);
+
+        // `--changed` with `--exclude` / `--skip` does not emit false
+        // unmatched warnings for files git filtered out.
+        final filteredWarnings = await Sanitizer(
+          changed: true,
+          dryRun: true,
+          excludes: ['**/committed.dart'],
+          skips: {'Fit.cover'},
+        ).run([p.join(dir.path, 'lib')]);
+        check(filteredWarnings.unmatchedExcludes).isEmpty();
+        check(filteredWarnings.unmatchedSkips).isEmpty();
+      } finally {
+        Directory.current = prevCwd;
+      }
+
+      // Running from a parent directory (or parent repo) resolves the nested
+      // target's own git repo root.
+      modified.writeAsStringSync('''
+enum Fit { cover, contain }
+Fit f() => Fit.cover;
+''');
+      final fromOutsideRes = await Sanitizer(
+        changed: true,
+        dryRun: true,
+      ).run([p.join(dir.path, 'lib')]);
+      check(fromOutsideRes.files.map((f) => p.basename(f.path)).toList())
+          .deepEquals(['modified.dart']);
+
+      // Running with `--changed` on a path outside any git repository throws
+      // `StateError`.
+      final nonRepo = Directory.systemTemp.createTempSync('dotsan_nonrepo_');
+      addTearDown(() => nonRepo.deleteSync(recursive: true));
+      File(p.join(nonRepo.path, 'a.dart'))
+          .writeAsStringSync('void main() {}\n');
+      check(() => Sanitizer(changed: true, dryRun: true).run([nonRepo.path]))
+          .throws<StateError>();
+    });
+  });
 }

@@ -81,9 +81,10 @@ Alternative: `dart pub global activate shorthand_sanitizer`.
 
 ## Usage
 
-Run `dotsan` from a package root. With no paths it processes each of `lib`,
-`bin`, `test`, `example`, `tool`, `integration_test` and `benchmark` that
-exists; pass files or directories to narrow the run.
+Run `dotsan` from a package or pub workspace root. With no paths it processes
+each of `lib`, `bin`, `test`, `example`, `tool`, `integration_test` and
+`benchmark` that exists (at the root and in each `workspace:` member); pass
+files or directories to narrow the run.
 
 ```bash
 # Sanitize every default root that exists
@@ -109,6 +110,10 @@ dotsan lib/page.dart -n --explain
 
 # CI gate: exit 1 if any site would still convert, 65 if a file was skipped
 dotsan -n --set-exit-if-changed
+
+# Only process git-modified/untracked files, or files changed since a ref
+dotsan --changed
+dotsan --since=origin/main
 
 # Machine-readable report
 dotsan lib -n --format=json
@@ -154,9 +159,9 @@ dotsan -v
   each generated file skipped. Reasons include `no context type`,
   `context type Color declares no static red`, `rebinds to Base.a`, the
   analyzer's own error on the shorthand, and `skip-listed`. Sites dotsan never
-  considers, such as `Enum.values`, `@Type.member` annotations,
-  `new Type.named(...)`, unnamed constructors, or a static field read as a
-  receiver (`Fit.cover.name`), are not listed. Point it at one file — a Flutter
+  considers, such as `Enum.values`, `@Type.member` annotations, unnamed
+  constructors (`Text(...)`), or a static field read as a receiver
+  (`Fit.cover.name`), are not listed. Point it at one file — a Flutter
   app keeps thousands of `Theme.of(context)`-style sites prefixed.
 - `--set-exit-if-changed`: Exits 1 if any site converted (or, with `--dry-run`,
   would convert). Without `--dry-run` the files are still written, as with
@@ -164,6 +169,10 @@ dotsan -v
   is set, so a CI gate never passes on files it did not check.
 - `--format=json`: Prints the report as one JSON document on stdout
   ([schema below](#json-report)), even on a terminal; warnings stay on stderr.
+- `--changed`: Processes only `.dart` files with uncommitted changes in git
+  (modified, staged, or untracked).
+- `--since=<ref>`: Processes only `.dart` files changed in git since `<ref>`
+  (plus uncommitted changes).
 
 ### Which files it touches
 
@@ -173,8 +182,8 @@ dotsan -v
   header is the run of `//` and `/* */` comments before the first code; a `///`
   or `/** */` doc comment counts only when it opens with the marker
   (`/// Generated file.`, as slang writes), so a library doc that merely
-  mentions generated code is processed. Every run counts the generated files it
-  skipped on stderr (`--explain` lists them); a generated file named on the
+  mentions generated code is processed. `--explain` counts and lists the
+  generated files a run skipped on stderr; a generated file named on the
   command line gets a warning.
 - **Directories**: Walks skip hidden directories and each package's own `build/`
   output; a `build/` directory of sources deeper in a package is processed.
@@ -212,6 +221,7 @@ dotsan -v
 | **Static getters & fields** | `Duration.zero` | `.zero` |
 | **Const aliases** in a slot of exactly that type | `Alignment.topCenter` | `.topCenter` |
 | **Redirecting-factory forwarders** in a slot of exactly that type | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
+| **Generic static methods** whose `<T>` is inferred | `Box.of<int>(1)` | `.of(1)` |
 
 ### What stays prefixed
 
@@ -233,9 +243,11 @@ const Base x = Sub.a;
 // Enum.values (context is List<Fit>, not Fit)
 final List<Fit> l = Fit.values;
 
-// Unnamed constructors (.new) and explicit `new` invocations
+// Unnamed constructors (only explicit Type.member / Type.new sites convert)
 Text('Hello');
-new EdgeInsets.all(8);
+
+// Generic static methods where dropping <T> changes inferred T
+final Box b = Box.of<num>(1);
 
 // Metadata annotations (@.instance is not valid Dart syntax)
 @MyAnnot.instance
@@ -256,7 +268,7 @@ final Geo a = Box.all(1)..log(); // the cascade observes the rebind's type
 | `64` | Usage error: bad option, invalid glob, malformed `--skip` entry, missing or non-`.dart` path, no default root. |
 | `65` | A file the run should have processed was skipped: its library has analysis errors (see `--allow-errors`), its package is below language 3.10 or has no package config entry (`dart pub get`), it is a part whose library does not exist, or a directory could not be read. Everything else still ran; the warnings on stderr name each one. Takes precedence over `1`. |
 | `69` | Dart SDK not found, or `DART_SDK` is set to a directory that is not one. |
-| `74` | A file could not be written (read-only, for example). The conversion that needed it was dropped: neither its file nor the imports it would prune elsewhere were written. Files converted earlier, even in the same library, stay written, and the rest of the run still completed. Takes precedence over `65` and `1`. |
+| `74` | A file could not be written (read-only, for example). The library's conversions were dropped: none of its units or the imports they would prune were written. Earlier libraries stay written, and the rest of the run still completed. Takes precedence over `65` and `1`. |
 
 ---
 
@@ -277,7 +289,8 @@ final Geo a = Box.all(1)..log(); // the cascade observes the rebind's type
   absolute), `removedImports` (int), `prunedImports` (array), `sites` (array).
 - Each pruned import: `line` (1-based, of `import`, in the file as the run found
   it), `uri` (as written), `replacement` (`"library;"` when the directive was
-  replaced to keep the file's header on the library, else null),
+  replaced to keep the file's header on the library, `"show ..."` or
+  `"without show ..."` when `show` combinators were pruned, else null),
   `deletedComment` (the trailing `//` comment deleted with it, or null),
   `keptComment` (a trailing `// ignore_for_file:` comment left on the line, or
   null).
@@ -339,9 +352,10 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
   - **macOS**: `~/Library/Caches/dotsan`
   - **Linux**: `$XDG_CACHE_HOME/dotsan` (or `~/.cache/dotsan`)
   - **Windows**: `%LOCALAPPDATA%\dotsan`
-- **What is cached**: Linked element models for the Dart SDK, dependencies, and
-  project libraries are persisted to an evicting file byte store (capped at 1
-  GiB, LRU) fronted by an in-memory cache.
+- **What is cached**: Linked element models and unlinked unit summaries for the
+  Dart SDK, dependencies, and project libraries are persisted to an evicting
+  file byte store (capped at 64 MiB, LRU) fronted by an in-memory cache;
+  speculative trial overlays stay in memory.
 - **Effects on OS & Performance**:
   - **First run vs subsequent runs**: The first run links element models.
     Subsequent runs (such as running without `-n` after a `--dry-run`, or

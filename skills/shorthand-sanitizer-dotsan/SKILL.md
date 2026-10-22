@@ -30,9 +30,9 @@ Missing binary → `dart install shorthand_sanitizer`.
 
 A site converts only when the shorthand resolves to the **same element** with no
 new analyzer diagnostic of any severity — verified by re-resolving the rewritten
-file. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace statics
-(`Colors.red` in a `Color` slot), `Enum.values`, metadata annotations
-(`@MyAnnot.instance`), `new Type.named(...)`, and silent rebinds
+library. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace
+statics (`Colors.red` in a `Color` slot), `Enum.values`, metadata annotations
+(`@MyAnnot.instance`), unnamed constructors (`Text('Hi')`), and silent rebinds
 (`Base x = Sub.a`) all stay prefixed. Operator expressions split correctly:
 `Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`.
 
@@ -52,8 +52,8 @@ arguments (`typedef IntG = G<int>`) and cascade targets stay prefixed.
   convert automatically.
 - Generated files are skipped by their leading comment marker (build_runner,
   FlutterFire's `firebase_options.dart`, pigeon, protoc, slang) — NOT by
-  filename, so handwritten `*.preview.dart` previews are sanitized too. The
-  count is on stderr; `--explain` lists them.
+  filename, so handwritten `*.preview.dart` previews are sanitized too.
+  `--explain` counts and lists them on stderr.
 - Exit 65 means a file was skipped (analysis errors, language < 3.10, no
   `dart pub get`, orphan part, unreadable directory): read the stderr warnings
   and fix the cause — never treat the run as clean.

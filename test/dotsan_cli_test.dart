@@ -5,11 +5,10 @@ import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-late Directory pkg;
+final Directory pkg = .systemTemp.createTempSync('dotsan_cli_test');
 
 void main() {
   setUpAll(() {
-    pkg = .systemTemp.createTempSync('dotsan_cli_test');
     Directory(p.join(pkg.path, 'lib')).createSync();
     // Floor below 3.10 so the run exercises the warning path.
     const spec = 'name: floor_fixture\nenvironment:\n  sdk: ^3.0.0\n';
@@ -217,6 +216,112 @@ void main() {
         .contains('${p.join('pkgs', 'pkg_a', 'lib', 'a.dart')}\n');
     check(run.stdout as String)
         .endsWith('would convert 1 site(s) in 1 file(s)\n');
+
+    // Also supports flow-style and glob workspace members (`workspace: [pkgs/*]`)
+    // even when the root itself has a default directory (`tool/`).
+    Directory(p.join(ws.path, 'tool')).createSync();
+    File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync('''
+name: ws_root
+publish_to: none
+environment:
+  sdk: ^3.10.0
+workspace: [pkgs/*]
+''');
+    final globRun = Process.runSync(Platform.resolvedExecutable, [
+      '--packages=${p.absolute('.dart_tool/package_config.json')}',
+      p.absolute('bin/dotsan.dart'),
+      '-n',
+    ], workingDirectory: ws.path);
+    check(because: '${globRun.stderr}', globRun.exitCode).equals(0);
+    check(globRun.stdout as String)
+        .contains('${p.join('pkgs', 'pkg_a', 'lib', 'a.dart')}\n');
+
+    // A declared workspace member that matches nothing exits 64.
+    File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync('''
+name: ws_root
+publish_to: none
+environment:
+  sdk: ^3.10.0
+workspace:
+  - pkgs/nonexistent_*
+''');
+    final badMemberRun = Process.runSync(Platform.resolvedExecutable, [
+      '--packages=${p.absolute('.dart_tool/package_config.json')}',
+      p.absolute('bin/dotsan.dart'),
+      '-n',
+    ], workingDirectory: ws.path);
+    check(badMemberRun.exitCode).equals(64);
+    check(badMemberRun.stderr as String)
+        .contains('workspace member "pkgs/nonexistent_*" matched no directory');
+  });
+
+  group('workspace list', () {
+    // Pub expands workspace globs from language 3.11 on.
+    const spec = 'environment:\n  sdk: ^3.11.0\n';
+    Directory workspace(String declaration, {bool pubGet = true}) {
+      final ws = Directory.systemTemp.createTempSync('dotsan_workspace_list');
+      addTearDown(() => ws.deleteSync(recursive: true));
+      File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync(
+        'name: ws_root\npublish_to: none\n$spec$declaration\n',
+      );
+      for (final name in ['pkg_a', 'pkg_b']) {
+        final lib = Directory(p.join(ws.path, 'pkgs', name, 'lib'))
+          ..createSync(recursive: true);
+        File(p.join(lib.parent.path, 'pubspec.yaml'))
+            .writeAsStringSync('name: $name\nresolution: workspace\n$spec');
+        File(p.join(lib.path, '$name.dart'))
+            .writeAsStringSync('enum Fit { cover }\nFit f() => Fit.cover;\n');
+      }
+      if (pubGet) {
+        final get = Process.runSync('dart', [
+          'pub',
+          'get',
+        ], workingDirectory: ws.path);
+        if (get.exitCode != 0) {
+          throw StateError('pub get failed: ${get.stderr}');
+        }
+      }
+      return ws;
+    }
+
+    ProcessResult dotsanIn(Directory ws) =>
+        Process.runSync(Platform.resolvedExecutable, [
+          '--packages=${p.absolute('.dart_tool/package_config.json')}',
+          p.absolute('bin/dotsan.dart'),
+          '-n',
+        ], workingDirectory: ws.path);
+
+    for (final (form, declaration) in [
+      ('column-0 block items', 'workspace:\n- pkgs/pkg_a\n- pkgs/pkg_b'),
+      ('a brace glob', 'workspace: ["pkgs/{pkg_a,pkg_b}"]'),
+      ('a bracket glob', 'workspace: ["pkgs/pkg_[ab]"]'),
+    ]) {
+      test('finds both members declared as $form', () {
+        final run = dotsanIn(workspace(declaration));
+        check(because: '${run.stderr}', run.exitCode).equals(0);
+        check(run.stdout as String)
+            .endsWith('would convert 2 site(s) in 2 file(s)\n');
+      });
+    }
+
+    for (final (form, declaration, error) in [
+      (
+        'a scalar',
+        'workspace: pkgs/pkg_a',
+        '"workspace" must be a list of strings',
+      ),
+      (
+        'an unclosed flow list',
+        'workspace: [pkgs/pkg_a',
+        "expected ',' or ']'",
+      ),
+    ]) {
+      test('exits 64 on $form', () {
+        final run = dotsanIn(workspace(declaration, pubGet: false));
+        check(because: '${run.stderr}', run.exitCode).equals(64);
+        check(run.stderr as String).contains(error);
+      });
+    }
   });
 
   test('SS-S1 an AOT build finds the SDK on PATH without DART_SDK', () {
@@ -245,7 +350,7 @@ void main() {
     check(run.stdout as String)
         .endsWith('would convert 1 site(s) in 1 file(s)\n');
     check(run.stderr as String).not((it) => it.contains('Exception'));
-  }, timeout: const Timeout(Duration(minutes: 5)));
+  }, timeout: const .new(.new(minutes: 5)));
 
   test('SS-R4 a file it cannot write is an error (exit 74), not a crash', () {
     final file = explainFixture();
@@ -380,6 +485,17 @@ void run() => take(Fit.cover);
       'would convert 1 site(s) in 2 file(s), 1 kept, '
       'would prune 1 orphaned import(s)\n',
     );
+  });
+
+  test('--since with an unknown git revision or non-repo path exits 64', () {
+    final run = dotsan(['--since=unknown_revision_xyz', 'lib']);
+    check(run.exitCode).equals(64);
+    check(run.stderr as String).contains('unknown git revision');
+
+    final file = explainFixture();
+    final nonRepo = dotsan(['--changed', file.path]);
+    check(nonRepo.exitCode).equals(64);
+    check(nonRepo.stderr as String).contains('not a git repository');
   });
 }
 
