@@ -144,7 +144,7 @@ Future<void> main(List<String> args) async {
 
   final paths = [...opts.rest];
   if (paths.isEmpty) {
-    paths.addAll(_defaultRoots.where((d) => Directory(d).existsSync()));
+    paths.addAll(_discoverDefaultRoots());
     if (paths.isEmpty) {
       stderr.writeln('no conventional root directory found (see --help)');
       exit(64);
@@ -234,6 +234,57 @@ Set<String> _namedFiles(List<String> rest) => {
   for (final path in rest)
     if (FileSystemEntity.isFileSync(path)) p.normalize(p.absolute(path)),
 };
+
+/// Existing conventional roots in the current directory and under any Pub
+/// workspace members declared in `pubspec.yaml`.
+List<String> _discoverDefaultRoots() {
+  final roots = [
+    for (final d in _defaultRoots)
+      if (Directory(d).existsSync()) d,
+  ];
+  for (final member in _workspaceMembers()) {
+    for (final d in _defaultRoots) {
+      final candidate = p.normalize(p.join(member, d));
+      if (Directory(candidate).existsSync() &&
+          !roots.any(
+            (r) => p.equals(r, candidate) || p.isWithin(r, candidate),
+          )) {
+        roots.add(candidate);
+      }
+    }
+  }
+  return roots;
+}
+
+Iterable<String> _workspaceMembers() sync* {
+  final pubspec = File('pubspec.yaml');
+  if (!pubspec.existsSync()) return;
+  final String text;
+  try {
+    text = pubspec.readAsStringSync();
+  } on FileSystemException {
+    return;
+  }
+  var inWorkspace = false;
+  for (final raw in LineSplitter.split(text)) {
+    final line = raw.replaceFirst(RegExp('#.*'), '').trimRight();
+    if (line.trim().isEmpty) continue;
+    if (!inWorkspace) {
+      if (RegExp(r'^workspace:\s*$').hasMatch(line)) inWorkspace = true;
+      continue;
+    }
+    if (RegExp(r'^\s+-\s+(.+)$').firstMatch(line) case final m?) {
+      var entry = m.group(1)?.trim() ?? '';
+      if ((entry.startsWith('"') && entry.endsWith('"')) ||
+          (entry.startsWith("'") && entry.endsWith("'"))) {
+        entry = entry.substring(1, entry.length - 1);
+      }
+      if (entry.isNotEmpty) yield entry;
+    } else if (!line.startsWith(' ') && !line.startsWith('\t')) {
+      inWorkspace = false;
+    }
+  }
+}
 
 /// Everything the run left undone or unmatched, on stderr. A file [named] on
 /// the command line and left alone is a request not met, so it is named too.

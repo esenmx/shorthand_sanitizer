@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:analyzer/dart/analysis/analysis_context.dart';
 import 'package:analyzer/dart/analysis/results.dart';
 import 'package:analyzer/dart/ast/ast.dart';
+import 'package:analyzer/dart/ast/token.dart';
 import 'package:analyzer/dart/ast/visitor.dart';
 import 'package:analyzer/dart/constant/value.dart';
 import 'package:analyzer/dart/element/element.dart';
@@ -440,48 +441,82 @@ final class Sanitizer({
   static bool isGenerated(String path) {
     final file = File(path);
     if (!file.existsSync()) return false;
-    final List<int> bytes;
+    final RandomAccessFile raf;
     try {
-      bytes = file.readAsBytesSync();
+      raf = file.openSync();
     } on FileSystemException {
       return false;
     }
-    final raw = utf8.decode(bytes, allowMalformed: true);
-    final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
-    String lineFrom(int start) {
-      final end = text.indexOf('\n', start);
-      return text.substring(start, end == -1 ? text.length : end);
-    }
+    try {
+      var chunk = 4096;
+      final bytes = <int>[];
+      var eof = false;
+      var text = '';
+      void readMore() {
+        if (eof) return;
+        final next = raf.readSync(chunk);
+        if (next.length < chunk) eof = true;
+        chunk *= 2;
+        bytes.addAll(next);
+        final raw = utf8.decode(bytes, allowMalformed: true);
+        text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
+      }
 
-    var i = 0;
-    while (true) {
-      while (i < text.length && text[i].trim().isEmpty) {
-        i++;
+      readMore();
+      String lineFrom(int start) {
+        var end = text.indexOf('\n', start);
+        while (end == -1 && !eof) {
+          readMore();
+          end = text.indexOf('\n', start);
+        }
+        return text.substring(start, end == -1 ? text.length : end);
       }
-      final rest = text.substring(i);
-      if (rest.startsWith('///')) {
-        return _docMarker.hasMatch(lineFrom(i).substring(3).trimLeft());
+
+      int blockClose(int start) {
+        var close = text.indexOf('*/', start);
+        while (close == -1 && !eof) {
+          readMore();
+          close = text.indexOf('*/', start);
+        }
+        return close;
       }
-      if (rest.startsWith('/**') && !rest.startsWith('/**/')) {
-        final close = text.indexOf('*/', i + 3);
-        final body = text.substring(i + 3, close == -1 ? text.length : close);
-        return _docMarker.hasMatch(body.replaceFirst(RegExp(r'^[\s*]*'), ''));
+
+      var i = 0;
+      while (true) {
+        while (true) {
+          if (i + 4 > text.length && !eof) readMore();
+          if (i < text.length && text[i].trim().isEmpty) {
+            i++;
+          } else {
+            break;
+          }
+        }
+        if (text.startsWith('///', i)) {
+          return _docMarker.hasMatch(lineFrom(i).substring(3).trimLeft());
+        }
+        if (text.startsWith('/**', i) && !text.startsWith('/**/', i)) {
+          final close = blockClose(i + 3);
+          final body = text.substring(i + 3, close == -1 ? text.length : close);
+          return _docMarker.hasMatch(body.replaceFirst(RegExp(r'^[\s*]*'), ''));
+        }
+        if (text.startsWith('//', i) || text.startsWith('#', i)) {
+          final line = lineFrom(i);
+          if (_generatedMarker.hasMatch(line)) return true;
+          i += line.length;
+          continue;
+        }
+        if (text.startsWith('/*', i)) {
+          final close = blockClose(i + 2);
+          final body = text.substring(i + 2, close == -1 ? text.length : close);
+          if (_generatedMarker.hasMatch(body)) return true;
+          if (close == -1) return false;
+          i = close + 2;
+          continue;
+        }
+        return false;
       }
-      if (rest.startsWith('//') || rest.startsWith('#')) {
-        final line = lineFrom(i);
-        if (_generatedMarker.hasMatch(line)) return true;
-        i += line.length;
-        continue;
-      }
-      if (rest.startsWith('/*')) {
-        final close = text.indexOf('*/', i + 2);
-        final body = text.substring(i + 2, close == -1 ? text.length : close);
-        if (_generatedMarker.hasMatch(body)) return true;
-        if (close == -1) return false;
-        i = close + 2;
-        continue;
-      }
-      return false;
+    } finally {
+      raf.closeSync();
     }
   }
 
@@ -570,17 +605,27 @@ final class Sanitizer({
             a.contextRoot.root.path.length,
           ),
         );
-      AnalysisContext contextOf(String file) => contexts.firstWhere(
-        (c) =>
-            c.contextRoot.root.isOrContains(file) ||
-            c.contextRoot.root.isOrContains(_real(file)),
-      );
+      AnalysisContext? contextOfOrNull(String file) {
+        for (final c in contexts) {
+          if (c.contextRoot.root.isOrContains(file) ||
+              c.contextRoot.root.isOrContains(_real(file))) {
+            return c;
+          }
+        }
+        return null;
+      }
+
+      AnalysisContext contextOf(String file) =>
+          contextOfOrNull(file) ??
+          (throw StateError('no analysis context for $file'));
       // Unlike `dart analyze`, a package obeys only its own options file: one
       // inherited from an enclosing package (its `example/**`) excludes
       // nothing here.
       String? analyzerExcluded(String file) {
         if (!analyzerExcludes) return null;
-        final root = contextOf(file).contextRoot;
+        final context = contextOfOrNull(file);
+        if (context == null) return null;
+        final root = context.contextRoot;
         final options = root.optionsFile?.path;
         final package = gate.rootOf(file);
         if (options == null ||
@@ -735,7 +780,10 @@ final class Sanitizer({
       return const [];
     }
 
-    final collector = _CandidateCollector(original.typeProvider);
+    final collector = _CandidateCollector(
+      original.typeProvider,
+      original.libraryElement.uri,
+    );
     original.unit.accept(collector);
     for (final site in collector.sites) {
       matchedSkips.addAll(_skipsMatching(site));
@@ -983,7 +1031,7 @@ final class _FileSanitizer({
   /// [file]'s in [_clean]'s coordinates, every other unit's in its own.
   var _orphanCuts = const <String, List<_DirectiveCut>>{};
 
-  final _overlaid = <String>{};
+  final _overlaid = <String, String>{};
 
   Future<List<FileResult>> run() async {
     Map<String, String>? texts;
@@ -1016,18 +1064,29 @@ final class _FileSanitizer({
     } finally {
       // Unconditional: an overlay holds speculative text, so bailing out with
       // it still installed leaks an unverified rewrite into every file
-      // resolved after it in the same context. A dry run keeps its verified
-      // text instead, standing in for the write it does not make.
-      for (final path in _overlaid) {
-        if (texts?[path] case final text? when dryRun) verified[path] = text;
+      // resolved after it in the same context. Verified texts stay in the
+      // overlay so later units in the same library reuse the warm session.
+      var changed = false;
+      for (final MapEntry(key: path, value: currentOverlay)
+          in _overlaid.entries) {
+        if (texts?[path] case final text?) verified[path] = text;
         if (verified[path] case final text?) {
-          overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
+          if (currentOverlay != text) {
+            overlay.setOverlay(
+              path,
+              content: text,
+              modificationStamp: ++_stamp,
+            );
+            context.changeFile(path);
+            changed = true;
+          }
         } else {
           overlay.removeOverlay(path);
+          context.changeFile(path);
+          changed = true;
         }
-        context.changeFile(path);
       }
-      await context.applyPendingFileChanges();
+      if (changed) await context.applyPendingFileChanges();
     }
 
     // No verified set: nothing converts and the files stay untouched.
@@ -1064,24 +1123,23 @@ final class _FileSanitizer({
           candidates.length - converted.length + unviable,
           prunedImports: [
             for (final cut in cuts[file] ?? const <_DirectiveCut>[])
-              cut.info(at(_unapply(deletions, cut.keyword)).lineNumber),
+              if (cut.info case final info?)
+                info(at(_unapply(deletions, cut.keyword)).lineNumber),
           ],
         ),
       for (final unit in library.units)
         if (cuts[unit.path] case final pruned? when unit.path != file)
-          FileResult(
-            unit.path,
-            const [],
-            0,
-            prunedImports: [
-              for (final cut in pruned)
-                cut.info(
-                  origins
-                      .locate(unit.path, unit.lineInfo, cut.keyword)
-                      .lineNumber,
-                ),
-            ],
-          ),
+          if ([
+                for (final cut in pruned)
+                  if (cut.info case final info?)
+                    info(
+                      origins
+                          .locate(unit.path, unit.lineInfo, cut.keyword)
+                          .lineNumber,
+                    ),
+              ]
+              case final reported when reported.isNotEmpty)
+            FileResult(unit.path, const [], 0, prunedImports: reported),
     ];
     for (final MapEntry(key: path, value: (:before, :batches))
         in applied.entries) {
@@ -1141,7 +1199,13 @@ final class _FileSanitizer({
         return true;
       }
       if (a.culprits.isNotEmpty) {
-        _dropped.addAll(a.culprits);
+        final groupCounts = <int, int>{};
+        for (final c in _active) {
+          groupCounts.update(c.groupKey, (n) => n + 1, ifAbsent: () => 1);
+        }
+        for (final c in a.culprits) {
+          if ((groupCounts[c.groupKey] ?? 0) > 1) _dropped.add(c);
+        }
         _active = [
           for (final c in _active)
             if (!a.culprits.contains(c)) c,
@@ -1209,7 +1273,7 @@ final class _FileSanitizer({
       pending = rest;
       // Skip a redundant full-set resolve when the trial would re-test the
       // exact initial candidate set that already failed in [_converge].
-      if (_active.isEmpty && wave.length == candidates.length) continue;
+      if (_active.length + wave.length == candidates.length) continue;
 
       final trial = [..._active, ...wave]..sort(_byOffset);
       final a = await _attempt(trial);
@@ -1257,16 +1321,11 @@ final class _FileSanitizer({
           final orphanImports = <ImportDirective>[
             if (checkUnit != null)
               for (final d in checkUnit.diagnostics)
-                if (_isRemovableImport(d))
-                  if (_importAt(checkUnit, d.offset) case final index?
-                      when !_userImportIssues.contains((
-                        path,
-                        index,
-                        d.diagnosticCode.lowerCaseName,
-                      )))
-                    if (checkUnit.unit.directives[index]
-                        case final ImportDirective imp)
-                      imp,
+                if (_importIssueOf(checkUnit, d) case final issue?
+                    when !_userImportIssues.contains(issue))
+                  if (checkUnit.unit.directives[issue.$2]
+                      case final ImportDirective imp)
+                    imp,
           ];
           final offenders = {
             for (final c in _active)
@@ -1331,8 +1390,9 @@ final class _FileSanitizer({
   }
 
   void _overlay(String path, String text) {
+    if (_overlaid[path] == text) return;
     overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
-    _overlaid.add(path);
+    _overlaid[path] = text;
     context.changeFile(path);
   }
 
@@ -1486,7 +1546,7 @@ final class _FileSanitizer({
     // Removable import diagnostics are excused in every unit: the accepted
     // text gets its orphans pruned, and the pruned text is re-verified.
     final stray = culprits.isEmpty
-        ? _firstNew(library, (_, d) => _isRemovableImport(d))
+        ? _firstNew(library, (_, d) => _isExcusedImportDiagnostic(d))
         : null;
     return _Attempt(
       rewritten,
@@ -1796,10 +1856,10 @@ final class _ResolvedShorthand(
   /// signature comparison refuses that. Its static type is the factory's
   /// class; `_verdict` accepts that only where `_Candidate.typedSlot` is
   /// exactly that type, so no cascade, assignment or inference observes it.
-  bool forwardsTo(_Candidate c) =>
-      redirectTarget != null &&
-      redirectTarget!.matches(c) &&
-      redirectTarget!.signature == c.signature;
+  bool forwardsTo(_Candidate c) => switch (redirectTarget) {
+    final target? => target.matches(c) && target.signature == c.signature,
+    null => false,
+  };
 }
 
 /// `ReturnType(params)` of a constructor, instantiated as resolved — the
@@ -1955,21 +2015,56 @@ const _removableImportCodes = {
   'duplicate_import',
 };
 
+const _unusedShownNameCode = 'unused_shown_name';
+
 bool _isRemovableImport(Diagnostic d) =>
     _removableImportCodes.contains(d.diagnosticCode.lowerCaseName);
 
-/// A removable-import diagnostic by unit path, directive index and code.
+bool _isExcusedImportDiagnostic(Diagnostic d) {
+  final code = d.diagnosticCode.lowerCaseName;
+  return _removableImportCodes.contains(code) || code == _unusedShownNameCode;
+}
+
+/// A removable-import diagnostic by unit path, directive index and code (or
+/// `unused_shown_name:<identifier>` for a single shown identifier).
 /// A rewrite deletes no directive, so the index survives it, and it tells
 /// two imports of one URI apart where their messages are identical.
 typedef _ImportIssue = (String path, int directive, String code);
 
 Set<_ImportIssue> _importIssuesOf(ResolvedLibraryResult lib) => {
   for (final unit in lib.units)
-    for (final d in unit.diagnostics)
-      if (_isRemovableImport(d))
-        if (_importAt(unit, d.offset) case final index?)
-          (unit.path, index, d.diagnosticCode.lowerCaseName),
+    for (final d in unit.diagnostics) ?_importIssueOf(unit, d),
 };
+
+_ImportIssue? _importIssueOf(ResolvedUnitResult unit, Diagnostic d) {
+  final code = d.diagnosticCode.lowerCaseName;
+  if (_removableImportCodes.contains(code)) {
+    if (_importAt(unit, d.offset) case final index?) {
+      return (unit.path, index, code);
+    }
+  } else if (code == _unusedShownNameCode) {
+    if (_importAt(unit, d.offset) case final index?) {
+      final directive = unit.unit.directives[index];
+      if (directive is ImportDirective) {
+        if (_shownNameAt(directive, d.offset) case final id?) {
+          return (unit.path, index, '$code:${id.name}');
+        }
+      }
+    }
+  }
+  return null;
+}
+
+SimpleIdentifier? _shownNameAt(ImportDirective directive, int offset) {
+  for (final combinator in directive.combinators) {
+    if (combinator is ShowCombinator) {
+      for (final id in combinator.shownNames) {
+        if (id.offset == offset) return id;
+      }
+    }
+  }
+  return null;
+}
 
 int? _importAt(ResolvedUnitResult unit, int offset) {
   final directives = unit.unit.directives;
@@ -1990,8 +2085,9 @@ typedef _DirectiveCut = ({
   String replacement,
   int keyword,
 
-  /// The report, given the keyword's line in the text the run first read.
-  PrunedImport Function(int line) info,
+  /// The report, given the keyword's line in the text the run first read;
+  /// null for silent combinator identifier pruning.
+  PrunedImport Function(int line)? info,
 });
 
 _Edit _editOf(_DirectiveCut cut) =>
@@ -2017,19 +2113,30 @@ Map<String, List<_DirectiveCut>> _orphanRanges(
   for (final unit in check.units) {
     final text = unit.content;
     final cut = <int>{};
+    final prunedShown = <int, Set<SimpleIdentifier>>{};
     for (final d in unit.diagnostics) {
-      if (!_isRemovableImport(d)) continue;
       final index = _importAt(unit, d.offset);
-      if (index != null &&
-          !userIssues.contains((
-            unit.path,
-            index,
-            d.diagnosticCode.lowerCaseName,
-          ))) {
-        cut.add(index);
+      if (index == null) continue;
+      final code = d.diagnosticCode.lowerCaseName;
+      if (_isRemovableImport(d)) {
+        if (!userIssues.contains((unit.path, index, code))) {
+          cut.add(index);
+        }
+      } else if (code == _unusedShownNameCode) {
+        final directive = unit.unit.directives[index];
+        if (directive is ImportDirective) {
+          if (_shownNameAt(directive, d.offset) case final id?
+              when !userIssues.contains((
+                unit.path,
+                index,
+                '$code:${id.name}',
+              ))) {
+            (prunedShown[index] ??= {}).add(id);
+          }
+        }
       }
     }
-    if (cut.isEmpty) continue;
+    if (cut.isEmpty && prunedShown.isEmpty) continue;
     final allPruned = cut.length == unit.unit.directives.length;
     for (final index in cut) {
       final directive = unit.unit.directives[index];
@@ -2109,6 +2216,37 @@ Map<String, List<_DirectiveCut>> _orphanRanges(
         info: info(),
       ));
     }
+    for (final MapEntry(key: index, value: ids) in prunedShown.entries) {
+      if (cut.contains(index)) continue;
+      final directive = unit.unit.directives[index];
+      if (directive is! ImportDirective) continue;
+      final keyword = directive.firstTokenAfterCommentAndMetadata.offset;
+      for (final combinator in directive.combinators) {
+        if (combinator is! ShowCombinator) continue;
+        final shown = combinator.shownNames;
+        final keptNames = [
+          for (final id in shown)
+            if (!ids.contains(id)) id.name,
+        ];
+        if (keptNames.isEmpty) {
+          (cuts[unit.path] ??= []).add((
+            start: combinator.offset,
+            end: combinator.end,
+            replacement: '',
+            keyword: keyword,
+            info: null,
+          ));
+        } else if (keptNames.length < shown.length) {
+          (cuts[unit.path] ??= []).add((
+            start: shown.first.offset,
+            end: shown.last.end,
+            replacement: keptNames.join(', '),
+            keyword: keyword,
+            info: null,
+          ));
+        }
+      }
+    }
   }
   return cuts;
 }
@@ -2156,9 +2294,11 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
     final params = _parametersOf(entry);
     final seen = <ConstructorElement>{};
     var cur = entry;
-    while (cur.isFactory && cur.redirectedConstructor != null) {
+    while (cur.isFactory) {
+      final next = cur.redirectedConstructor;
+      if (next == null) break;
       if (!seen.add(cur.baseElement)) return null;
-      cur = cur.redirectedConstructor!;
+      cur = next;
       if (_parametersOf(cur) != params) return null;
     }
     if (identical(cur, entry)) return null;
@@ -2206,9 +2346,9 @@ final class _ShorthandIndex extends RecursiveAstVisitor<void> {
   }
 }
 
-final class _CandidateCollector(TypeProvider typeProvider)
+final class _CandidateCollector(TypeProvider typeProvider, Uri selfUri)
     extends RecursiveAstVisitor<void> {
-  final _viability = _Viability(typeProvider);
+  final _viability = _Viability(typeProvider, selfUri);
   final candidates = <_Candidate>[];
 
   /// Sites [_Viability] ruled out — they stay prefixed without a resolve.
@@ -2221,22 +2361,37 @@ final class _CandidateCollector(TypeProvider typeProvider)
   @override
   void visitComment(Comment node) {}
 
-  /// [dotOffset] doubles as the exclusive end of the deleted prefix — the
-  /// prefix ends exactly where its `.` begins.
+  /// [dotToken]'s offset doubles as the exclusive end of the deleted prefix —
+  /// the prefix ends exactly where its `.` begins.
   void _add({
     required Expression node,
-    required int deleteStart,
-    required int dotOffset,
+    required Token startToken,
+    required Token dotToken,
     required String owner,
     required String memberName,
     required Element? memberElement,
   }) {
+    final deleteStart = startToken.offset;
+    final dotOffset = dotToken.offset;
     final display = '$owner.$memberName';
     sites.add((
       display: display,
       memberName: memberName,
       containerName: memberElement?.enclosingElement?.displayName,
     ));
+    if ((node is PrefixedIdentifier || node is PropertyAccess) &&
+        _isReceiverPosition(node) &&
+        !_canChainResolve(node, memberName)) {
+      return;
+    }
+    if (_hasInteriorComment(startToken, dotToken)) {
+      unviable.add((
+        offset: deleteStart,
+        display: display,
+        reason: 'comment inside prefix',
+      ));
+      return;
+    }
     final typedSlot = _viability.typedSlotOf(node);
     if (_viability.whyNot(
           node,
@@ -2273,11 +2428,42 @@ final class _CandidateCollector(TypeProvider typeProvider)
     );
   }
 
-  static int _groupKeyOf(AstNode node) {
-    for (AstNode? cur = node; cur != null; cur = cur.parent) {
-      if (cur is Statement || cur is Declaration) return cur.offset;
+  static bool _hasInteriorComment(Token start, Token dot) {
+    for (var t = start.next; t != null; t = t.next) {
+      if (t.precedingComments != null) return true;
+      if (identical(t, dot)) break;
     }
-    return -1;
+    return false;
+  }
+
+  static bool _canChainResolve(Expression node, String memberName) {
+    AstNode chain = node;
+    for (
+      var parent = chain.parent;
+      parent != null && _Viability._isSelectorFor(parent, chain);
+      parent = chain.parent
+    ) {
+      chain = parent;
+    }
+    final type = chain is Expression ? chain.staticType : null;
+    if (type is! InterfaceType) return false;
+    return type.element.getStatic(memberName) != null ||
+        type.element.allSupertypes.any(
+          (t) => t.element.getStatic(memberName) != null,
+        );
+  }
+
+  static int _groupKeyOf(AstNode node) {
+    var key = -1;
+    for (AstNode? cur = node; cur != null; cur = cur.parent) {
+      if (cur is CompilationUnitMember || cur is ClassMember) {
+        return key != -1 ? key : cur.offset;
+      }
+      if ((cur is Statement && cur is! Block) || cur is VariableDeclaration) {
+        key = cur.offset;
+      }
+    }
+    return key;
   }
 
   /// `Enum.value`, `Type.staticGetterOrField`.
@@ -2287,13 +2473,11 @@ final class _CandidateCollector(TypeProvider typeProvider)
     // error (`@.member` does not parse).
     if (node.parent is Annotation) return;
     final member = node.identifier.element;
-    if (_isTypeRef(node.prefix) &&
-        _isStaticMember(member) &&
-        !_isReceiverPosition(node)) {
+    if (_isTypeRef(node.prefix) && _isStaticMember(member)) {
       _add(
         node: node,
-        deleteStart: node.prefix.offset,
-        dotOffset: node.period.offset,
+        startToken: node.prefix.beginToken,
+        dotToken: node.period,
         owner: node.prefix.name,
         memberName: node.identifier.name,
         memberElement: member,
@@ -2307,14 +2491,11 @@ final class _CandidateCollector(TypeProvider typeProvider)
   void visitPropertyAccess(PropertyAccess node) {
     final target = node.target;
     final member = node.propertyName.element;
-    if (target != null &&
-        _isTypeRef(target) &&
-        _isStaticMember(member) &&
-        !_isReceiverPosition(node)) {
+    if (target != null && _isTypeRef(target) && _isStaticMember(member)) {
       _add(
         node: node,
-        deleteStart: target.offset,
-        dotOffset: node.operator.offset,
+        startToken: target.beginToken,
+        dotToken: node.operator,
         owner: target.toSource(),
         memberName: node.propertyName.name,
         memberElement: member,
@@ -2335,8 +2516,8 @@ final class _CandidateCollector(TypeProvider typeProvider)
         _isStaticMember(node.methodName.element)) {
       _add(
         node: node,
-        deleteStart: target.offset,
-        dotOffset: dot.offset,
+        startToken: target.beginToken,
+        dotToken: dot,
         owner: target.toSource(),
         memberName: node.methodName.name,
         memberElement: node.methodName.element,
@@ -2359,9 +2540,9 @@ final class _CandidateCollector(TypeProvider typeProvider)
         type.typeArguments == null) {
       _add(
         node: node,
-        deleteStart: node.constructorName.offset,
-        dotOffset: period.offset,
-        owner: type.qualifiedName,
+        startToken: node.constructorName.beginToken,
+        dotToken: period,
+        owner: type.qualifiedName(),
         memberName: name.name,
         memberElement: node.constructorName.element,
       );
@@ -2392,9 +2573,9 @@ final class _CandidateCollector(TypeProvider typeProvider)
   }
 
   /// `Foo.bar.baz` / `Foo.bar()` — the node is itself a receiver. `.bar.baz`
-  /// would resolve `.bar` against the chain's context type (see
-  /// [_Viability]), which is `baz`'s type, not `Foo`, in all but contrived
-  /// code; kept out wholesale rather than probed.
+  /// resolves `.bar` against the chain's context type (see [_Viability]);
+  /// cross-type chains where the outer type cannot declare `bar` are filtered
+  /// by [_canChainResolve].
   static bool _isReceiverPosition(Expression node) {
     final parent = node.parent;
     return (parent is PropertyAccess && identical(parent.target, node)) ||
@@ -2430,7 +2611,7 @@ final class _CandidateCollector(TypeProvider typeProvider)
 /// verified by the resolve, a site that fails would have been reverted after
 /// costing one. Type parameters, `dynamic` and an unresolved parameter are
 /// "can't tell" and pass.
-final class _Viability(final TypeProvider typeProvider) {
+final class _Viability(final TypeProvider typeProvider, final Uri selfUri) {
   /// Why [site] can never verify, or null when it might.
   String? whyNot(
     Expression site,
@@ -2438,16 +2619,28 @@ final class _Viability(final TypeProvider typeProvider) {
     Element? memberElement,
     String? typedSlot,
   }) {
+    if (_holdersOf(memberElement).any((e) => e.metadata.hasUseResult)) {
+      return 'resolves to a @useResult member, whose shorthand dart analyze '
+          'reports as unused';
+    }
     AstNode head = site;
     // Selector chains (`PropertyAccess`, `MethodInvocation`, `IndexExpression`,
     // `CascadeExpression`, `PostfixExpression`) only propagate their context
     // type to a direct selector target — never through parentheses or a
     // conditional expression (`(Box.all(5)).let(...)` has no context type).
-    while (_isSelectorFor(head.parent, head)) {
-      head = head.parent!;
+    for (
+      var parent = head.parent;
+      parent != null && _isSelectorFor(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
     }
-    while (_passesContextTo(head.parent, head)) {
-      head = head.parent!;
+    for (
+      var parent = head.parent;
+      parent != null && _passesContextTo(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
     }
     final context = _contextOf(head);
     if (context != null) {
@@ -2472,12 +2665,13 @@ final class _Viability(final TypeProvider typeProvider) {
 
   /// The `_typeKey` of [site]'s slot when a licensed rebind may land there: an
   /// argument, a typed declaration, a field initializer, a return or yield, a
-  /// collection element, an index or binary operator operand, a compound
+  /// collection or record element, a constant or relational pattern, an index
+  /// or binary operator operand, a compound or non-promotable setter/cascade
   /// assignment RHS, or a parameter default whose context type is an interface
   /// type, reached only through wrappers that pass the value on unobserved
   /// ([_isTransparent]).
   /// Keyed without one trailing `?`: a nullable slot types the shorthand
-  /// as its non-null class. Null elsewhere — a cascade target, a simple
+  /// as its non-null class. Null elsewhere — a cascade target, a promotable
   /// assignment or an inferred declaration observes the shorthand's own static
   /// type.
   String? typedSlotOf(Expression site) {
@@ -2489,33 +2683,7 @@ final class _Viability(final TypeProvider typeProvider) {
     ) {
       head = parent;
     }
-    final parent = head.parent;
-    final inSlot = switch (parent) {
-      ArgumentList() => !_isUnpinnedGenericArgument(head as Argument),
-      VariableDeclaration() ||
-      ConstructorFieldInitializer() ||
-      ReturnStatement() ||
-      YieldStatement() ||
-      ExpressionFunctionBody() ||
-      ListLiteral() ||
-      SetOrMapLiteral() ||
-      MapLiteralEntry() ||
-      FormalParameterDefaultClause() => true,
-      IndexExpression(:final index) => identical(index, head),
-      BinaryExpression(:final operator, :final rightOperand) =>
-        identical(rightOperand, head) &&
-            operator.type != .EQ_EQ &&
-            operator.type != .BANG_EQ &&
-            operator.type != .QUESTION_QUESTION &&
-            operator.type != .AMPERSAND_AMPERSAND &&
-            operator.type != .BAR_BAR,
-      AssignmentExpression(:final operator, :final rightHandSide) =>
-        identical(rightHandSide, head) &&
-            operator.type != .EQ &&
-            operator.type != .QUESTION_QUESTION_EQ,
-      _ => false,
-    };
-    if (inSlot) {
+    if (_isInPinnedSlot(head.parent, head)) {
       if (_contextOf(head) case final DartType rawSlot) {
         var slot = rawSlot;
         while (slot is InterfaceType && slot.isDartAsyncFutureOr) {
@@ -2530,17 +2698,67 @@ final class _Viability(final TypeProvider typeProvider) {
     return null;
   }
 
+  bool _isInPinnedSlot(AstNode? parent, AstNode head) => switch (parent) {
+    ArgumentList() => !_isUnpinnedGenericArgument(head as Argument),
+    VariableDeclaration() ||
+    ConstructorFieldInitializer() ||
+    ListLiteral() ||
+    SetOrMapLiteral() ||
+    MapLiteralEntry() ||
+    ConstantPattern() ||
+    RelationalPattern() ||
+    FormalParameterDefaultClause() => true,
+    (ReturnStatement() || YieldStatement() || ExpressionFunctionBody()) &&
+        final node =>
+      _hasPinnedReturnSlot(node?.thisOrAncestorOfType<FunctionBody>()),
+    RecordLiteral(:final fields) =>
+      _recordFieldContext(parent, fields, head, pinnedOnly: true) != null,
+    IndexExpression(:final index) => identical(index, head),
+    BinaryExpression(:final operator, :final rightOperand) =>
+      identical(rightOperand, head) &&
+          operator.type != .EQ_EQ &&
+          operator.type != .BANG_EQ &&
+          operator.type != .QUESTION_QUESTION &&
+          operator.type != .AMPERSAND_AMPERSAND &&
+          operator.type != .BAR_BAR,
+    AssignmentExpression(:final operator, :final rightHandSide) =>
+      identical(rightHandSide, head) &&
+          ((operator.type != .EQ && operator.type != .QUESTION_QUESTION_EQ) ||
+              (parent.writeElement is PropertyAccessorElement &&
+                  (parent.parent is ExpressionStatement ||
+                      parent.parent is CascadeExpression))),
+    _ => false,
+  };
+
+  bool _hasPinnedReturnSlot(FunctionBody? body) => switch (body?.parent) {
+    ConstructorDeclaration() => true,
+    MethodDeclaration(:final returnType, :final declaredFragment) =>
+      returnType != null ||
+          declaredFragment?.element.returnType is! DynamicType,
+    FunctionExpression(parent: FunctionDeclaration(:final returnType)) =>
+      returnType != null,
+    final FunctionExpression closure =>
+      _closureReturnType(closure, pinnedOnly: true) != null,
+    _ => false,
+  };
+
   /// Whether [parent] passes [child]'s value through to its own slot
   /// unobserved. A switch scrutinee is observed by its patterns.
   static bool _isTransparent(AstNode parent, AstNode child) => switch (parent) {
     ParenthesizedExpression() ||
     NamedArgument() ||
+    RecordLiteralNamedField() ||
     ForElement() ||
     NullAwareElement() => true,
     ConditionalExpression(:final thenExpression, :final elseExpression) =>
       identical(thenExpression, child) || identical(elseExpression, child),
-    BinaryExpression(:final operator, :final rightOperand) =>
-      operator.type == .QUESTION_QUESTION && identical(rightOperand, child),
+    BinaryExpression(
+      :final operator,
+      :final leftOperand,
+      :final rightOperand,
+    ) =>
+      operator.type == .QUESTION_QUESTION &&
+          (identical(leftOperand, child) || identical(rightOperand, child)),
     SwitchExpressionCase(:final expression) => identical(expression, child),
     SwitchExpression(:final expression) => !identical(expression, child),
     IfElement(:final thenElement, :final elseElement) =>
@@ -2566,13 +2784,14 @@ final class _Viability(final TypeProvider typeProvider) {
         ParenthesizedExpression() ||
         AwaitExpression() ||
         NamedArgument() ||
+        RecordLiteralNamedField() ||
         ForElement() ||
         NullAwareElement() => true,
         SwitchExpression(:final expression) => !identical(expression, child),
         ConditionalExpression(:final thenExpression, :final elseExpression) =>
           identical(thenExpression, child) || identical(elseExpression, child),
-        BinaryExpression(:final operator, :final rightOperand) =>
-          operator.type == .QUESTION_QUESTION && identical(rightOperand, child),
+        BinaryExpression(:final operator, :final leftOperand) =>
+          operator.type == .QUESTION_QUESTION && identical(leftOperand, child),
         SwitchExpressionCase(:final expression) => identical(expression, child),
         IfElement(:final thenElement, :final elseElement) =>
           identical(thenElement, child) || identical(elseElement, child),
@@ -2598,8 +2817,10 @@ final class _Viability(final TypeProvider typeProvider) {
               SwitchStatement(:final expression)
           when identical(expression, head):
         return none;
-      case VariableDeclaration():
-        return (parent.parent! as VariableDeclarationList).type?.type ?? none;
+      case VariableDeclaration(:final parent):
+        return parent is VariableDeclarationList
+            ? parent.type?.type ?? none
+            : none;
       case ConstructorFieldInitializer(:final fieldName):
         final element = fieldName.element;
         return switch (element) {
@@ -2630,10 +2851,28 @@ final class _Viability(final TypeProvider typeProvider) {
             ? method.formalParameters.firstOrNull?.type
             : null;
         return type is TypeParameterType ? null : type;
-      case BinaryExpression(:final operator, :final leftOperand):
+      case BinaryExpression(
+        :final operator,
+        :final leftOperand,
+        :final rightOperand,
+      ):
         if (operator.type == .AMPERSAND_AMPERSAND ||
             operator.type == .BAR_BAR) {
           return bool;
+        }
+        if (operator.type == .QUESTION_QUESTION &&
+            identical(rightOperand, head)) {
+          AstNode binHead = parent;
+          for (
+            var next = binHead.parent;
+            next != null && _passesContextTo(next, binHead);
+            next = binHead.parent
+          ) {
+            binHead = next;
+          }
+          final outer = _contextOf(binHead);
+          if (outer != null && outer is! NeverType) return outer;
+          return leftOperand.staticType;
         }
         if (identical(leftOperand, head)) return none;
         if (operator.type == .EQ_EQ || operator.type == .BANG_EQ) {
@@ -2645,9 +2884,21 @@ final class _Viability(final TypeProvider typeProvider) {
               IfElement(:final expression) ||
               WhileStatement(condition: final expression) ||
               DoStatement(condition: final expression) ||
-              AssertStatement(condition: final expression)
+              Assertion(condition: final expression) ||
+              WhenClause(:final expression)
           when identical(expression, head):
         return bool;
+      case ConstantPattern(:final expression) when identical(expression, head):
+        return parent.matchedValueType;
+      case RelationalPattern(:final operand, :final operator)
+          when identical(operand, head):
+        if (operator.type == .EQ_EQ || operator.type == .BANG_EQ) {
+          return parent.matchedValueType;
+        }
+        final type = parent.element?.formalParameters.firstOrNull?.type;
+        return type is TypeParameterType ? null : type;
+      case RecordLiteral(:final fields):
+        return _recordFieldContext(parent, fields, head, pinnedOnly: false);
       case ArgumentList():
         return _argumentContext(head as Argument);
       case AssignmentExpression(:final operator, :final rightHandSide)
@@ -2660,12 +2911,11 @@ final class _Viability(final TypeProvider typeProvider) {
       case FormalParameterDefaultClause(parent: final FormalParameter param):
         return param.declaredFragment?.element.type;
       case ReturnStatement() || ExpressionFunctionBody():
-        return _returnContext(parent.thisOrAncestorOfType<FunctionBody>()!);
+        final body = parent.thisOrAncestorOfType<FunctionBody>();
+        return body == null ? null : _returnContext(body);
       case YieldStatement():
-        return _yieldContext(
-          parent,
-          parent.thisOrAncestorOfType<FunctionBody>()!,
-        );
+        final body = parent.thisOrAncestorOfType<FunctionBody>();
+        return body == null ? null : _yieldContext(parent, body);
       case ListLiteral(:final staticType) || SetOrMapLiteral(:final staticType):
         return _elementType(staticType, 0);
       case MapLiteralEntry(:final key):
@@ -2676,20 +2926,82 @@ final class _Viability(final TypeProvider typeProvider) {
     }
   }
 
+  DartType? _recordFieldContext(
+    RecordLiteral record,
+    NodeList<RecordLiteralField> fields,
+    AstNode field, {
+    required bool pinnedOnly,
+  }) {
+    AstNode head = record;
+    for (
+      var parent = head.parent;
+      parent != null &&
+          (pinnedOnly
+              ? _isTransparent(parent, head)
+              : _passesContextTo(parent, head));
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    if (pinnedOnly && !_isInPinnedSlot(head.parent, head)) return null;
+    var ctx = _contextOf(head);
+    while (ctx is InterfaceType && ctx.isDartAsyncFutureOr) {
+      ctx = ctx.typeArguments.first;
+    }
+    if (ctx is NeverType) return pinnedOnly ? null : ctx;
+    if (ctx is! RecordType) return null;
+    if (field is RecordLiteralNamedField) {
+      final name = field.name.lexeme;
+      for (final f in ctx.namedFields) {
+        if (f.name == name) return f.type;
+      }
+      return pinnedOnly ? null : typeProvider.neverType;
+    }
+    var posIndex = 0;
+    for (final f in fields) {
+      if (identical(f, field)) break;
+      if (f is! RecordLiteralNamedField) posIndex++;
+    }
+    if (posIndex < ctx.positionalFields.length) {
+      return ctx.positionalFields[posIndex].type;
+    }
+    return pinnedOnly ? null : typeProvider.neverType;
+  }
+
+  static bool _hasExplicitTypeArgs(AstNode? call) => switch (call) {
+    MethodInvocation(:final typeArguments) ||
+    FunctionExpressionInvocation(:final typeArguments) => typeArguments != null,
+    InstanceCreationExpression(:final constructorName) =>
+      constructorName.type.typeArguments != null,
+    _ => true,
+  };
+
+  bool _callHasNoContext(Argument arg) {
+    if (arg.parent?.parent case var callHead?) {
+      for (
+        var parent = callHead.parent;
+        parent != null && _isSelectorFor(parent, callHead);
+        parent = callHead.parent
+      ) {
+        callHead = parent;
+      }
+      for (
+        var parent = callHead.parent;
+        parent != null && _passesContextTo(parent, callHead);
+        parent = callHead.parent
+      ) {
+        callHead = parent;
+      }
+      return _contextOf(callHead) == typeProvider.neverType;
+    }
+    return false;
+  }
+
   bool _isUnpinnedGenericArgument(Argument arg) {
     final param = arg.correspondingParameter;
     if (param == null) return false;
     final call = arg.parent?.parent;
-    final hasExplicitTypeArgs = switch (call) {
-      MethodInvocation(:final typeArguments) ||
-      FunctionExpressionInvocation(
-        :final typeArguments,
-      ) => typeArguments != null,
-      InstanceCreationExpression(:final constructorName) =>
-        constructorName.type.typeArguments != null,
-      _ => true,
-    };
-    if (hasExplicitTypeArgs) return false;
+    if (_hasExplicitTypeArgs(call)) return false;
     return switch (param.baseElement.type) {
       TypeParameterType(:final element)
           when element.enclosingElement is! InstanceElement ||
@@ -2699,19 +3011,37 @@ final class _Viability(final TypeProvider typeProvider) {
     };
   }
 
+  TypeParameterElement? _unpinnedReturnParam(Argument arg) {
+    final param = arg.correspondingParameter;
+    if (param == null) return null;
+    final call = arg.parent?.parent;
+    if (_hasExplicitTypeArgs(call)) return null;
+    var base = param.baseElement.type;
+    while (base is InterfaceType && base.isDartAsyncFutureOr) {
+      base = base.typeArguments.first;
+    }
+    if (base is! FunctionType) return null;
+    var ret = base.returnType;
+    while (ret is InterfaceType &&
+        (ret.isDartAsyncFuture || ret.isDartAsyncFutureOr)) {
+      ret = ret.typeArguments.first;
+    }
+    if (ret case TypeParameterType(:final element)
+        when element.enclosingElement is! InstanceElement ||
+            call is InstanceCreationExpression) {
+      if (call is! Expression || typedSlotOf(call) == null) {
+        return element;
+      }
+    }
+    return null;
+  }
+
   DartType? _argumentContext(Argument arg) {
     final param = arg.correspondingParameter;
     if (param == null) return null;
     if (_isUnpinnedGenericArgument(arg)) {
       if (param.baseElement.type case TypeParameterType(:final element)) {
-        var callHead = arg.parent!.parent!;
-        while (_isSelectorFor(callHead.parent, callHead)) {
-          callHead = callHead.parent!;
-        }
-        while (_passesContextTo(callHead.parent, callHead)) {
-          callHead = callHead.parent!;
-        }
-        if (_contextOf(callHead) == typeProvider.neverType) {
+        if (_callHasNoContext(arg)) {
           return element.bound ?? typeProvider.neverType;
         }
         return null;
@@ -2721,14 +3051,60 @@ final class _Viability(final TypeProvider typeProvider) {
     return type is TypeParameterType ? null : type;
   }
 
+  DartType? _closureReturnType(
+    FunctionExpression closure, {
+    required bool pinnedOnly,
+  }) {
+    AstNode head = closure;
+    for (
+      var parent = head.parent;
+      parent != null &&
+          (pinnedOnly
+              ? _isTransparent(parent, head)
+              : _passesContextTo(parent, head));
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    final parent = head.parent;
+    if (parent is ArgumentList && head is Argument) {
+      if (_unpinnedReturnParam(head) case final element?) {
+        if (pinnedOnly) return null;
+        return _callHasNoContext(head)
+            ? (element.bound ?? typeProvider.neverType)
+            : null;
+      }
+    }
+    if (pinnedOnly && !_isInPinnedSlot(parent, head)) return null;
+    var ctx = _contextOf(head);
+    while (ctx is InterfaceType && ctx.isDartAsyncFutureOr) {
+      ctx = ctx.typeArguments.first;
+    }
+    return switch (ctx) {
+      FunctionType(:final returnType) => returnType,
+      NeverType() when !pinnedOnly => ctx,
+      _ => null,
+    };
+  }
+
   /// The context type of a `return` (or `=>` body) in [body]: its function's
-  /// declared or inferred return type, unwrapped once for an `async` body.
-  static DartType? _returnContext(FunctionBody body) {
+  /// declared or context-derived return type, unwrapped once for an `async`
+  /// body.
+  DartType? _returnContext(FunctionBody body) {
     if (body.isGenerator) return null;
     final owner = body.parent;
     final type = switch (owner) {
-      FunctionExpression() => owner.declaredFragment?.element.returnType,
-      MethodDeclaration() => owner.declaredFragment?.element.returnType,
+      ConstructorDeclaration() => owner.declaredFragment?.element.returnType,
+      MethodDeclaration(:final returnType) =>
+        returnType == null &&
+                owner.declaredFragment?.element.returnType is DynamicType
+            ? typeProvider.neverType
+            : owner.declaredFragment?.element.returnType,
+      FunctionExpression(:final parent) when parent is FunctionDeclaration =>
+        parent.returnType == null
+            ? typeProvider.neverType
+            : owner.declaredFragment?.element.returnType,
+      FunctionExpression() => _closureReturnType(owner, pinnedOnly: false),
       _ => null,
     };
     if (body.isAsynchronous &&
@@ -2742,14 +3118,23 @@ final class _Viability(final TypeProvider typeProvider) {
   /// The context type of a `yield` (or `yield*`) in [body]: for plain `yield`,
   /// the element type `T` of the enclosing generator's `Iterable<T>` or
   /// `Stream<T>` return type; for `yield*`, the return type itself.
-  static DartType? _yieldContext(YieldStatement node, FunctionBody body) {
+  DartType? _yieldContext(YieldStatement node, FunctionBody body) {
     if (!body.isGenerator) return null;
     final owner = body.parent;
     final type = switch (owner) {
-      FunctionExpression() => owner.declaredFragment?.element.returnType,
-      MethodDeclaration() => owner.declaredFragment?.element.returnType,
+      MethodDeclaration(:final returnType) =>
+        returnType == null &&
+                owner.declaredFragment?.element.returnType is DynamicType
+            ? typeProvider.neverType
+            : owner.declaredFragment?.element.returnType,
+      FunctionExpression(:final parent) when parent is FunctionDeclaration =>
+        parent.returnType == null
+            ? typeProvider.neverType
+            : owner.declaredFragment?.element.returnType,
+      FunctionExpression() => _closureReturnType(owner, pinnedOnly: false),
       _ => null,
     };
+    if (type is NeverType) return type;
     if (node.star != null) return type;
     if (type is InterfaceType &&
         (type.isDartCoreIterable || type.isDartAsyncStream) &&
@@ -2767,7 +3152,7 @@ final class _Viability(final TypeProvider typeProvider) {
   /// Why a context type [type] cannot hold a static [member] the verdict
   /// would accept, or null when it could. `FutureOr<T>` resolves the
   /// shorthand on `T`; `Never` is [_contextOf]'s "no context type".
-  static String? _refusal(
+  String? _refusal(
     DartType type,
     String member, {
     Element? memberElement,
@@ -2777,16 +3162,20 @@ final class _Viability(final TypeProvider typeProvider) {
     while (t is InterfaceType && t.isDartAsyncFutureOr) {
       t = t.typeArguments.first;
     }
-    if (t case InterfaceType(:final element)
-        when element.getStatic(member) != null) {
-      if (typedSlot == null) {
+    if (t case InterfaceType(:final element)) {
+      if (element.getStatic(member) case final target?) {
         final origContainer = memberElement?.enclosingElement;
         if (origContainer is InterfaceElement &&
             origContainer.baseElement != element.baseElement) {
-          return 'rebinds to ${element.name}.$member outside a typed slot';
+          if (!_mayBeLicensedRebind(memberElement, target, selfUri)) {
+            return 'rebinds to ${element.name}.$member';
+          }
+          if (typedSlot == null) {
+            return 'rebinds to ${element.name}.$member outside a typed slot';
+          }
         }
+        return null;
       }
-      return null;
     }
     return switch (t) {
       TypeParameterType() || DynamicType() || InvalidType() => null,
@@ -2795,6 +3184,39 @@ final class _Viability(final TypeProvider typeProvider) {
       // nothing.
       _ => 'context type ${t.getDisplayString()} declares no static $member',
     };
+  }
+
+  static bool _mayBeLicensedRebind(
+    Element? original,
+    Element target,
+    Uri selfUri,
+  ) {
+    if (original is ConstructorElement && target is ConstructorElement) {
+      final seen = <ConstructorElement>{};
+      var cur = target;
+      while (cur.isFactory) {
+        final next = cur.redirectedConstructor;
+        if (next == null || !seen.add(cur.baseElement)) break;
+        cur = next;
+      }
+      return !identical(cur, target) && cur.baseElement == original.baseElement;
+    }
+    if (original is PropertyAccessorElement &&
+        target is PropertyAccessorElement) {
+      final origVar = original.variable;
+      final targetVar = target.variable;
+      if (!origVar.isConst || !targetVar.isConst) return false;
+      if (original.library.uri == selfUri || target.library.uri == selfUri) {
+        return false;
+      }
+      final v1 = origVar.computeConstantValue();
+      final v2 = targetVar.computeConstantValue();
+      if (v1 != null && v1.hasKnownValue && v2 != null && v2.hasKnownValue) {
+        return v1 == v2;
+      }
+      return true;
+    }
+    return false;
   }
 }
 
@@ -2810,7 +3232,8 @@ extension on InterfaceElement {
 }
 
 extension on NamedType {
-  String get qualifiedName => importPrefix == null
-      ? name.lexeme
-      : '${importPrefix!.name.lexeme}.${name.lexeme}';
+  String qualifiedName() => switch (importPrefix) {
+    final prefix? => '${prefix.name.lexeme}.${name.lexeme}',
+    null => name.lexeme,
+  };
 }

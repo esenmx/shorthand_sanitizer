@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
@@ -19,13 +20,13 @@ Future<String> sanitize(
   final result = await Sanitizer(skips: skips, dryRun: dryRun).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
-  expect(result.skippedWithErrors, isEmpty, reason: 'fixture has errors');
+  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
   return file.readAsStringSync();
 }
 
 void main() {
   setUpAll(() {
-    pkg = Directory.systemTemp.createTempSync('shorthand_sanitizer_test');
+    pkg = .systemTemp.createTempSync('shorthand_sanitizer_test');
     Directory(p.join(pkg.path, 'lib')).createSync();
     const spec = 'name: fixture\nenvironment:\n  sdk: ^3.10.0\n';
     File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync(spec);
@@ -49,12 +50,12 @@ void main() {
   if (f == Fit.contain) return;
 }
 ''');
-    expect(out, isNot(contains('Fit.cover')));
-    expect(out, isNot(contains('Fit.contain')));
-    expect(out, contains('b ? .cover : .contain'));
-    expect(out, contains('use(.cover)'));
-    expect(out, contains('1 => .cover'));
-    expect(out, contains('== .contain'));
+    check(out).not((it) => it.contains('Fit.cover'));
+    check(out).not((it) => it.contains('Fit.contain'));
+    check(out).contains('b ? .cover : .contain');
+    check(out).contains('use(.cover)');
+    check(out).contains('1 => .cover');
+    check(out).contains('== .contain');
   });
 
   test(
@@ -78,15 +79,15 @@ void main() {
   print('$a $z $u $p $f');
 }
 ''');
-      expect(out, contains('final Insets a = .all(4)'));
-      expect(out, contains('final Insets z = .zero'));
-      expect(out, contains('final Insets u = .unit'));
-      expect(out, contains("final Insets p = .parse('2')"));
-      expect(out, contains('final Insets f = .zeroed()'));
-      expect(out, contains('static const Insets zero = .all(0)'));
+      check(out).contains('final Insets a = .all(4)');
+      check(out).contains('final Insets z = .zero');
+      check(out).contains('final Insets u = .unit');
+      check(out).contains("final Insets p = .parse('2')");
+      check(out).contains('final Insets f = .zeroed()');
+      check(out).contains('static const Insets zero = .all(0)');
       // explicit `const` before the ctor — the shorthand node starts at `const`
-      expect(out, contains('static Insets get unit => const .all(1)'));
-      expect(out, contains('factory Insets.zeroed() => const .all(0)'));
+      check(out).contains('static Insets get unit => const .all(1)');
+      check(out).contains('factory Insets.zeroed() => const .all(0)');
     },
   );
 
@@ -109,8 +110,8 @@ class Tokens {
   static const b = Wrap.all(Item.named(2));
 }
 ''');
-    expect(out, contains('static const a = Wrap.all(.named(1))'));
-    expect(out, contains('static const b = Wrap.all(.named(2))'));
+    check(out).contains('static const a = Wrap.all(.named(1))');
+    check(out).contains('static const b = Wrap.all(.named(2))');
   });
 
   test('unwitnessed contexts stay prefixed', () async {
@@ -123,8 +124,8 @@ void main() {
 }
 ''';
     final out = await sanitize(source);
-    expect(out, contains('final Object o = Fit.cover'));
-    expect(out, contains('[Fit.cover]'));
+    check(out).contains('final Object o = Fit.cover');
+    check(out).contains('[Fit.cover]');
   });
 
   test(
@@ -144,7 +145,7 @@ void main() {
 }
 ''';
       final out = await sanitize(source);
-      expect(out, contains('const Color c = Palette.red'));
+      check(out).contains('const Color c = Palette.red');
     },
   );
 
@@ -168,7 +169,7 @@ void main() {
 ''';
       final out = await sanitize(source);
       // `.a` compiles but resolves to Base.a — a different constant. Must stay.
-      expect(out, contains('const Base x = Sub.a'));
+      check(out).contains('const Base x = Sub.a');
     },
   );
 
@@ -185,7 +186,7 @@ void main() {
 }
 ''';
     final out = await sanitize(source);
-    expect('Fit.values'.allMatches(out).length, 3);
+    check('Fit.values'.allMatches(out).length).equals(3);
   });
 
   test(
@@ -204,11 +205,8 @@ void main() {
 }
 ''';
       final out = await sanitize(source);
-      expect(out, contains('final Pad p = Pad.all(1) + .only(2)'));
-      expect(
-        out,
-        contains('=> .all(v + other.v)'),
-      ); // return-typed body converts
+      check(out).contains('final Pad p = Pad.all(1) + .only(2)');
+      check(out).contains('=> .all(v + other.v)'); // return-typed body converts
     },
   );
 
@@ -240,9 +238,9 @@ void main() {
       final out = await sanitize(source);
       // `.all(1)` binds Geo.all, which forwards the call untouched to
       // Box.all — same object, same defaults.
-      expect(out, contains('take(.all(1))'));
-      expect(out, contains('take(const .sym(h: 4))'));
-      expect(out, contains('const Pad(.sym(v: 2))'));
+      check(out).contains('take(.all(1))');
+      check(out).contains('take(const .sym(h: 4))');
+      check(out).contains('const Pad(.sym(v: 2))');
     },
   );
 
@@ -264,7 +262,7 @@ void take(Geo g) {}
 void main() => take(Box.only(l: 1));
 ''';
       final out = await sanitize(source);
-      expect(out, contains('take(.only(l: 1))'));
+      check(out).contains('take(.only(l: 1))');
     },
   );
 
@@ -282,7 +280,7 @@ void main() => take(Box.all(1));
 ''';
     final out = await sanitize(source);
     // Through Geo.all the literal `1` is typed double, not int.
-    expect(out, contains('take(Box.all(1))'));
+    check(out).contains('take(Box.all(1))');
   });
 
   test('forwarder with a body, not a redirect, is refused', () async {
@@ -298,7 +296,7 @@ void take(Geo g) {}
 void main() => take(Box.all(1));
 ''';
     final out = await sanitize(source);
-    expect(out, contains('take(Box.all(1))'));
+    check(out).contains('take(Box.all(1))');
   });
 
   test('forwarder onto a different constructor is refused', () async {
@@ -315,7 +313,7 @@ void take(Geo g) {}
 void main() => take(Box.all(1));
 ''';
     final out = await sanitize(source);
-    expect(out, contains('take(Box.all(1))'));
+    check(out).contains('take(Box.all(1))');
   });
 
   test('skip list holds Type.member and bare member forms', () async {
@@ -328,8 +326,8 @@ void main() {
 }
 ''';
     final out = await sanitize(source, skips: {'Fit.cover'});
-    expect(out, contains('final Fit a = Fit.cover'));
-    expect(out, contains('final Fit b = .contain'));
+    check(out).contains('final Fit a = Fit.cover');
+    check(out).contains('final Fit b = .contain');
   });
 
   test('prunes an import the dropped prefix orphaned', () async {
@@ -358,10 +356,10 @@ final sink = Sink(Dep.instance);
 ''');
     final result = await Sanitizer().run([file.path]);
     final out = file.readAsStringSync();
-    expect(out, contains('Sink(.instance)'));
-    expect(out, isNot(contains("import 'dep.dart';")));
-    expect(out, contains("import 'sink.dart';")); // still used, kept
-    expect(result.removedImportCount, 1);
+    check(out).contains('Sink(.instance)');
+    check(out).not((it) => it.contains("import 'dep.dart';"));
+    check(out).contains("import 'sink.dart';"); // still used, kept
+    check(result.removedImportCount).equals(1);
   });
 
   test('leaves a pre-existing unused import alone', () async {
@@ -385,8 +383,8 @@ final box = Box(Dep2.instance);
 ''');
     await Sanitizer().run([file.path]);
     final out = file.readAsStringSync();
-    expect(out, contains('Box(.instance)'));
-    expect(out, contains("import 'dart:async';")); // pre-existing unused, kept
+    check(out).contains('Box(.instance)');
+    check(out).contains("import 'dart:async';"); // pre-existing unused, kept
   });
 
   test('dry run reports without writing', () async {
@@ -398,7 +396,7 @@ void main() {
 }
 ''';
     final out = await sanitize(source, dryRun: true);
-    expect(out, source);
+    check(out).equals(source);
   });
 
   test('generated detection reads the header, not the filename', () {
@@ -408,29 +406,26 @@ void main() {
     }
 
     // build_runner-style marker — skipped whatever the name.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write('m.g.dart', '// GENERATED CODE - DO NOT MODIFY BY HAND\n'),
       ),
-      isTrue,
-    );
+    ).isTrue();
     // FlutterFire CLI: single-dot name, still generated.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write(
           'firebase_options.dart',
           '// File generated by FlutterFire CLI.\n',
         ),
       ),
-      isTrue,
-    );
+    ).isTrue();
     // Handwritten widget preview: double-dot name, NOT generated.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write('page.preview.dart', "import 'page.dart';\n"),
       ),
-      isFalse,
-    );
+    ).isFalse();
   });
 
   test('prose about regeneration is not a generated header', () {
@@ -440,17 +435,16 @@ void main() {
     }
 
     // The stem `generat` appears, but as prose in a handwritten banner.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write(
           'foot_slab.dart',
           '// The foot slab regenerates its tear line when the tint changes.\n',
         ),
       ),
-      isFalse,
-    );
+    ).isFalse();
     // A marker below the banner describes the code, not the file.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write(
           'runner.dart',
@@ -459,30 +453,26 @@ void main() {
               'const template = 1;\n',
         ),
       ),
-      isFalse,
-    );
+    ).isFalse();
     // Real banners still register, including past a leading license block.
-    expect(
+    check(
       Sanitizer.isGenerated(
         write('m.pb.dart', '//\n// Generated code. Do not modify.\n'),
       ),
-      isTrue,
-    );
-    expect(
+    ).isTrue();
+    check(
       Sanitizer.isGenerated(
         write('p.g.dart', '// Autogenerated from Pigeon (v9.2.5).\n'),
       ),
-      isTrue,
-    );
-    expect(
+    ).isTrue();
+    check(
       Sanitizer.isGenerated(
         write(
           'strings.g.dart',
           '// Copyright 2026\n\n/// Generated file. Do not edit.\n',
         ),
       ),
-      isTrue,
-    );
+    ).isTrue();
   });
 
   test('a header mentioning regeneration still gets sanitized', () async {
@@ -491,7 +481,7 @@ void main() {
 enum Fit { cover }
 Fit f() => Fit.cover;
 ''');
-    expect(out, contains('=> .cover'));
+    check(out).contains('=> .cover');
   });
 
   test('handwritten *.preview.dart files are sanitized', () async {
@@ -501,7 +491,7 @@ enum Fit { cover, contain }
 Fit preview() => Fit.cover;
 ''');
     await Sanitizer().run([file.path]);
-    expect(file.readAsStringSync(), contains('=> .cover'));
+    check(file.readAsStringSync()).contains('=> .cover');
   });
 
   test('--exclude globs and generated headers keep files untouched', () async {
@@ -517,9 +507,9 @@ Fit f() => Fit.cover;
       ..writeAsStringSync(source);
     final sanitizer = Sanitizer(excludes: ['firebase_options.dart']);
     await sanitizer.run([excluded.path, generated.path, normal.path]);
-    expect(excluded.readAsStringSync(), contains('Fit.cover'));
-    expect(generated.readAsStringSync(), contains('Fit.cover'));
-    expect(normal.readAsStringSync(), contains('=> .cover'));
+    check(excluded.readAsStringSync()).contains('Fit.cover');
+    check(generated.readAsStringSync()).contains('Fit.cover');
+    check(normal.readAsStringSync()).contains('=> .cover');
   });
 
   test('sanitized output keeps compiling and means the same thing', () async {
@@ -544,14 +534,14 @@ void main() => print(render());
       'run',
       file.path,
     ], workingDirectory: pkg.path);
-    expect(before.exitCode, 0, reason: '${before.stderr}');
+    check(because: '${before.stderr}', before.exitCode).equals(0);
     await Sanitizer().run([file.path]);
     final after = Process.runSync('dart', [
       'run',
       file.path,
     ], workingDirectory: pkg.path);
-    expect(after.exitCode, 0, reason: '${after.stderr}');
-    expect(after.stdout, before.stdout);
+    check(because: '${after.stderr}', after.exitCode).equals(0);
+    check(after.stdout).equals(before.stdout);
   });
 
   test('abstract interface class static const converts', () async {
@@ -567,7 +557,7 @@ void main() {
   print(ts);
 }
 ''');
-    expect(out, contains('const TextScaler ts = .noScaling;'));
+    check(out).contains('const TextScaler ts = .noScaling;');
   });
 
   test('static const on prefixed-imported class converts', () async {
@@ -584,7 +574,7 @@ void main() {
   print(ts);
 }
 ''');
-    expect(out, contains('const p.Scaler ts = .noScaling;'));
+    check(out).contains('const p.Scaler ts = .noScaling;');
   });
 
   test('static method on prefixed-imported class converts', () async {
@@ -601,7 +591,7 @@ void main() {
   print(ts);
 }
 ''');
-    expect(out, contains('final p.Scaler ts = .scale(5);'));
+    check(out).contains('final p.Scaler ts = .scale(5);');
   });
 
   test('static const on type alias / typedef converts', () async {
@@ -616,7 +606,7 @@ void main() {
   print(ts);
 }
 ''');
-    expect(out, contains('const Scaler ts = .noScaling;'));
+    check(out).contains('const Scaler ts = .noScaling;');
   });
 
   group('rebind onto a const alias', () {
@@ -658,7 +648,7 @@ void main() {
   print(g);
 }
 ''');
-        expect(out, contains('const Geo g = .topCenter;'));
+        check(out).contains('const Geo g = .topCenter;');
       },
     );
 
@@ -672,7 +662,7 @@ void main() {
 ''');
       // `.all(3)` binds Geo.all, which allocates a fresh instance — no
       // constant value, so nothing proves the two equivalent.
-      expect(out, contains('final Geo g = Align.all(3);'));
+      check(out).contains('final Geo g = Align.all(3);');
     });
 
     test('non-const `static final` alias stays prefixed', () async {
@@ -685,7 +675,7 @@ void main() {
 ''');
       // Geo.lazy is `final`, not `const` — no compile-time value, so both
       // sides being the same object is unprovable even though they are.
-      expect(out, contains('final Geo g = Align.lazy;'));
+      check(out).contains('final Geo g = Align.lazy;');
     });
 
     test('same-valued constant of another type stays prefixed', () async {
@@ -698,7 +688,7 @@ void main() {
 ''');
       // Directional(5) and Geo.center's Align(5) carry identical field state;
       // only their type tells them apart, and it must.
-      expect(out, contains('const Geo g = Directional.center;'));
+      check(out).contains('const Geo g = Directional.center;');
     });
 
     test('alias declared in the file under rewrite stays prefixed', () async {
@@ -718,8 +708,8 @@ void main() {
   print(b);
 }
 ''');
-      expect(out, contains('static const Box wide = Fixed.wide;'));
-      expect(out, contains('const Box b = Fixed.wide;'));
+      check(out).contains('static const Box wide = Fixed.wide;');
+      check(out).contains('const Box b = Fixed.wide;');
     });
 
     test('converted alias stays identical to what the source named', () async {
@@ -732,13 +722,13 @@ void main() {
 }
 ''');
       await Sanitizer().run([file.path]);
-      expect(file.readAsStringSync(), contains('const Geo g = .topCenter;'));
+      check(file.readAsStringSync()).contains('const Geo g = .topCenter;');
       final run = Process.runSync('dart', [
         'run',
         file.path,
       ], workingDirectory: pkg.path);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(run.stdout.toString().trim(), 'true');
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout.toString().trim()).equals('true');
     });
   });
 
@@ -758,7 +748,7 @@ void main() {
 ''');
       // `Scaler.noScaling` is the receiver of `.pixels` — dropping the prefix
       // would yield `.noScaling.pixels`, an illegal shorthand position.
-      expect(out, contains('Scaler.noScaling.pixels'));
+      check(out).contains('Scaler.noScaling.pixels');
     },
   );
 
@@ -800,11 +790,12 @@ $rows
 }
 ''');
 
-      expect('.pick(t: flagged ? .marked'.allMatches(out).length, clusters);
-      expect(out, isNot(contains('Tag.marked : null')));
+      check('.pick(t: flagged ? .marked'.allMatches(out).length)
+          .equals(clusters);
+      check(out).not((it) => it.contains('Tag.marked : null'));
       // The neighbours are genuinely unconvertible and must stay as written.
-      expect('Numbers.one'.allMatches(out).length, clusters);
-      expect('Labels.a'.allMatches(out).length, clusters);
+      check('Numbers.one'.allMatches(out).length).equals(clusters);
+      check('Labels.a'.allMatches(out).length).equals(clusters);
     },
   );
 
@@ -828,11 +819,11 @@ Fit f() => Fit.cover;
     final result = await Sanitizer().run([file.path]);
 
     // Untouched, and the run says why rather than reporting an empty success.
-    expect(file.readAsStringSync(), contains('Fit.cover'));
-    expect(result.skippedBelowFloor, {
+    check(file.readAsStringSync()).contains('Fit.cover');
+    check(result.skippedBelowFloor).deepEquals({
       (root: p.normalize(p.absolute(old.path)), version: '3.9'): 1,
     });
-    expect(result.convertedCount, 0);
+    check(result.convertedCount).equals(0);
   });
 
   test('skips hidden directories and build folder during traversal', () async {
@@ -855,9 +846,9 @@ Fit f() => Fit.cover;
 ''');
 
     final result = await Sanitizer().run([pkg.path]);
-    expect(result.files.any((f) => f.path.contains('.hidden')), isFalse);
-    expect(result.files.any((f) => f.path.contains('build')), isFalse);
-    expect(result.files.any((f) => f.path == normalFile.path), isTrue);
+    check(result.files.any((f) => f.path.contains('.hidden'))).isFalse();
+    check(result.files.any((f) => f.path.contains('build'))).isFalse();
+    check(result.files.any((f) => f.path == normalFile.path)).isTrue();
   });
 
   group('static pre-check', () {
@@ -907,7 +898,7 @@ void main() {
   if (typed == Box.a) return;
 }
 ''');
-      for (final shorthand in [
+      [
         '{ return .a; }',
         'arrow() => .make();',
         'async { return .a; }',
@@ -931,9 +922,7 @@ void main() {
         'typed == .a',
         'dflt({Box b = .a})',
         'static const Box a = .named(1)',
-      ]) {
-        expect(out, contains(shorthand));
-      }
+      ].forEach(check(out).contains);
     });
 
     test('positions without a context type stay prefixed', () async {
@@ -956,7 +945,7 @@ Future<void> main() async {
 ''');
       final result = await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
-      for (final kept in [
+      [
         '[Box.a] is not a site',
         '  Box.make();',
         'await Box.load();',
@@ -966,12 +955,10 @@ Future<void> main() async {
         'Box.a + .a;',
         'int other = Box.make().v;',
         'throw Err.code(1)',
-      ]) {
-        expect(out, contains(kept));
-      }
+      ].forEach(check(out).contains);
       // Sites the check rules out are reported as reverted like any other;
       // the doc-comment reference is prose, not a ninth.
-      expect(result.files.single.reverted, 8);
+      check(result.files.single.reverted).equals(8);
     });
   });
 
@@ -1024,22 +1011,25 @@ void main() {
       ).run([file.path]);
 
       final fileResult = result.files.single;
-      expect(fileResult.kept, [
-        // Ruled out by the static pre-check, before any resolve.
-        '30: Fit.contain kept: no context type',
+      check(fileResult.kept).length.equals(6);
+      // Ruled out by the static pre-check, before any resolve.
+      check(fileResult.kept[0]).equals('30: Fit.contain kept: no context type');
+      check(fileResult.kept[1]).equals(
         '31: Palette.red kept: context type Color declares no static red',
-        // Refused by the verify loop: a rebind, the analyzer's own error on
-        // the shorthand, and damage only bisection pins on the site (`..v`
-        // reads a getter the forwarder's class lacks).
-        '32: Sub.a kept: rebinds to Base.a',
-        matches(r'^33: Box\.zero kept: .*context type'),
-        '34: Box.all kept: rebinds to Geo.all outside a typed slot',
-        '35: Box.unit kept: skip-listed',
-      ]);
-      expect(fileResult.converted, hasLength(5));
+      );
+      // Refused by the verify loop: a rebind, the analyzer's own error on
+      // the shorthand, and damage only bisection pins on the site (`..v`
+      // reads a getter the forwarder's class lacks).
+      check(fileResult.kept[2]).equals('32: Sub.a kept: rebinds to Base.a');
+      check(fileResult.kept[3])
+          .matchesPattern(RegExp(r'^33: Box\.zero kept: .*context type'));
+      check(fileResult.kept[4])
+          .equals('34: Box.all kept: rebinds to Geo.all outside a typed slot');
+      check(fileResult.kept[5]).equals('35: Box.unit kept: skip-listed');
+      check(fileResult.converted).length.equals(5);
       // Every kept site but the skip-listed one counts as reverted.
-      expect(fileResult.reverted, 5);
-      expect(result.keptCount, 6);
+      check(fileResult.reverted).equals(5);
+      check(result.keptCount).equals(6);
     });
 
     test(
@@ -1054,25 +1044,24 @@ void main() {
 }
 ''');
         final plain = await Sanitizer(dryRun: true).run([file.path]);
-        expect(plain.files, isEmpty);
+        check(plain.files).isEmpty();
 
         final explained = await Sanitizer(
           dryRun: true,
           explain: true,
         ).run([file.path]);
-        expect(explained.files.single.converted, isEmpty);
-        expect(explained.files.single.kept, [
-          '3: Fit.cover kept: no context type',
-        ]);
+        check(explained.files.single.converted).isEmpty();
+        check(explained.files.single.kept)
+            .deepEquals(['3: Fit.cover kept: no context type']);
       },
     );
   });
 
   test('sdkPath returns valid SDK path and caches result', () {
     final path1 = sdkPath();
-    expect(path1, isNotNull);
+    check(path1).isNotNull();
     final path2 = sdkPath();
-    expect(path2, equals(path1));
+    check(path2).equals(path1);
   });
 
   test('SS-1 licensed rebinds convert in new typed-slot positions', () async {
@@ -1111,15 +1100,15 @@ void f(Geo? custom, bool b, Table t, Vec v) {
   print([coalesced, leftCoalesced, list, map, sum]);
 }
 ''');
-    expect(out, contains(': g = .all(1);'));
-    expect(out, contains('futureOrGeo() => .all(2);'));
-    expect(out, contains('yield .all(3);'));
-    expect(out, contains('custom ?? .all(4);'));
-    expect(out, contains('Box.maybe(5) ?? .all(4);'));
-    expect(out, contains('<Geo>[?(b ? .all(6) : null)];'));
-    expect(out, contains("if (b) 'k': .all(7)};"));
-    expect(out, contains('t[.all(8)] = 1;'));
-    expect(out, contains('v + .all(9);'));
+    check(out).contains(': g = .all(1);');
+    check(out).contains('futureOrGeo() => .all(2);');
+    check(out).contains('yield .all(3);');
+    check(out).contains('custom ?? .all(4);');
+    check(out).contains('Box.maybe(5) ?? .all(4);');
+    check(out).contains('<Geo>[?(b ? .all(6) : null)];');
+    check(out).contains("if (b) 'k': .all(7)};");
+    check(out).contains('t[.all(8)] = 1;');
+    check(out).contains('v + .all(9);');
   });
 
   test('extension type parameters are pinned by the receiver', () async {
@@ -1138,9 +1127,9 @@ void main() {
   print(id(Fit.cover));
 }
 ''');
-    expect(out, contains('check(.fill).equals(.cover);'));
-    expect(out, contains('check(.fill).same(Fit.cover);'));
-    expect(out, contains('print(id(Fit.cover));'));
+    check(out).contains('check(.fill).equals(.cover);');
+    check(out).contains('check(.fill).same(Fit.cover);');
+    check(out).contains('print(id(Fit.cover));');
   });
 
   test(
@@ -1161,7 +1150,7 @@ void main() {
   print(v);
 }
 ''');
-      expect(out, contains('v += .zero;'));
+      check(out).contains('v += .zero;');
     },
   );
 
@@ -1185,8 +1174,8 @@ void f(bool c) {
       dryRun: true,
       explain: true,
     ).run([file.path]);
-    expect(result.skippedWithErrors, isEmpty);
-    expect(result.files.single.kept, [
+    check(result.skippedWithErrors).isEmpty();
+    check(result.files.single.kept).deepEquals([
       '9: Fit.cover kept: no context type',
       '10: Box.a kept: no context type',
       '10: Box.b kept: no context type',
@@ -1218,10 +1207,10 @@ void main() {
   print([a, b, c]);
 }
 ''');
-    expect(out, contains('@MyAnnot.instance'));
-    expect(out, contains('final Box a = new Box.all(1);'));
-    expect(out, contains('final Box b = new Box.wrap(.named(2));'));
-    expect(out, contains('final Box c = .\n    all(3);'));
+    check(out).contains('@MyAnnot.instance');
+    check(out).contains('final Box a = new Box.all(1);');
+    check(out).contains('final Box b = new Box.wrap(.named(2));');
+    check(out).contains('final Box c = .\n    all(3);');
   });
 
   test('SS-5 doomed assignment does not poison later promotion', () async {
@@ -1248,10 +1237,10 @@ void inferred() {
   x.boxOnly(Box.only(4));
 }
 ''');
-    expect(out, contains('g = Box.all(2);'));
-    expect(out, contains('g.boxOnly(.only(3));'));
-    expect(out, contains('final x = id(Box.all(2));'));
-    expect(out, contains('x.boxOnly(.only(4));'));
+    check(out).contains('g = Box.all(2);');
+    check(out).contains('g.boxOnly(.only(3));');
+    check(out).contains('final x = id(Box.all(2));');
+    check(out).contains('x.boxOnly(.only(4));');
   });
 
   test(
@@ -1280,12 +1269,10 @@ final sink = Sink(Dep.instance);
 ''');
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
-      expect(
-        out,
-        startsWith("/// Library doc comment.\nimport 'ss6_sink.dart';"),
-      );
-      expect(out, isNot(contains('trailing comment')));
-      expect(out, contains('Sink(.instance)'));
+      check(out)
+          .startsWith("/// Library doc comment.\nimport 'ss6_sink.dart';");
+      check(out).not((it) => it.contains('trailing comment'));
+      check(out).contains('Sink(.instance)');
     },
   );
 
@@ -1319,12 +1306,12 @@ final sink = Sink(Dep.instance);
 ''');
       final result = await Sanitizer(explain: true).run([partFile.path]);
       final out = partFile.readAsStringSync();
-      expect(out, contains('final Fit f = .cover;'));
-      expect(out, contains('final sink = Sink(Dep.instance);'));
+      check(out).contains('final Fit f = .cover;');
+      check(out).contains('final sink = Sink(Dep.instance);');
       const keptReason =
           '3: Dep.instance kept: pruning its orphaned imports would edit '
           'ss7_lib.dart, which is not among the given paths';
-      expect(result.files.single.kept, [keptReason]);
+      check(result.files.single.kept).deepEquals([keptReason]);
     },
   );
 
@@ -1404,12 +1391,12 @@ void main() {
         Process.runSync('dart', ['pub', 'get'], workingDirectory: root.path);
       }
       await Sanitizer().run([libUse.path, testUse.path, itUse.path]);
-      expect(libUse.readAsStringSync(), contains('takeGeo(Box.both(1));'));
-      expect(libUse.readAsStringSync(), contains('takeHost(VftSub.make(2));'));
-      expect(testUse.readAsStringSync(), contains('takeGeo(.both(1));'));
-      expect(testUse.readAsStringSync(), contains('takeHost(.make(2));'));
-      expect(itUse.readAsStringSync(), contains('takeGeo(.vft(1));'));
-      expect(itUse.readAsStringSync(), contains('takeHost(.make(2));'));
+      check(libUse.readAsStringSync()).contains('takeGeo(Box.both(1));');
+      check(libUse.readAsStringSync()).contains('takeHost(VftSub.make(2));');
+      check(testUse.readAsStringSync()).contains('takeGeo(.both(1));');
+      check(testUse.readAsStringSync()).contains('takeHost(.make(2));');
+      check(itUse.readAsStringSync()).contains('takeGeo(.vft(1));');
+      check(itUse.readAsStringSync()).contains('takeHost(.make(2));');
     },
   );
 
@@ -1450,9 +1437,9 @@ Fit f() => Fit.cover;
     // The nested package obeys only its own options, unlike `dart analyze`:
     // the parent's example/** excludes nothing there.
     final result = await Sanitizer().run([root.path]);
-    expect(result.excluded, isEmpty);
-    expect(result.skippedUnconfigured, isEmpty);
-    expect(exFile.readAsStringSync(), contains('=> .cover;'));
+    check(result.excluded).isEmpty();
+    check(result.skippedUnconfigured).isEmpty();
+    check(exFile.readAsStringSync()).contains('=> .cover;');
   });
 
   test(
@@ -1464,7 +1451,7 @@ Fit f() => Fit.cover;
         return f.path;
       }
 
-      expect(
+      check(
         Sanitizer.isGenerated(
           write(
             'ss11_code.dart',
@@ -1472,22 +1459,20 @@ Fit f() => Fit.cover;
                 '// GENERATED CODE - DO NOT MODIFY\n',
           ),
         ),
-        isFalse,
-      );
-      expect(
+      ).isFalse();
+      check(
         Sanitizer.isGenerated(
           write('ss11_gen.dart', '/* GENERATED CODE - DO NOT MODIFY */\n'),
         ),
-        isTrue,
-      );
+      ).isTrue();
     },
   );
 
   test('SS-I3 Sanitizer takes skip entries as given', () async {
-    expect(
-      () => Sanitizer(skips: {' Fit.cover , contain '}),
-      throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'skips')),
-    );
+    check(() => Sanitizer(skips: {' Fit.cover , contain '}))
+        .throws<ArgumentError>()
+        .has((e) => e.name, 'name')
+        .equals('skips');
     final out = await sanitize(
       '''
 enum Fit { cover, contain, fill }
@@ -1500,9 +1485,9 @@ void main() {
 ''',
       skips: {'Fit.cover', 'contain'},
     );
-    expect(out, contains('final Fit a = Fit.cover;'));
-    expect(out, contains('final Fit b = Fit.contain;'));
-    expect(out, contains('final Fit c = .fill;'));
+    check(out).contains('final Fit a = Fit.cover;');
+    check(out).contains('final Fit b = Fit.contain;');
+    check(out).contains('final Fit c = .fill;');
   });
 
   test(
@@ -1519,7 +1504,7 @@ class Box implements Geo {
 void take(Geo g) {}
 void main() => take(Box.pair(1));
 ''');
-      expect(out, contains('take(.pair(1))'));
+      check(out).contains('take(.pair(1))');
     },
   );
 
@@ -1548,11 +1533,10 @@ final sink = Sink(Dep.instance);
 ''');
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
-      expect(
+      check(
         out,
-        startsWith("// ignore_for_file: avoid_print\nimport 'ig_sink.dart';"),
-      );
-      expect(out, contains('Sink(.instance)'));
+      ).startsWith("// ignore_for_file: avoid_print\nimport 'ig_sink.dart';");
+      check(out).contains('Sink(.instance)');
     },
   );
 
@@ -1585,14 +1569,10 @@ enum Fit2 { cover, fill }
 Fit2 f2() => Mode2.fill;
 ''');
       await Sanitizer().run([docFile.path, annotFile.path]);
-      expect(
-        docFile.readAsStringSync(),
-        startsWith('/// Library-level notes.\nlibrary;\n\nenum Fit'),
-      );
-      expect(
-        annotFile.readAsStringSync(),
-        startsWith("@Deprecated('lib')\nlibrary;\n\nenum Fit2"),
-      );
+      check(docFile.readAsStringSync())
+          .startsWith('/// Library-level notes.\nlibrary;\n\nenum Fit');
+      check(annotFile.readAsStringSync())
+          .startsWith("@Deprecated('lib')\nlibrary;\n\nenum Fit2");
     },
   );
 
@@ -1620,9 +1600,9 @@ $calls
 }
 ''');
       sw.stop();
-      expect(out, contains('takeFit(.cover);'));
-      expect(out, contains('take(Sub.a);'));
-      expect(sw.elapsedMilliseconds, lessThan(5000));
+      check(out).contains('takeFit(.cover);');
+      check(out).contains('take(Sub.a);');
+      check(sw.elapsedMilliseconds).isLessThan(5000);
     },
   );
 }

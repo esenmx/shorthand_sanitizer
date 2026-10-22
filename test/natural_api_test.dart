@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
@@ -74,14 +75,14 @@ void main() {
         '--format=json',
         p.join(dir.path, 'lib'),
       ]);
-      expect(run.exitCode, 65, reason: '${run.stderr}');
+      check(because: '${run.stderr}', run.exitCode).equals(65);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
-      expect(report['skippedWithErrors'], [bad]);
-      expect(report['skippedBelowFloor'], isEmpty);
-      expect(report['skippedUnconfigured'], isEmpty);
-      expect(report['skippedOrphanParts'], isEmpty);
-      expect(report['unreadableDirectories'], isEmpty);
-      expect(report['writeFailures'], isEmpty);
+      check(report['skippedWithErrors']).isA<List<Object?>>().deepEquals([bad]);
+      check(report['skippedBelowFloor']).isA<List<Object?>>().isEmpty();
+      check(report['skippedUnconfigured']).isA<List<Object?>>().isEmpty();
+      check(report['skippedOrphanParts']).isA<List<Object?>>().isEmpty();
+      check(report['unreadableDirectories']).isA<List<Object?>>().isEmpty();
+      check(report['writeFailures']).isA<List<Object?>>().isEmpty();
     });
 
     test('a package below the language floor exits 65 without the gate', () {
@@ -90,9 +91,9 @@ void main() {
         'lib/a.dart': convertible,
       });
       final run = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);
-      expect(run.exitCode, 65, reason: '${run.stderr}');
+      check(because: '${run.stderr}', run.exitCode).equals(65);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
-      expect(report['skippedBelowFloor'], [
+      check(report['skippedBelowFloor']).isA<List<Object?>>().deepEquals([
         {'root': canonical(dir.path), 'version': '3.0', 'files': 1},
       ]);
     });
@@ -106,15 +107,15 @@ void main() {
       Process.runSync('chmod', ['444', a.path]);
       addTearDown(() => Process.runSync('chmod', ['644', a.path]));
       final run = dotsan(['--format=json', p.join(dir.path, 'lib')]);
-      expect(run.exitCode, 74, reason: '${run.stderr}');
+      check(because: '${run.stderr}', run.exitCode).equals(74);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
-      expect(report['writeFailures'], [
-        {
-          'file': canonical(a.path),
-          'path': canonical(a.path),
-          'error': isA<String>(),
-        },
-      ]);
+      check(report['writeFailures'])
+          .isA<List<Object?>>()
+          .single
+          .isA<Map<String, Object?>>()
+        ..['file'].equals(canonical(a.path))
+        ..['path'].equals(canonical(a.path))
+        ..['error'].isA<String>();
     }, testOn: '!windows');
   });
 
@@ -125,10 +126,8 @@ void main() {
             '/// Helpers for reading generated code from protoc.\n'
             'library;\n\n$convertible',
       }, pubGet: false);
-      expect(
-        Sanitizer.isGenerated(p.join(dir.path, 'lib', 'doc_gen.dart')),
-        isFalse,
-      );
+      check(Sanitizer.isGenerated(p.join(dir.path, 'lib', 'doc_gen.dart')))
+          .isFalse();
     });
 
     test('a doc banner that opens with the marker still counts (slang)', () {
@@ -137,10 +136,8 @@ void main() {
             '/// Generated file. Do not edit.\n///\n/// Source: lib/i18n\n'
             '// ignore_for_file: type=lint\n$convertible',
       }, pubGet: false);
-      expect(
-        Sanitizer.isGenerated(p.join(dir.path, 'lib', 'strings.g.dart')),
-        isTrue,
-      );
+      check(Sanitizer.isGenerated(p.join(dir.path, 'lib', 'strings.g.dart')))
+          .isTrue();
     });
 
     test('generated skips are counted on stderr and listed with -e', () {
@@ -151,19 +148,17 @@ void main() {
       });
       final gen = canonical(p.join(dir.path, 'lib', 'a.g.dart'));
       final plain = dotsan(['-n', p.join(dir.path, 'lib')]);
-      expect(plain.exitCode, 0, reason: '${plain.stderr}');
-      expect(
-        plain.stderr,
-        contains('skipped 1 generated file(s) (--include-generated'),
-      );
-      expect(plain.stderr, isNot(contains(gen)));
+      check(because: '${plain.stderr}', plain.exitCode).equals(0);
+      check(plain.stderr as String)
+          .contains('skipped 1 generated file(s) (--include-generated');
+      check(plain.stderr as String).not((it) => it.contains(gen));
 
       final explained = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
-      expect(explained.stderr, contains('  $gen\n'));
+      check(explained.stderr as String).contains('  $gen\n');
 
       final json = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);
       final report = jsonDecode(json.stdout as String) as Map<String, Object?>;
-      expect(report['skippedGenerated'], [gen]);
+      check(report['skippedGenerated']).isA<List<Object?>>().deepEquals([gen]);
     });
 
     test('a file named on the command line and skipped says so', () {
@@ -173,11 +168,9 @@ void main() {
       });
       final gen = p.join(dir.path, 'lib', 'a.g.dart');
       final run = dotsan(['-n', gen]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stderr,
-        contains('warning: skipped ${canonical(gen)}: generated'),
-      );
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stderr as String)
+          .contains('warning: skipped ${canonical(gen)}: generated');
     });
   });
 
@@ -187,10 +180,9 @@ void main() {
       'build/out.dart': convertible,
     });
     final result = await Sanitizer(dryRun: true).run([dir.path]);
-    expect(
-      [for (final f in result.files) f.path],
-      [canonical(p.join(dir.path, 'lib', 'src', 'build', 'config.dart'))],
-    );
+    check([for (final f in result.files) f.path]).deepEquals([
+      canonical(p.join(dir.path, 'lib', 'src', 'build', 'config.dart')),
+    ]);
   });
 
   test('AU-4 an orphan part file is listed as skipped', () async {
@@ -199,11 +191,11 @@ void main() {
     });
     final part = canonical(p.join(dir.path, 'lib', 'orph', 'p.dart'));
     final result = await Sanitizer(dryRun: true).run([p.join(dir.path, 'lib')]);
-    expect(result.skippedOrphanParts, [part]);
+    check(result.skippedOrphanParts).deepEquals([part]);
 
     final run = dotsan(['-n', p.join(dir.path, 'lib')]);
-    expect(run.exitCode, 65, reason: '${run.stderr}');
-    expect(run.stderr, contains(part));
+    check(because: '${run.stderr}', run.exitCode).equals(65);
+    check(run.stderr as String).contains(part);
   });
 
   test('AU-5 an unreadable directory is a warning and fails the run', () async {
@@ -215,22 +207,23 @@ void main() {
     Process.runSync('chmod', ['000', locked]);
     addTearDown(() => Process.runSync('chmod', ['755', locked]));
     final result = await Sanitizer(dryRun: true).run([p.join(dir.path, 'lib')]);
-    expect(
-      [for (final d in result.unreadableDirectories) d.path],
-      [canonical(locked)],
-    );
+    check([for (final d in result.unreadableDirectories) d.path])
+        .deepEquals([canonical(locked)]);
 
     final run = dotsan(['-n', p.join(dir.path, 'lib')]);
-    expect(run.exitCode, 65, reason: '${run.stderr}');
-    expect(run.stderr, contains('could not read ${canonical(locked)}'));
+    check(because: '${run.stderr}', run.exitCode).equals(65);
+    check(run.stderr as String).contains('could not read ${canonical(locked)}');
   }, testOn: '!windows');
 
   group('AU-6 skip entries', () {
     test('a malformed --skip entry is a usage error', () {
       for (final entry in ['.cover', 'Fit.', 'a..b', 'Fit cover']) {
         final run = dotsan(['-n', '--skip=$entry', 'lib']);
-        expect(run.exitCode, 64, reason: 'entry "$entry": ${run.stderr}');
-        expect(run.stderr, contains('invalid --skip entry'));
+        check(
+          because: 'entry "$entry": ${run.stderr}',
+          run.exitCode,
+        ).equals(64);
+        check(run.stderr as String).contains('invalid --skip entry');
       }
     });
 
@@ -241,34 +234,31 @@ void main() {
         '--skip=Fit.cover, Fit.contain',
         p.join(dir.path, 'lib'),
       ]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(run.stdout, contains('would convert 0 site(s)'));
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String).contains('would convert 0 site(s)');
     });
 
     test('a --skip entry that matched no site is reported', () async {
       final dir = fixture('au6_typo', {'lib/a.dart': convertible});
       final run = dotsan(['-n', '--skip=Fit.covr', p.join(dir.path, 'lib')]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stderr,
-        contains('warning: --skip entry "Fit.covr" matched no site'),
-      );
-      expect(run.stdout, contains('would convert 1 site(s)'));
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stderr as String)
+          .contains('warning: --skip entry "Fit.covr" matched no site');
+      check(run.stdout as String).contains('would convert 1 site(s)');
 
       final result = await Sanitizer(
         skips: {'Fit.covr', 'Fit.cover'},
         dryRun: true,
       ).run([p.join(dir.path, 'lib')]);
-      expect(result.unmatchedSkips, {'Fit.covr'});
+      check(result.unmatchedSkips).deepEquals({'Fit.covr'});
     });
 
     test('the library takes skips as given and rejects malformed ones', () {
       for (final entry in ['Fit.cover,Fit.contain', ' Fit.cover', '']) {
-        expect(
+        check(
+          because: 'entry "$entry"',
           () => Sanitizer(skips: {entry}),
-          throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'skips')),
-          reason: 'entry "$entry"',
-        );
+        ).throws<ArgumentError>().has((e) => e.name, 'name').equals('skips');
       }
     });
   });
@@ -281,11 +271,9 @@ void main() {
         '--exclude=lib/aa.dart',
         p.join(dir.path, 'lib'),
       ]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stderr,
-        contains('warning: --exclude "lib/aa.dart" matched no file'),
-      );
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stderr as String)
+          .contains('warning: --exclude "lib/aa.dart" matched no file');
     });
 
     test(
@@ -298,21 +286,20 @@ void main() {
           '--exclude=lib/a.dart',
           a,
         ], cwd: dir.parent.path);
-        expect(missed.exitCode, 0, reason: '${missed.stderr}');
-        expect(missed.stdout, contains('would convert 1 site(s)'));
-        expect(
-          missed.stderr,
-          contains(
-            'warning: --exclude "lib/a.dart" matched no file (a glob with a / '
-            'is relative to the working directory',
-          ),
+        check(because: '${missed.stderr}', missed.exitCode).equals(0);
+        check(missed.stdout as String).contains('would convert 1 site(s)');
+        check(missed.stderr as String).contains(
+          'warning: --exclude "lib/a.dart" matched no file (a glob with a / '
+          'is relative to the working directory',
         );
 
         final glob = p.posix.join(p.basename(dir.path), 'lib', 'a.dart');
         final hit = dotsan(['-n', '--exclude=$glob', a], cwd: dir.parent.path);
-        expect(hit.exitCode, 0, reason: '${hit.stderr}');
-        expect(hit.stdout, 'would convert 0 site(s) in 0 file(s)\n');
-        expect(hit.stderr, contains('warning: skipped $a: matches --exclude'));
+        check(because: '${hit.stderr}', hit.exitCode).equals(0);
+        check(hit.stdout as String)
+            .equals('would convert 0 site(s) in 0 file(s)\n');
+        check(hit.stderr as String)
+            .contains('warning: skipped $a: matches --exclude');
       },
     );
   });
@@ -322,16 +309,16 @@ void main() {
       ['-n', 'lib'],
       environment: {...Platform.environment, 'DART_SDK': '/nonexistent/sdk'},
     );
-    expect(run.exitCode, 69, reason: '${run.stderr}');
-    expect(run.stderr, contains('DART_SDK'));
-    expect(run.stderr, contains('/nonexistent/sdk'));
+    check(because: '${run.stderr}', run.exitCode).equals(69);
+    check(run.stderr as String).contains('DART_SDK');
+    check(run.stderr as String).contains('/nonexistent/sdk');
   });
 
   test('AU-8 --explain names the Dart SDK it analyzes with', () {
     final dir = fixture('au8_sdk', {'lib/a.dart': convertible});
     final run = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
-    expect(run.exitCode, 0, reason: '${run.stderr}');
-    expect(run.stderr, contains('Dart SDK ${sdkPath()}'));
+    check(because: '${run.stderr}', run.exitCode).equals(0);
+    check(run.stderr as String).contains('Dart SDK ${sdkPath()}');
   });
 
   test('AU-9 a dry run predicts the prunes of the write', () async {
@@ -346,9 +333,9 @@ void main() {
     final dry = await Sanitizer(dryRun: true)
         .run([p.join(make().path, 'lib', 'lp')]);
     final wet = await Sanitizer().run([p.join(make().path, 'lib', 'lp')]);
-    expect(dry.convertedCount, wet.convertedCount);
-    expect(dry.removedImportCount, wet.removedImportCount);
-    expect(wet.removedImportCount, 1);
+    check(dry.convertedCount).equals(wet.convertedCount);
+    check(dry.removedImportCount).equals(wet.removedImportCount);
+    check(wet.removedImportCount).equals(1);
   });
 
   group('AU-10 every pruned import is reported where it was pruned', () {
@@ -363,9 +350,8 @@ void main() {
     test('in text, beside the conversions of the same file', () {
       final dir = make();
       final run = dotsan(['-n', p.join(dir.path, 'lib', 'h.dart')]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stdout,
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String).equals(
         '${canonical(p.join(dir.path, 'lib', 'h.dart'))}\n'
         '  3: Fit.fill -> .fill\n'
         "  1: import 'fit.dart' -> removed, with its trailing comment "
@@ -383,16 +369,21 @@ void main() {
         p.join(dir.path, 'lib', 'h.dart'),
       ]);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
-      final file = (report['files']! as List).single as Map<String, Object?>;
-      expect(file['prunedImports'], [
-        {
-          'line': 1,
-          'uri': 'fit.dart',
-          'replacement': null,
-          'deletedComment': '// keep: needed until the v2 migration lands',
-          'keptComment': null,
-        },
-      ]);
+      check(report['files'])
+          .isA<List<Object?>>()
+          .single
+          .isA<Map<String, Object?>>()
+          .has((f) => f['prunedImports'], 'prunedImports')
+          .isA<List<Object?>>()
+          .deepEquals([
+            {
+              'line': 1,
+              'uri': 'fit.dart',
+              'replacement': null,
+              'deletedComment': '// keep: needed until the v2 migration lands',
+              'keptComment': null,
+            },
+          ]);
     });
 
     test('an emitted library; and a kept ignore_for_file are reported', () {
@@ -414,17 +405,12 @@ void main() {
         p.join(dir.path, 'lib', 'doc.dart'),
         p.join(dir.path, 'lib', 'ig.dart'),
       ]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stdout,
-        contains("  2: import 'doc_aliases.dart' -> library;\n"),
-      );
-      expect(
-        run.stdout,
-        contains(
-          "  1: import 'fit.dart' -> removed, keeping its trailing comment "
-          '// ignore_for_file: avoid_print on the line\n',
-        ),
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String)
+          .contains("  2: import 'doc_aliases.dart' -> library;\n");
+      check(run.stdout as String).contains(
+        "  1: import 'fit.dart' -> removed, keeping its trailing comment "
+        '// ignore_for_file: avoid_print on the line\n',
       );
     });
   });
@@ -440,10 +426,8 @@ void main() {
       final dir = make();
       final result = await Sanitizer(dryRun: true)
           .run([p.join(dir.path, 'lib')]);
-      expect(
-        [for (final f in result.files) f.path],
-        [canonical(p.join(dir.path, 'lib', 'a.dart'))],
-      );
+      check([for (final f in result.files) f.path])
+          .deepEquals([canonical(p.join(dir.path, 'lib', 'a.dart'))]);
     });
 
     test('--no-analyzer-excludes processes them', () {
@@ -453,8 +437,9 @@ void main() {
         '--no-analyzer-excludes',
         p.join(dir.path, 'lib'),
       ]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(run.stdout, contains('would convert 2 site(s) in 2 file(s)'));
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String)
+          .contains('would convert 2 site(s) in 2 file(s)');
     });
 
     Directory nested(Map<String, String> exampleFiles) {
@@ -477,11 +462,10 @@ void main() {
       () async {
         final dir = nested({'example/lib/main.dart': convertible});
         final result = await Sanitizer(dryRun: true).run([dir.path]);
-        expect(result.excluded, isEmpty);
-        expect(
-          [for (final f in result.files) f.path],
-          [canonical(p.join(dir.path, 'example', 'lib', 'main.dart'))],
-        );
+        check(result.excluded).isEmpty();
+        check([for (final f in result.files) f.path]).deepEquals([
+          canonical(p.join(dir.path, 'example', 'lib', 'main.dart')),
+        ]);
       },
     );
 
@@ -493,25 +477,21 @@ void main() {
         'example/lib/legacy/old.dart': convertible,
       });
       final result = await Sanitizer(dryRun: true).run([dir.path]);
-      expect(
-        [for (final e in result.excluded) e.path],
-        [canonical(p.join(dir.path, 'example', 'lib', 'legacy', 'old.dart'))],
-      );
-      expect(
-        [for (final f in result.files) f.path],
-        [canonical(p.join(dir.path, 'example', 'lib', 'a.dart'))],
-      );
+      check([for (final e in result.excluded) e.path]).deepEquals([
+        canonical(p.join(dir.path, 'example', 'lib', 'legacy', 'old.dart')),
+      ]);
+      check([
+        for (final f in result.files) f.path,
+      ]).deepEquals([canonical(p.join(dir.path, 'example', 'lib', 'a.dart'))]);
     });
 
     test('a named file they exclude is a warning', () {
       final dir = make();
       final old = p.join(dir.path, 'lib', 'legacy', 'old.dart');
       final run = dotsan(['-n', old]);
-      expect(run.exitCode, 0, reason: '${run.stderr}');
-      expect(
-        run.stderr,
-        contains('warning: skipped ${canonical(old)}: excluded by'),
-      );
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stderr as String)
+          .contains('warning: skipped ${canonical(old)}: excluded by');
     });
   });
 }
