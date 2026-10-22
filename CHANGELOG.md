@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Default path discovery now expands Pub workspace `workspace:` members from the
+  root `pubspec.yaml` when `dotsan` is run with no path arguments at a workspace
+  root.
+- Shorthand conversion and licensed-rebind support in `RecordLiteral` positional
+  and named fields, `ConstantPattern` and `RelationalPattern` expressions,
+  `WhenClause` guards, `AssertInitializer` and `AssertStatement` arguments,
+  `factory` constructor bodies, closure (`FunctionExpression`) bodies,
+  non-promotable setter/cascade assignments (`=`, `??=`), and `??` left-hand
+  operands (`a ?? b` propagates its context type to `a` as `T?`).
+- Static getter/field selector chains whose intermediate access returns the same
+  interface type (`Box.a.self`) now convert at the chain root (`.a.self`).
+
+### Fixed
+
+- When a shorthand conversion orphans a single identifier in an `import ... show
+  A, B;` combinator (`unused_shown_name`), the unused shown name is silently
+  pruned (`import ... show A;`) instead of refusing the conversion or bisecting
+  the file's candidates.
+- Prefix tokens separated from `.member` by an interior comment
+  (`Foo /* why */ .bar`) stay prefixed so the comment is never silently deleted.
+- Out-of-scope libraries encountered while checking `analyzer: exclude:` no
+  longer throw from `contextFor` when they lie outside the discovered analysis
+  contexts.
+- Recovery grouping now groups candidates by their enclosing statement inside a
+  function body rather than collapsing the entire function or class body into a
+  single group.
+- Upfront static pre-check now filters `@useResult` targets and unlicensed
+  cross-class rebinds before any speculative analyzer resolve, and reads
+  generated-file headers in 4 KiB chunks instead of loading entire files.
+
 ## 0.11.1 - 2026-10-16
 
 ### Fixed

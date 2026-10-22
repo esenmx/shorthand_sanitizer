@@ -4,6 +4,7 @@
 // tracked `.dart` files (they carry deliberate errors and nested pubspecs).
 import 'dart:io';
 
+import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
@@ -79,13 +80,16 @@ void e2e(
           p.join(root.path, dir),
     ]);
 
-    expect(result.skippedWithErrors, isEmpty, reason: 'fixture has errors');
+    check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
 
     final surplus = _diagnostics(root);
     diagnosticsBefore.forEach(surplus.remove);
-    expect(surplus, isEmpty, reason: 'new diagnostics:\n${surplus.join('\n')}');
-    expect(_run(root), runBefore);
-    if (converted != null) expect(result.convertedCount, converted);
+    check(
+      because: 'new diagnostics:\n${surplus.join('\n')}',
+      surplus,
+    ).isEmpty();
+    check(_run(root)).equals(runBefore);
+    if (converted != null) check(result.convertedCount).equals(converted);
   }, timeout: const Timeout(Duration(minutes: 3)));
 }
 

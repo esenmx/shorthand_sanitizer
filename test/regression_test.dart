@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
@@ -41,7 +42,7 @@ Future<String> sanitize(
   ).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
-  expect(result.skippedWithErrors, isEmpty, reason: 'fixture has errors');
+  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
   return file.readAsStringSync();
 }
 
@@ -127,8 +128,8 @@ typedef IntList = List<int>;
 final G<num> g = IntG.of(1);
 final List<num> l = IntList.filled(1, 0);
 ''');
-    expect(out, contains('IntG.of(1)'));
-    expect(out, contains('IntList.filled(1, 0)'));
+    check(out).contains('IntG.of(1)');
+    check(out).contains('IntList.filled(1, 0)');
   });
 
   test('SS-B2 licensed rebind must not change a cascade target type', () async {
@@ -138,8 +139,8 @@ import 'geo.dart';
 final Geo a = Box.all(1)..tag();
 final Geo b = Box.zero..tag();
 ''');
-    expect(out, contains('Box.all(1)..tag()'));
-    expect(out, contains('Box.zero..tag()'));
+    check(out).contains('Box.all(1)..tag()');
+    check(out).contains('Box.zero..tag()');
   });
 
   test('SS-B2 licensed rebind must not drop assignment promotion', () async {
@@ -152,7 +153,7 @@ String f() {
   return g.tag(); // BoxTag before, GeoTag after the rewrite
 }
 ''');
-    expect(out, contains('g = Box.all(2);'));
+    check(out).contains('g = Box.all(2);');
   });
 
   test('SS-B3 a new error matching a baseline message is not masked', () async {
@@ -164,7 +165,7 @@ import 'geo.dart';
 void pre(Geo g) => g.boxOnly(); // pre-existing error, same message
 final Geo fresh = Box.all(1)..boxOnly();
 ''', allowErrors: true);
-    expect(out, contains('Box.all(1)..boxOnly()'));
+    check(out).contains('Box.all(1)..boxOnly()');
   });
 
   test('SS-B4 package below 3.10 without package_config is skipped', () async {
@@ -181,8 +182,9 @@ void run() => take(Fit.cover);
 ''';
     final file = write(old, 'lib/a.dart', source);
     final result = await Sanitizer().run([file.path]);
-    expect(file.readAsStringSync(), source);
-    expect(result.skippedUnconfigured, {p.normalize(p.absolute(old.path)): 1});
+    check(file.readAsStringSync()).equals(source);
+    check(result.skippedUnconfigured)
+        .deepEquals({p.normalize(p.absolute(old.path)): 1});
   });
 
   test(
@@ -215,10 +217,10 @@ void run() => take(Fit.cover);
       File(p.join(outer.path, 'example', 'pubspec.lock')).deleteSync();
 
       final result = await Sanitizer().run([outer.path]);
-      expect(main.readAsStringSync(), source);
-      expect(result.skippedUnconfigured, {
-        p.normalize(p.absolute(p.join(outer.path, 'example'))): 1,
-      });
+      check(main.readAsStringSync()).equals(source);
+      check(
+        result.skippedUnconfigured,
+      ).deepEquals({p.normalize(p.absolute(p.join(outer.path, 'example'))): 1});
     },
   );
 
@@ -240,8 +242,9 @@ void run() => take(Fit.cover);
       "part of 'po_lib.dart';\nvoid run() => take(Fit.cover);\n",
     );
     await Sanitizer().run([lib.path, part.path]);
-    expect(part.readAsStringSync(), contains('take(.cover)'));
-    expect(analyze(pkg, 'po_lib.dart'), isNot(contains('UNUSED_IMPORT')));
+    check(part.readAsStringSync()).contains('take(.cover)');
+    check(analyze(pkg, 'po_lib.dart'))
+        .not((it) => it.contains('UNUSED_IMPORT'));
   });
 
   test('SS-B6 a rebind onto a @Deprecated alias stays prefixed', () async {
@@ -278,7 +281,8 @@ void run() {
 }
 ''');
     await Sanitizer().run([file.path]);
-    expect(analyze(app, 'use.dart'), isNot(contains('DEPRECATED_MEMBER_USE')));
+    check(analyze(app, 'use.dart'))
+        .not((it) => it.contains('DEPRECATED_MEMBER_USE'));
   });
 
   test("SS-S4 a library sees its part's earlier write", () async {
@@ -300,9 +304,10 @@ void run() {
           'void own() => take(Fit.contain);\n',
     );
     await Sanitizer().run([part.path, lib.path]);
-    expect(part.readAsStringSync(), contains('take(.cover)'));
-    expect(lib.readAsStringSync(), contains('take(.contain)'));
-    expect(analyze(pkg, 'z_s4_lib.dart'), isNot(contains('UNUSED_IMPORT')));
+    check(part.readAsStringSync()).contains('take(.cover)');
+    check(lib.readAsStringSync()).contains('take(.contain)');
+    check(analyze(pkg, 'z_s4_lib.dart'))
+        .not((it) => it.contains('UNUSED_IMPORT'));
   });
 
   test(
@@ -323,9 +328,9 @@ void c() => take(Mode.cover);
 ''',
         skips: {'Fit.cover'},
       );
-      expect(out, contains('take(Fit.cover)'));
-      expect(out, contains('m.Fit.cover'));
-      expect(out, contains('Mode.cover'));
+      check(out).contains('take(Fit.cover)');
+      check(out).contains('m.Fit.cover');
+      check(out).contains('Mode.cover');
     },
   );
 
@@ -345,12 +350,12 @@ void c() => take(Mode.cover);
     final deep = write(
       pkg,
       'lib/late.g.dart',
-      '${'// Licensed under the Apache License, Version 2.0.\n' * 40}'
+      '${'// Licensed under the Apache License, Version 2.0.\n' * 120}'
           '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
     );
-    expect(Sanitizer.isGenerated(bom.path), isTrue);
-    expect(Sanitizer.isGenerated(block.path), isTrue);
-    expect(Sanitizer.isGenerated(deep.path), isTrue);
+    check(Sanitizer.isGenerated(bom.path)).isTrue();
+    check(Sanitizer.isGenerated(block.path)).isTrue();
+    check(Sanitizer.isGenerated(deep.path)).isTrue();
   });
 
   test('SS-B8 a rewrite keeps the UTF-8 BOM and CRLF line endings', () async {
@@ -366,9 +371,8 @@ void c() => take(Mode.cover);
       ]);
     await Sanitizer().run([file.path]);
     final bytes = file.readAsBytesSync();
-    expect(bytes.take(3), [0xEF, 0xBB, 0xBF]);
-    expect(
-      utf8.decode(bytes.skip(3).toList()),
+    check(bytes.take(3)).deepEquals([0xEF, 0xBB, 0xBF]);
+    check(utf8.decode(bytes.skip(3).toList())).equals(
       'enum Fit { cover, contain }\r\nvoid t(Fit f) {}\r\n'
       'void r() => t(.cover);\r\n',
     );
@@ -383,8 +387,8 @@ void r() => t(Fit.cover);
 ''');
     final result = await Sanitizer(dryRun: true)
         .run([dir.path, dir.path, '${dir.path}/.']);
-    expect(result.convertedCount, 1);
-    expect(result.files, hasLength(1));
+    check(result.convertedCount).equals(1);
+    check(result.files).length.equals(1);
   });
 
   test('SS-S3 a library with analysis errors is skipped by default', () async {
@@ -393,11 +397,12 @@ void r() => t(Fit.cover);
         "int bad = '';\n";
     final file = write(pkg, 'lib/s3_errors.dart', source);
     final result = await Sanitizer().run([file.path]);
-    expect(file.readAsStringSync(), source);
-    expect(result.skippedWithErrors, [p.normalize(p.absolute(file.path))]);
+    check(file.readAsStringSync()).equals(source);
+    check(result.skippedWithErrors)
+        .deepEquals([p.normalize(p.absolute(file.path))]);
 
     await Sanitizer(allowErrors: true).run([file.path]);
-    expect(file.readAsStringSync(), contains('t(.cover)'));
+    check(file.readAsStringSync()).contains('t(.cover)');
   });
 
   test('SS-R1 two same-named classes are different static types', () async {
@@ -423,9 +428,8 @@ final G<b.X> g = AG.of(const a.X());
       dryRun: true,
       explain: true,
     ).run([file.path]);
-    expect(result.convertedCount, 0);
-    expect(
-      result.files.single.kept.single,
+    check(result.convertedCount).equals(0);
+    check(result.files.single.kept.single).equals(
       '5: AG.of kept: changes the static type from G<X> to a different G<X>',
     );
   });
@@ -456,7 +460,7 @@ void run() {
       dryRun: true,
       explain: true,
     ).run([file.path]);
-    expect(result.files.single.kept, [
+    check(result.files.single.kept).deepEquals([
       '4: Box.all kept: rebinds to Geo.all, which is @visibleForTesting',
       '5: Box.zero kept: rebinds to Geo.zero, which is @visibleForTesting',
     ]);
@@ -482,11 +486,10 @@ void run() {
           excludes: [if (excluded) '${tag}_lib.dart'],
           explain: true,
         ).run([if (!onlyPart) lib.path, part.path]);
-        expect(lib.readAsStringSync(), libBefore);
-        expect(part.readAsStringSync(), partBefore);
-        expect(
-          result.files.single.kept,
-          everyElement(endsWith('would edit ${tag}_lib.dart, which is $why')),
+        check(lib.readAsStringSync()).equals(libBefore);
+        check(part.readAsStringSync()).equals(partBefore);
+        check(result.files.single.kept).every(
+          (it) => it.endsWith('would edit ${tag}_lib.dart, which is $why'),
         );
       });
     }
@@ -494,14 +497,12 @@ void run() {
     test('reports every file it writes', () async {
       final (lib, part) = partPrune('r3w');
       final result = await Sanitizer(dryRun: true).run([lib.path, part.path]);
-      expect(
-        {for (final f in result.files) f.path: f.removedImports},
-        {
-          p.normalize(p.absolute(part.path)): 0,
-          p.normalize(p.absolute(lib.path)): 2,
-        },
-      );
-      expect(result.convertedCount, 2);
+      check({for (final f in result.files) f.path: f.removedImports})
+          .deepEquals({
+            p.normalize(p.absolute(part.path)): 0,
+            p.normalize(p.absolute(lib.path)): 2,
+          });
+      check(result.convertedCount).equals(2);
     });
   });
 
@@ -513,10 +514,11 @@ void run() {
     addTearDown(() => Process.runSync('chmod', ['644', lib.path]));
 
     final result = await Sanitizer().run([lib.path, part.path]);
-    expect(part.readAsStringSync(), partBefore);
-    expect(lib.readAsStringSync(), libBefore);
-    expect(result.convertedCount, 0);
-    expect(result.writeFailures.single.path, p.normalize(p.absolute(lib.path)));
+    check(part.readAsStringSync()).equals(partBefore);
+    check(lib.readAsStringSync()).equals(libBefore);
+    check(result.convertedCount).equals(0);
+    check(result.writeFailures.single.path)
+        .equals(p.normalize(p.absolute(lib.path)));
   }, testOn: '!windows');
 
   test(
@@ -535,7 +537,7 @@ import 'r5_sink.dart';
 
 void run() => takeMode(Mode.a);
 ''');
-      expect(out, '''
+      check(out).equals('''
 import 'r5_fit.dart' as keep_me;
 import 'r5_sink.dart';
 
@@ -553,7 +555,7 @@ void run() => takeMode(.a);
       final link = Link(p.join(alias.path, 'pkg'))..createSync(pkg.path);
       final result = await Sanitizer(dryRun: true)
           .run([p.join(link.path, 'lib', p.basename(lib.path)), part.path]);
-      expect(result.convertedCount, 2);
+      check(result.convertedCount).equals(2);
     },
     testOn: '!windows',
   );
@@ -590,14 +592,11 @@ void run() => takeMode(.a);
         final own = result.files.singleWhere(
           (f) => p.basename(f.path) == p.basename(lib.path),
         );
-        expect(own.converted, ['6: Mode.on -> .on']);
-        expect(
-          [for (final i in own.prunedImports) i.description],
-          [
-            "1: import '${tag}_fit.dart' -> removed",
-            "3: import '${tag}_mode.dart' -> removed",
-          ],
-        );
+        check(own.converted).deepEquals(['6: Mode.on -> .on']);
+        check([for (final i in own.prunedImports) i.description]).deepEquals([
+          "1: import '${tag}_fit.dart' -> removed",
+          "3: import '${tag}_mode.dart' -> removed",
+        ]);
       });
     }
   });
@@ -652,19 +651,14 @@ void run() => takeMode(.a);
         final own = result.files.singleWhere(
           (f) => p.basename(f.path) == p.basename(lib.path),
         );
-        expect(
-          [for (final s in own.sites) (s.line, s.column, s.before)],
-          [(11, 19, 'Mode.on'), (12, 11, 'Keep.k')],
-        );
-        expect(own.kept, ['12: Keep.k kept: no context type']);
-        expect(
-          [for (final i in own.prunedImports) i.description],
-          [
-            "2: import '$fit' -> removed",
-            "4: import '${tag}_mode.dart' -> removed",
-            "6: import '${tag}_tone.dart' -> removed",
-          ],
-        );
+        check([for (final s in own.sites) (s.line, s.column, s.before)])
+            .deepEquals([(11, 19, 'Mode.on'), (12, 11, 'Keep.k')]);
+        check(own.kept).deepEquals(['12: Keep.k kept: no context type']);
+        check([for (final i in own.prunedImports) i.description]).deepEquals([
+          "2: import '$fit' -> removed",
+          "4: import '${tag}_mode.dart' -> removed",
+          "6: import '${tag}_tone.dart' -> removed",
+        ]);
       });
     }
   });
@@ -683,7 +677,126 @@ class Box<T> implements Geo<T> {
 void take(Geo<int> g) {}
 void main() => take(Box.pair(1));
 ''');
-      expect(out, contains('take(.pair(1))'));
+      check(out).contains('take(.pair(1))');
+    },
+  );
+
+  test('silently prunes orphaned identifier from show combinator without '
+      'reporting a removed import', () async {
+    write(
+      pkg,
+      'lib/show_defs.dart',
+      'enum Fit { cover }\nenum Mode { a }\nenum Unused { u }\n'
+          'void take(Fit f, Mode m) {}\n',
+    );
+    final file = write(pkg, 'lib/show_use.dart', '''
+import 'show_defs.dart' show Fit, Mode, Unused, take;
+
+void run(Mode m) => take(Fit.cover, m);
+''');
+    final result = await Sanitizer().run([file.path]);
+    check(result.convertedCount).equals(1);
+    check(result.removedImportCount).equals(0);
+    final out = file.readAsStringSync();
+    // `Fit` is pruned; pre-existing unused `Unused` and used `Mode`, `take`
+    // stay untouched.
+    check(out).contains("import 'show_defs.dart' show Mode, Unused, take;");
+    check(out).contains('take(.cover, m);');
+  });
+
+  test('converts licensed rebinds in closure returns, factory bodies, records, '
+      'patterns, ?? LHS, and setter/cascade assignments', () async {
+    final out = await sanitize('''
+import 'geo.dart';
+
+enum Fit { cover, contain }
+
+Geo runGeo(Geo Function() fn) => fn();
+
+class FactoryItem {
+  const FactoryItem.raw(this.v);
+  factory FactoryItem.zero() => const FactoryItem.raw(0);
+  factory FactoryItem.block() {
+    return const FactoryItem.raw(1);
+  }
+  final int v;
+}
+
+class Holder {
+  Geo prop = const Geo();
+}
+
+Geo? maybeGeo() => Box.zero;
+
+String testPatterns(Fit f, int x) => switch ((f, x)) {
+  (== Fit.cover, _) => 'eq',
+  (Fit.contain, _) when f == Fit.contain => 'const',
+  _ => 'other',
+};
+
+void run(Holder h, Fit f) {
+  assert(f != Fit.cover);
+  final Geo fromClosure = runGeo(() => Box.all(1));
+  final Geo fromBlockClosure = runGeo(() {
+    return Box.all(2);
+  });
+  final (Geo, {Geo named}) rec = (Box.all(3), named: Box.zero);
+  final Geo lhsCoalesce = maybeGeo() ?? Box.all(4);
+  final Fit lhsFit = (null as Fit?) ?? Fit.cover;
+  final untypedCoalesce = maybeGeo() ?? Geo.all(5);
+  h.prop = Box.all(6);
+  h..prop = Box.zero;
+  final untypedClosure = () => Box.all(7);
+  print([
+    fromClosure,
+    fromBlockClosure,
+    rec,
+    lhsCoalesce,
+    lhsFit,
+    untypedCoalesce,
+    untypedClosure(),
+    testPatterns(Fit.cover, 1),
+    FactoryItem.zero(),
+    FactoryItem.block(),
+  ]);
+}
+''');
+    check(out).contains('factory FactoryItem.zero() => const .raw(0);');
+    check(out).contains('return const .raw(1);');
+    check(out).contains('assert(f != .cover);');
+    check(out).contains('runGeo(() => .all(1))');
+    check(out).contains('return .all(2);');
+    check(out).contains('(.all(3), named: .zero)');
+    check(out).contains('maybeGeo() ?? .all(4)');
+    check(out).contains('(null as Fit?) ?? .cover');
+    check(out).contains('maybeGeo() ?? .all(5)');
+    check(out).contains('h.prop = .all(6);');
+    check(out).contains('h..prop = .zero;');
+    check(out).contains('final untypedClosure = () => Box.all(7);');
+    check(out).contains('(== .cover, _) =>');
+    check(out).contains('(.contain, _) when f == .contain =>');
+  });
+
+  test(
+    'converts same-type static getter selector chains and preserves comments '
+    'inside prefix',
+    () async {
+      final out = await sanitize('''
+class Side {
+  const Side(this.w);
+  final double w;
+  static const Side none = Side(0);
+  Side copyWith({double? w}) => Side(w ?? this.w);
+}
+
+void main() {
+  final Side a = Side.none.copyWith(w: 2);
+  final Side b = Side /* keep comment */ .none;
+  print([a, b]);
+}
+''');
+      check(out).contains('final Side a = .none.copyWith(w: 2);');
+      check(out).contains('final Side b = Side /* keep comment */ .none;');
     },
   );
 }
