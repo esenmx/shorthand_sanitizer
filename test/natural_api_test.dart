@@ -8,53 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
-/// A fresh package holding [files] (paths relative to its root), after
-/// `dart pub get` unless [pubGet] is false.
-Directory fixture(
-  String name,
-  Map<String, String> files, {
-  bool pubGet = true,
-}) {
-  final dir = Directory.systemTemp.createTempSync('dotsan_au_$name');
-  addTearDown(() => dir.deleteSync(recursive: true));
-  final all = {
-    'pubspec.yaml': 'name: $name\nenvironment:\n  sdk: ^3.10.0\n',
-    ...files,
-  };
-  for (final MapEntry(key: rel, value: source) in all.entries) {
-    File(p.join(dir.path, rel))
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(source);
-  }
-  if (pubGet) {
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: dir.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-  }
-  return dir;
-}
-
-String canonical(String path) => p.normalize(p.absolute(path));
-
-/// dotsan from this repo, run in [cwd] (default: the repo root).
-ProcessResult dotsan(
-  List<String> args, {
-  String? cwd,
-  Map<String, String>? environment,
-}) => Process.runSync(
-  Platform.resolvedExecutable,
-  [
-    '--packages=${p.absolute('.dart_tool/package_config.json')}',
-    p.absolute('bin/dotsan.dart'),
-    ...args,
-  ],
-  workingDirectory: cwd,
-  environment: environment,
-  stdoutEncoding: utf8,
-  stderrEncoding: utf8,
-);
+import 'helpers.dart';
 
 const convertible = '''
 enum Fit { cover, contain }
@@ -98,6 +52,21 @@ void main() {
       ]);
     });
 
+    test('a skip outranks --set-exit-if-changed', () {
+      final dir = fixture('au1_rank', {
+        'lib/a.dart': convertible,
+        'lib/bad.dart': "$convertible\nint bad = '';\n",
+      });
+      final run = dotsan([
+        '-n',
+        '--set-exit-if-changed',
+        p.join(dir.path, 'lib'),
+      ]);
+      check(because: '${run.stderr}', run.exitCode).equals(65);
+      check(run.stdout as String)
+          .endsWith('would convert 1 site(s) in 1 file(s)\n');
+    });
+
     test('a write failure still exits 74, ahead of the skip code', () {
       final dir = fixture('au1_write', {
         'lib/a.dart': convertible,
@@ -120,26 +89,6 @@ void main() {
   });
 
   group('AU-2 generated detection and reporting', () {
-    test('a library doc that mentions generated code is not a banner', () {
-      final dir = fixture('au2_doc', {
-        'lib/doc_gen.dart':
-            '/// Helpers for reading generated code from protoc.\n'
-            'library;\n\n$convertible',
-      }, pubGet: false);
-      check(Sanitizer.isGenerated(p.join(dir.path, 'lib', 'doc_gen.dart')))
-          .isFalse();
-    });
-
-    test('a doc banner that opens with the marker still counts (slang)', () {
-      final dir = fixture('au2_slang', {
-        'lib/strings.g.dart':
-            '/// Generated file. Do not edit.\n///\n/// Source: lib/i18n\n'
-            '// ignore_for_file: type=lint\n$convertible',
-      }, pubGet: false);
-      check(Sanitizer.isGenerated(p.join(dir.path, 'lib', 'strings.g.dart')))
-          .isTrue();
-    });
-
     test('generated skips stay silent by default and are listed with -e', () {
       final dir = fixture('au2_count', {
         'lib/a.g.dart':
@@ -159,6 +108,21 @@ void main() {
       final json = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);
       final report = jsonDecode(json.stdout as String) as Map<String, Object?>;
       check(report['skippedGenerated']).isA<List<Object?>>().deepEquals([gen]);
+    });
+
+    test('--include-generated processes a generated file', () {
+      final dir = fixture('au2_include', {
+        'lib/a.g.dart':
+            '// GENERATED CODE - DO NOT MODIFY BY HAND\n$convertible',
+      });
+      final run = dotsan([
+        '-n',
+        '--include-generated',
+        p.join(dir.path, 'lib'),
+      ]);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String)
+          .endsWith('would convert 1 site(s) in 1 file(s)\n');
     });
 
     test('a file named on the command line and skipped says so', () {
@@ -449,11 +413,7 @@ void main() {
             'name: au11_example\nenvironment:\n  sdk: ^3.10.0\n',
         ...exampleFiles,
       });
-      final get = Process.runSync('dart', [
-        'pub',
-        'get',
-      ], workingDirectory: p.join(dir.path, 'example'));
-      if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+      pubGetIn(p.join(dir.path, 'example'));
       return dir;
     }
 

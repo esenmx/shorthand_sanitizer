@@ -9,6 +9,8 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
 void main() {
   e2e('battery', battery, converted: 70);
   e2e('masked_error', maskedError, allowErrors: true);
@@ -33,10 +35,11 @@ void main() {
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
-/// to its root; a `.keep` entry makes an empty directory). The run must add
-/// no `dart analyze` diagnostic, leave `bin/main.dart`'s output unchanged and,
-/// when given, convert exactly [converted] sites. [allowErrors] keeps a
-/// fixture with a deliberate error from being skipped whole.
+/// to its root; an empty `.keep` file holds an otherwise empty directory). The
+/// run must add no `dart analyze` diagnostic, leave `bin/main.dart`'s output
+/// unchanged and, when given, convert exactly [converted] sites.
+/// [allowErrors] keeps a fixture with a deliberate error from being skipped
+/// whole.
 void e2e(
   String name,
   Map<String, String> files, {
@@ -45,33 +48,7 @@ void e2e(
   List<String> roots = const ['lib', 'bin'],
 }) {
   test('e2e $name', () async {
-    final root = Directory.systemTemp.createTempSync('dotsan_e2e_');
-    addTearDown(() => root.deleteSync(recursive: true));
-    for (final MapEntry(key: rel, value: text) in files.entries) {
-      final path = p.joinAll([root.path, ...rel.split('/')]);
-      if (p.basename(path) == '.keep') {
-        Directory(p.dirname(path)).createSync(recursive: true);
-      } else {
-        File(path)
-          ..parent.createSync(recursive: true)
-          ..writeAsStringSync(text);
-      }
-    }
-    final offline = Process.runSync('dart', [
-      'pub',
-      'get',
-      '--offline',
-    ], workingDirectory: root.path);
-    if (offline.exitCode != 0) {
-      final online = Process.runSync('dart', [
-        'pub',
-        'get',
-      ], workingDirectory: root.path);
-      if (online.exitCode != 0) {
-        throw StateError('pub get failed: ${online.stderr}');
-      }
-    }
-
+    final root = fixture(name, files);
     final diagnosticsBefore = _diagnostics(root);
     final runBefore = _run(root);
     final result = await Sanitizer(allowErrors: allowErrors).run([

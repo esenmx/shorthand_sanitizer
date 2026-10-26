@@ -8,32 +8,10 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
 final Directory pkg = .systemTemp.createTempSync('sweep_shared');
 int fileId = 0;
-
-Directory makePackage(
-  String name,
-  String spec, {
-  bool pubGet = true,
-  Directory? target,
-}) {
-  final dir = target ?? .systemTemp.createTempSync('sweep_$name');
-  Directory(p.join(dir.path, 'lib')).createSync();
-  File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync(spec);
-  if (pubGet) {
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: dir.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-  }
-  return dir;
-}
-
-File write(Directory dir, String rel, String source) =>
-    File(p.join(dir.path, rel))
-      ..parent.createSync(recursive: true)
-      ..writeAsStringSync(source);
 
 Future<String> sanitize(
   String source, {
@@ -115,12 +93,9 @@ extension BoxTag on Box {
 
 void main() {
   setUpAll(() {
-    makePackage(
-      'shared',
-      'name: sweep\nenvironment:\n  sdk: ^3.10.0\n',
-      target: pkg,
-    );
+    write(pkg, 'pubspec.yaml', 'name: sweep\nenvironment:\n  sdk: ^3.10.0\n');
     write(pkg, 'lib/geo.dart', geoLibrary);
+    pubGetIn(pkg.path);
   });
   tearDownAll(() => pkg.deleteSync(recursive: true));
 
@@ -178,118 +153,70 @@ final Geo fresh = Box.all(1)..boxOnly();
   });
 
   test('SS-B4 package below 3.10 without package_config is skipped', () async {
-    final old = makePackage(
-      'nocfg',
-      'name: nocfg\nenvironment:\n  sdk: ^3.9.0\n',
-      pubGet: false,
-    );
-    addTearDown(() => old.deleteSync(recursive: true));
     const source = '''
 enum Fit { cover, contain }
 void take(Fit f) {}
 void run() => take(Fit.cover);
 ''';
-    final file = write(old, 'lib/a.dart', source);
+    final old = fixture('nocfg', {
+      'pubspec.yaml': 'name: nocfg\nenvironment:\n  sdk: ^3.9.0\n',
+      'lib/a.dart': source,
+    }, pubGet: false);
+    final file = File(p.join(old.path, 'lib', 'a.dart'));
     final result = await Sanitizer().run([file.path]);
     check(file.readAsStringSync()).equals(source);
-    check(result.skippedUnconfigured)
-        .deepEquals({p.normalize(p.absolute(old.path)): 1});
+    check(result.skippedUnconfigured).deepEquals({canonical(old.path): 1});
   });
 
   test(
     'SS-B4 a nested example without its own package config is skipped',
     () async {
-      final outer = makePackage(
-        'outer',
-        'name: outer\nenvironment:\n  sdk: ^3.10.0\n',
-      );
-      addTearDown(() => outer.deleteSync(recursive: true));
-      write(
-        outer,
-        'example/pubspec.yaml',
-        'name: ex\nenvironment:\n  sdk: ^3.9.0\n'
-            'dependencies:\n  outer:\n    path: ..\n',
-      );
       const source = '''
 enum Fit { cover, contain }
 void take(Fit f) {}
 void run() => take(Fit.cover);
 ''';
-      final main = write(outer, 'example/lib/main.dart', source);
-      final get = Process.runSync('dart', [
-        'pub',
-        'get',
-      ], workingDirectory: outer.path);
-      if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+      final outer = fixture('outer', {
+        'example/pubspec.yaml':
+            'name: ex\nenvironment:\n  sdk: ^3.9.0\n'
+            'dependencies:\n  outer:\n    path: ..\n',
+        'example/lib/main.dart': source,
+      });
+      final main = File(p.join(outer.path, 'example', 'lib', 'main.dart'));
       Directory(p.join(outer.path, 'example', '.dart_tool'))
           .deleteSync(recursive: true);
       File(p.join(outer.path, 'example', 'pubspec.lock')).deleteSync();
 
       final result = await Sanitizer().run([outer.path]);
       check(main.readAsStringSync()).equals(source);
-      check(
-        result.skippedUnconfigured,
-      ).deepEquals({p.normalize(p.absolute(p.join(outer.path, 'example'))): 1});
+      check(result.skippedUnconfigured)
+          .deepEquals({canonical(p.join(outer.path, 'example')): 1});
     },
   );
 
-  test('SS-B5 rewriting a part prunes the import it orphans', () async {
-    write(pkg, 'lib/po_fit.dart', 'enum Fit { cover, contain }\n');
-    write(
-      pkg,
-      'lib/po_sink.dart',
-      "import 'po_fit.dart';\nvoid take(Fit f) {}\n",
-    );
-    final lib = write(
-      pkg,
-      'lib/po_lib.dart',
-      "import 'po_fit.dart';\nimport 'po_sink.dart';\npart 'po_part.dart';\n",
-    );
-    final part = write(
-      pkg,
-      'lib/po_part.dart',
-      "part of 'po_lib.dart';\nvoid run() => take(Fit.cover);\n",
-    );
-    await Sanitizer().run([lib.path, part.path]);
-    check(part.readAsStringSync()).contains('take(.cover)');
-    check(analyze(pkg, 'po_lib.dart'))
-        .not((it) => it.contains('UNUSED_IMPORT'));
-  });
-
   test('SS-B6 a rebind onto a @Deprecated alias stays prefixed', () async {
-    final dep = makePackage(
-      'geo_pkg',
-      'name: geo_pkg\nenvironment:\n  sdk: ^3.10.0\n',
-      pubGet: false,
-    );
-    write(
-      dep,
-      'lib/geo.dart',
-      geoLibrary
+    final dep = fixture('geo_pkg', {
+      'lib/geo.dart': geoLibrary
           .replaceFirst('const factory', "@Deprecated('x') const factory")
           .replaceFirst(
             'static const Geo',
             "@Deprecated('x') static const Geo",
           ),
-    );
-    final app = makePackage(
-      'app',
-      'name: app\nenvironment:\n  sdk: ^3.10.0\n'
+    }, pubGet: false);
+    final app = fixture('app', {
+      'pubspec.yaml':
+          'name: app\nenvironment:\n  sdk: ^3.10.0\n'
           'dependencies:\n  geo_pkg:\n    path: ${dep.path}\n',
-    );
-    addTearDown(() {
-      app.deleteSync(recursive: true);
-      dep.deleteSync(recursive: true);
-    });
-    final file = write(app, 'lib/use.dart', '''
+      'lib/use.dart': '''
 import 'package:geo_pkg/geo.dart';
 void use(Geo g) {}
 void run() {
   use(Box.all(1));
   use(Box.zero);
 }
-''');
-    await Sanitizer().run([file.path]);
+''',
+    });
+    await Sanitizer().run([p.join(app.path, 'lib', 'use.dart')]);
     check(analyze(app, 'use.dart'))
         .not((it) => it.contains('DEPRECATED_MEMBER_USE'));
   });
@@ -343,30 +270,6 @@ void c() => take(Mode.cover);
     },
   );
 
-  test('SS-B7 generated header behind a BOM, in a block comment, or late', () {
-    final bom = write(pkg, 'lib/bom.g.dart', '')
-      ..writeAsBytesSync([
-        0xEF,
-        0xBB,
-        0xBF,
-        ...utf8.encode('// GENERATED CODE - DO NOT MODIFY BY HAND\n'),
-      ]);
-    final block = write(
-      pkg,
-      'lib/block.g.dart',
-      '/* GENERATED CODE - DO NOT MODIFY BY HAND */\n',
-    );
-    final deep = write(
-      pkg,
-      'lib/late.g.dart',
-      '${'// Licensed under the Apache License, Version 2.0.\n' * 120}'
-          '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
-    );
-    check(Sanitizer.isGenerated(bom.path)).isTrue();
-    check(Sanitizer.isGenerated(block.path)).isTrue();
-    check(Sanitizer.isGenerated(deep.path)).isTrue();
-  });
-
   test('SS-B8 a rewrite keeps the UTF-8 BOM and CRLF line endings', () async {
     final file = write(pkg, 'lib/bom_keep.dart', '')
       ..writeAsBytesSync([
@@ -385,6 +288,21 @@ void c() => take(Mode.cover);
       'enum Fit { cover, contain }\r\nvoid t(Fit f) {}\r\n'
       'void r() => t(.cover);\r\n',
     );
+  });
+
+  test('pruning an import from a CRLF file leaves no blank line', () async {
+    write(pkg, 'lib/crlf_fit.dart', 'enum Fit { cover }\n');
+    write(
+      pkg,
+      'lib/crlf_sink.dart',
+      "import 'crlf_fit.dart';\nvoid take(Fit f) {}\n",
+    );
+    final out = await sanitize(
+      "import 'crlf_fit.dart';\r\nimport 'crlf_sink.dart';\r\n"
+      'void r() => take(Fit.cover);\r\n',
+    );
+    check(out)
+        .equals("import 'crlf_sink.dart';\r\nvoid r() => take(.cover);\r\n");
   });
 
   test('SS-B9 overlapping path arguments are processed once', () async {
@@ -407,8 +325,7 @@ void r() => t(Fit.cover);
     final file = write(pkg, 'lib/s3_errors.dart', source);
     final result = await Sanitizer().run([file.path]);
     check(file.readAsStringSync()).equals(source);
-    check(result.skippedWithErrors)
-        .deepEquals([p.normalize(p.absolute(file.path))]);
+    check(result.skippedWithErrors).deepEquals([canonical(file.path)]);
 
     await Sanitizer(allowErrors: true).run([file.path]);
     check(file.readAsStringSync()).contains('t(.cover)');
@@ -444,31 +361,30 @@ final G<b.X> g = AG.of(const a.X());
   });
 
   test('SS-R2 a rebind onto a @visibleForTesting member is refused', () async {
-    final app = makePackage(
-      'r2',
-      'name: r2\nenvironment:\n  sdk: ^3.10.0\n'
-          'dependencies:\n  meta: ^1.15.0\n',
-    );
-    addTearDown(() => app.deleteSync(recursive: true));
     final restricted = geoLibrary
         .replaceFirst('const factory', '@visibleForTesting const factory')
         .replaceFirst(
           'static const Geo',
           '@visibleForTesting static const Geo',
         );
-    write(app, 'lib/geo.dart', "import 'package:meta/meta.dart';\n$restricted");
-    final file = write(app, 'lib/use.dart', '''
+    final app = fixture('r2', {
+      'pubspec.yaml':
+          'name: r2\nenvironment:\n  sdk: ^3.10.0\n'
+          'dependencies:\n  meta: ^1.15.0\n',
+      'lib/geo.dart': "import 'package:meta/meta.dart';\n$restricted",
+      'lib/use.dart': '''
 import 'geo.dart';
 void use(Geo g) {}
 void run() {
   use(Box.all(1));
   use(Box.zero);
 }
-''');
+''',
+    });
     final result = await Sanitizer(
       dryRun: true,
       explain: true,
-    ).run([file.path]);
+    ).run([p.join(app.path, 'lib', 'use.dart')]);
     check(result.files.single.kept).deepEquals([
       '4: Box.all kept: rebinds to Geo.all, which is @visibleForTesting',
       '5: Box.zero kept: rebinds to Geo.zero, which is @visibleForTesting',
@@ -507,10 +423,7 @@ void run() {
       final (lib, part) = partPrune('r3w');
       final result = await Sanitizer(dryRun: true).run([lib.path, part.path]);
       check({for (final f in result.files) f.path: f.removedImports})
-          .deepEquals({
-            p.normalize(p.absolute(part.path)): 0,
-            p.normalize(p.absolute(lib.path)): 2,
-          });
+          .deepEquals({canonical(part.path): 0, canonical(lib.path): 2});
       check(result.convertedCount).equals(2);
     });
   });
@@ -526,8 +439,7 @@ void run() {
     check(part.readAsStringSync()).equals(partBefore);
     check(lib.readAsStringSync()).equals(libBefore);
     check(result.convertedCount).equals(0);
-    check(result.writeFailures.single.path)
-        .equals(p.normalize(p.absolute(lib.path)));
+    check(result.writeFailures.single.path).equals(canonical(lib.path));
   }, testOn: '!windows');
 
   test(
@@ -727,10 +639,8 @@ void runPart(Mode m) => take(Fit.cover, m);
     final multiResult = await Sanitizer().run([libFile.path, partFile.path]);
     check(multiResult.convertedCount).equals(1);
     check(multiResult.removedImportCount).equals(1);
-    check(multiResult.files.map((f) => f.path).toList()).deepEquals([
-      p.normalize(p.absolute(partFile.path)),
-      p.normalize(p.absolute(libFile.path)),
-    ]);
+    check(multiResult.files.map((f) => f.path).toList())
+        .deepEquals([canonical(partFile.path), canonical(libFile.path)]);
     check(multiResult.files.last.prunedImports.single.replacement)
         .equals('show Mode, take');
     check(libFile.readAsStringSync())

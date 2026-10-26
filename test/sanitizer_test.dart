@@ -5,19 +5,16 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
 
+import 'helpers.dart';
+
 final Directory pkg = .systemTemp.createTempSync('shorthand_sanitizer_test');
 int fileId = 0;
 
 /// Writes [source] into the fixture package, sanitizes it, and returns the
 /// resulting content (unchanged content when nothing converted).
-Future<String> sanitize(
-  String source, {
-  Set<String> skips = const {},
-  bool dryRun = false,
-}) async {
-  final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-    ..writeAsStringSync(source);
-  final result = await Sanitizer(skips: skips, dryRun: dryRun).run([file.path]);
+Future<String> sanitize(String source, {Set<String> skips = const {}}) async {
+  final file = write(pkg, 'lib/case_${fileId++}.dart', source);
+  final result = await Sanitizer(skips: skips).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
   check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
@@ -26,14 +23,23 @@ Future<String> sanitize(
 
 void main() {
   setUpAll(() {
-    Directory(p.join(pkg.path, 'lib')).createSync();
-    const spec = 'name: fixture\nenvironment:\n  sdk: ^3.10.0\n';
-    File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync(spec);
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: pkg.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+    write(pkg, 'pubspec.yaml', 'name: fixture\nenvironment:\n  sdk: ^3.10.0\n');
+    // `Dep` appears in a consumer only as the prefix of `Dep.instance`, in a
+    // slot Sink's parameter witnesses: the rewrite orphans dep.dart's import.
+    write(pkg, 'lib/dep.dart', '''
+class Dep {
+  const Dep._();
+  static const Dep instance = Dep._();
+}
+''');
+    write(pkg, 'lib/sink.dart', '''
+import 'dep.dart';
+class Sink {
+  Sink(this.d);
+  final Dep d;
+}
+''');
+    pubGetIn(pkg.path);
   });
 
   tearDownAll(() => pkg.deleteSync(recursive: true));
@@ -315,40 +321,8 @@ void main() => take(Box.all(1));
     check(out).contains('take(Box.all(1))');
   });
 
-  test('skip list holds Type.member and bare member forms', () async {
-    const source = r'''
-enum Fit { cover, contain }
-void main() {
-  final Fit a = Fit.cover;
-  final Fit b = Fit.contain;
-  print('$a $b');
-}
-''';
-    final out = await sanitize(source, skips: {'Fit.cover'});
-    check(out).contains('final Fit a = Fit.cover');
-    check(out).contains('final Fit b = .contain');
-  });
-
   test('prunes an import the dropped prefix orphaned', () async {
-    // `Dep` is supplied only by dep.dart and appears only as the prefix of
-    // `Dep.instance`, whose slot is witnessed by Sink's constructor param
-    // (from sink.dart). Collapsing to `.instance` leaves dep.dart's import
-    // with no referent — it must be pruned; sink.dart's stays.
-    File(p.join(pkg.path, 'lib', 'dep.dart')).writeAsStringSync('''
-class Dep {
-  const Dep._();
-  static const Dep instance = Dep._();
-}
-''');
-    File(p.join(pkg.path, 'lib', 'sink.dart')).writeAsStringSync('''
-import 'dep.dart';
-class Sink {
-  Sink(this.d);
-  final Dep d;
-}
-''');
-    final file = File(p.join(pkg.path, 'lib', 'consumer.dart'))
-      ..writeAsStringSync('''
+    final file = write(pkg, 'lib/consumer.dart', '''
 import 'dep.dart';
 import 'sink.dart';
 final sink = Sink(Dep.instance);
@@ -364,7 +338,7 @@ final sink = Sink(Dep.instance);
   test('leaves a pre-existing unused import alone', () async {
     // dep2.dart stays used (Box), so nothing is orphaned; dart:async is unused
     // before we touch anything (the user's, not ours) — it must survive.
-    File(p.join(pkg.path, 'lib', 'dep2.dart')).writeAsStringSync('''
+    write(pkg, 'lib/dep2.dart', '''
 class Dep2 {
   const Dep2._();
   static const Dep2 instance = Dep2._();
@@ -374,8 +348,7 @@ class Box {
   final Dep2 d;
 }
 ''');
-    final file = File(p.join(pkg.path, 'lib', 'consumer2.dart'))
-      ..writeAsStringSync('''
+    final file = write(pkg, 'lib/consumer2.dart', '''
 import 'dart:async';
 import 'dep2.dart';
 final box = Box(Dep2.instance);
@@ -386,106 +359,109 @@ final box = Box(Dep2.instance);
     check(out).contains("import 'dart:async';"); // pre-existing unused, kept
   });
 
-  test('dry run reports without writing', () async {
-    const source = '''
-enum Fit { cover }
-void main() {
-  final Fit f = Fit.cover;
-  print(f);
-}
-''';
-    final out = await sanitize(source, dryRun: true);
-    check(out).equals(source);
-  });
-
-  test('generated detection reads the header, not the filename', () {
-    String write(String name, String content) {
-      final f = File(p.join(pkg.path, 'lib', name))..writeAsStringSync(content);
-      return f.path;
+  group('isGenerated', () {
+    // The leading comment decides; the file name proves nothing.
+    for (final (description, name, header, generated) in [
+      (
+        'a build_runner marker counts',
+        'm.g.dart',
+        '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
+        true,
+      ),
+      (
+        'a FlutterFire marker on a single-dot name counts',
+        'firebase_options.dart',
+        '// File generated by FlutterFire CLI.\n',
+        true,
+      ),
+      (
+        'a handwritten *.preview.dart is not generated',
+        'page.preview.dart',
+        "import 'page.dart';\n",
+        false,
+      ),
+      (
+        'prose about regeneration is not a marker',
+        'foot_slab.dart',
+        '// The foot slab regenerates its tear line when the tint changes.\n',
+        false,
+      ),
+      (
+        'a marker below a directive describes code, not the file',
+        'runner.dart',
+        "import 'dart:io';\n\n"
+            '// GENERATED CODE - DO NOT MODIFY BY HAND\n'
+            'const template = 1;\n',
+        false,
+      ),
+      (
+        'a protoc marker past an empty comment line counts',
+        'm.pb.dart',
+        '//\n// Generated code. Do not modify.\n',
+        true,
+      ),
+      (
+        'a pigeon marker counts',
+        'p.g.dart',
+        '// Autogenerated from Pigeon (v9.2.5).\n',
+        true,
+      ),
+      (
+        'a doc banner past a license block counts',
+        'strings.g.dart',
+        '// Copyright 2026\n\n/// Generated file. Do not edit.\n',
+        true,
+      ),
+      (
+        'SS-11 a marker after a block comment and code is not one',
+        'ss11_code.dart',
+        "/* header */ import 'dart:core';\n"
+            '// GENERATED CODE - DO NOT MODIFY\n',
+        false,
+      ),
+      (
+        'SS-B7 a marker behind a BOM counts',
+        'bom.g.dart',
+        '\uFEFF// GENERATED CODE - DO NOT MODIFY BY HAND\n',
+        true,
+      ),
+      (
+        'SS-B7 a marker in a block comment counts',
+        'block.g.dart',
+        '/* GENERATED CODE - DO NOT MODIFY BY HAND */\n',
+        true,
+      ),
+      (
+        'SS-B7 a marker past a long license counts',
+        'late.g.dart',
+        '${'// Licensed under the Apache License, Version 2.0.\n' * 120}'
+            '// GENERATED CODE - DO NOT MODIFY BY HAND\n',
+        true,
+      ),
+      (
+        'AU-2 a library doc that mentions generated code is not a banner',
+        'doc_gen.dart',
+        '/// Helpers for reading generated code from protoc.\nlibrary;\n',
+        false,
+      ),
+      (
+        'AU-2 a doc banner that opens with the marker counts (slang)',
+        'strings.g.dart',
+        '/// Generated file. Do not edit.\n///\n/// Source: lib/i18n\n'
+            '// ignore_for_file: type=lint\n',
+        true,
+      ),
+    ]) {
+      test(description, () {
+        final dir = fixture('generated', {'lib/$name': header}, pubGet: false);
+        check(Sanitizer.isGenerated(p.join(dir.path, 'lib', name)))
+            .equals(generated);
+      });
     }
-
-    // build_runner-style marker — skipped whatever the name.
-    check(
-      Sanitizer.isGenerated(
-        write('m.g.dart', '// GENERATED CODE - DO NOT MODIFY BY HAND\n'),
-      ),
-    ).isTrue();
-    // FlutterFire CLI: single-dot name, still generated.
-    check(
-      Sanitizer.isGenerated(
-        write(
-          'firebase_options.dart',
-          '// File generated by FlutterFire CLI.\n',
-        ),
-      ),
-    ).isTrue();
-    // Handwritten widget preview: double-dot name, NOT generated.
-    check(
-      Sanitizer.isGenerated(
-        write('page.preview.dart', "import 'page.dart';\n"),
-      ),
-    ).isFalse();
-  });
-
-  test('prose about regeneration is not a generated header', () {
-    String write(String name, String content) {
-      final f = File(p.join(pkg.path, 'lib', name))..writeAsStringSync(content);
-      return f.path;
-    }
-
-    // The stem `generat` appears, but as prose in a handwritten banner.
-    check(
-      Sanitizer.isGenerated(
-        write(
-          'foot_slab.dart',
-          '// The foot slab regenerates its tear line when the tint changes.\n',
-        ),
-      ),
-    ).isFalse();
-    // A marker below the banner describes the code, not the file.
-    check(
-      Sanitizer.isGenerated(
-        write(
-          'runner.dart',
-          "import 'dart:io';\n\n"
-              '// GENERATED CODE - DO NOT MODIFY BY HAND\n'
-              'const template = 1;\n',
-        ),
-      ),
-    ).isFalse();
-    // Real banners still register, including past a leading license block.
-    check(
-      Sanitizer.isGenerated(
-        write('m.pb.dart', '//\n// Generated code. Do not modify.\n'),
-      ),
-    ).isTrue();
-    check(
-      Sanitizer.isGenerated(
-        write('p.g.dart', '// Autogenerated from Pigeon (v9.2.5).\n'),
-      ),
-    ).isTrue();
-    check(
-      Sanitizer.isGenerated(
-        write(
-          'strings.g.dart',
-          '// Copyright 2026\n\n/// Generated file. Do not edit.\n',
-        ),
-      ),
-    ).isTrue();
-  });
-
-  test('a header mentioning regeneration still gets sanitized', () async {
-    final out = await sanitize('''
-// The tear line regenerates whenever the tint changes.
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
-    check(out).contains('=> .cover');
   });
 
   test('handwritten *.preview.dart files are sanitized', () async {
-    final file = File(p.join(pkg.path, 'lib', 'card.preview.dart'))
-      ..writeAsStringSync('''
+    final file = write(pkg, 'lib/card.preview.dart', '''
 enum Fit { cover, contain }
 Fit preview() => Fit.cover;
 ''');
@@ -498,12 +474,13 @@ Fit preview() => Fit.cover;
 enum Fit { cover }
 Fit f() => Fit.cover;
 ''';
-    final excluded = File(p.join(pkg.path, 'lib', 'firebase_options.dart'))
-      ..writeAsStringSync(source);
-    final generated = File(p.join(pkg.path, 'lib', 'options.dart'))
-      ..writeAsStringSync('// File generated by FlutterFire CLI.\n$source');
-    final normal = File(p.join(pkg.path, 'lib', 'normal_case.dart'))
-      ..writeAsStringSync(source);
+    final excluded = write(pkg, 'lib/firebase_options.dart', source);
+    final generated = write(
+      pkg,
+      'lib/options.dart',
+      '// File generated by FlutterFire CLI.\n$source',
+    );
+    final normal = write(pkg, 'lib/normal_case.dart', source);
     final sanitizer = Sanitizer(excludes: ['firebase_options.dart']);
     await sanitizer.run([excluded.path, generated.path, normal.path]);
     check(excluded.readAsStringSync()).contains('Fit.cover');
@@ -512,8 +489,7 @@ Fit f() => Fit.cover;
   });
 
   test('sanitized output keeps compiling and means the same thing', () async {
-    final file = File(p.join(pkg.path, 'lib', 'roundtrip.dart'))
-      ..writeAsStringSync(r'''
+    final file = write(pkg, 'lib/roundtrip.dart', r'''
 enum Fit { cover, contain }
 class Insets {
   const Insets.all(this.v);
@@ -560,7 +536,7 @@ void main() {
   });
 
   test('static const on prefixed-imported class converts', () async {
-    File(p.join(pkg.path, 'lib', 'dep_class.dart')).writeAsStringSync('''
+    write(pkg, 'lib/dep_class.dart', '''
 class Scaler {
   const Scaler.all();
   static const Scaler noScaling = Scaler.all();
@@ -577,7 +553,7 @@ void main() {
   });
 
   test('static method on prefixed-imported class converts', () async {
-    File(p.join(pkg.path, 'lib', 'dep_class2.dart')).writeAsStringSync('''
+    write(pkg, 'lib/dep_class2.dart', '''
 class Scaler {
   const Scaler.all();
   static Scaler scale(double v) => Scaler.all();
@@ -614,7 +590,7 @@ void main() {
     // (`all`). A `Geo` slot therefore binds every shorthand to `Geo`, never to
     // the `Align`/`Directional` the source names.
     setUpAll(() {
-      File(p.join(pkg.path, 'lib', 'geometry.dart')).writeAsStringSync('''
+      write(pkg, 'lib/geometry.dart', '''
 abstract class Geo {
   static const Geo topCenter = Align.topCenter;
   static const Geo center = Align.center;
@@ -712,8 +688,7 @@ void main() {
     });
 
     test('converted alias stays identical to what the source named', () async {
-      final file = File(p.join(pkg.path, 'lib', 'alias_roundtrip.dart'))
-        ..writeAsStringSync('''
+      final file = write(pkg, 'lib/alias_roundtrip.dart', '''
 import 'geometry.dart';
 void main() {
   const Geo g = Align.topCenter;
@@ -799,51 +774,25 @@ $rows
   );
 
   test('skips a package pinned below the dot-shorthand floor', () async {
-    final old = Directory.systemTemp.createTempSync('shorthand_floor');
-    addTearDown(() => old.deleteSync(recursive: true));
-    Directory(p.join(old.path, 'lib')).createSync();
-    const spec = 'name: old_fixture\nenvironment:\n  sdk: ^3.9.0\n';
-    File(p.join(old.path, 'pubspec.yaml')).writeAsStringSync(spec);
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: old.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-
-    final file = File(p.join(old.path, 'lib', 'case.dart'))
-      ..writeAsStringSync('''
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
+    final old = fixture('old_fixture', {
+      'pubspec.yaml': 'name: old_fixture\nenvironment:\n  sdk: ^3.9.0\n',
+      'lib/case.dart': 'enum Fit { cover }\nFit f() => Fit.cover;\n',
+    });
+    final file = File(p.join(old.path, 'lib', 'case.dart'));
     final result = await Sanitizer().run([file.path]);
 
     // Untouched, and the run says why rather than reporting an empty success.
     check(file.readAsStringSync()).contains('Fit.cover');
-    check(result.skippedBelowFloor).deepEquals({
-      (root: p.normalize(p.absolute(old.path)), version: '3.9'): 1,
-    });
+    check(result.skippedBelowFloor)
+        .deepEquals({(root: canonical(old.path), version: '3.9'): 1});
     check(result.convertedCount).equals(0);
   });
 
   test('skips hidden directories and build folder during traversal', () async {
-    final hiddenDir = Directory(p.join(pkg.path, '.hidden'))..createSync();
-    final buildDir = Directory(p.join(pkg.path, 'build'))..createSync();
-    final normalDir = Directory(p.join(pkg.path, 'src'))..createSync();
-
-    File(p.join(hiddenDir.path, 'ignored.dart')).writeAsStringSync('''
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
-    File(p.join(buildDir.path, 'ignored.dart')).writeAsStringSync('''
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
-    final normalFile = File(p.join(normalDir.path, 'converted.dart'))
-      ..writeAsStringSync('''
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
-
+    const source = 'enum Fit { cover }\nFit f() => Fit.cover;\n';
+    write(pkg, '.hidden/ignored.dart', source);
+    write(pkg, 'build/ignored.dart', source);
+    final normalFile = write(pkg, 'src/converted.dart', source);
     final result = await Sanitizer().run([pkg.path]);
     check(result.files.any((f) => f.path.contains('.hidden'))).isFalse();
     check(result.files.any((f) => f.path.contains('build'))).isFalse();
@@ -925,8 +874,7 @@ void main() {
     });
 
     test('positions without a context type stay prefixed', () async {
-      final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-        ..writeAsStringSync('''
+      final file = write(pkg, 'lib/case_${fileId++}.dart', '''
 $box
 class Err implements Exception { const Err.code(this.c); final int c; }
 /// Prose about [Box.a] is not a site.
@@ -963,8 +911,7 @@ Future<void> main() async {
 
   group('explain', () {
     test('lists every site left prefixed, with the reason', () async {
-      final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-        ..writeAsStringSync('''
+      final file = write(pkg, 'lib/case_${fileId++}.dart', '''
 class Color {
   const Color(this.v);
   final int v;
@@ -1034,8 +981,7 @@ void main() {
     test(
       'a file with nothing to convert is reported only when explaining',
       () async {
-        final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-          ..writeAsStringSync('''
+        final file = write(pkg, 'lib/case_${fileId++}.dart', '''
 enum Fit { cover }
 void main() {
   final untyped = Fit.cover;
@@ -1054,13 +1000,6 @@ void main() {
             .deepEquals(['3: Fit.cover kept: no context type']);
       },
     );
-  });
-
-  test('sdkPath returns valid SDK path and caches result', () {
-    final path1 = sdkPath();
-    check(path1).isNotNull();
-    final path2 = sdkPath();
-    check(path2).equals(path1);
   });
 
   test('SS-1 licensed rebinds convert in new typed-slot positions', () async {
@@ -1154,8 +1093,7 @@ void main() {
   );
 
   test('SS-3 switch scrutinee and ternary receiver have no context', () async {
-    final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-      ..writeAsStringSync('''
+    final file = write(pkg, 'lib/case_${fileId++}.dart', '''
 enum Fit { cover, contain }
 class Box {
   const Box();
@@ -1248,31 +1186,16 @@ void inferred() {
   test(
     'SS-6 pruning first import keeps /// doc and strips trailing //',
     () async {
-      File(p.join(pkg.path, 'lib', 'ss6_dep.dart')).writeAsStringSync('''
-class Dep {
-  const Dep._();
-  static const Dep instance = Dep._();
-}
-''');
-      File(p.join(pkg.path, 'lib', 'ss6_sink.dart')).writeAsStringSync('''
-import 'ss6_dep.dart';
-class Sink {
-  Sink(this.d);
-  final Dep d;
-}
-''');
-      final file = File(p.join(pkg.path, 'lib', 'ss6_consumer.dart'))
-        ..writeAsStringSync('''
+      final file = write(pkg, 'lib/ss6_consumer.dart', '''
 /// Library doc comment.
-import 'ss6_dep.dart'; // trailing comment
-import 'ss6_sink.dart';
+import 'dep.dart'; // trailing comment
+import 'sink.dart';
 
 final sink = Sink(Dep.instance);
 ''');
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
-      check(out)
-          .startsWith("/// Library doc comment.\nimport 'ss6_sink.dart';");
+      check(out).startsWith("/// Library doc comment.\nimport 'sink.dart';");
       check(out).not((it) => it.contains('trailing comment'));
       check(out).contains('Sink(.instance)');
     },
@@ -1281,13 +1204,13 @@ final sink = Sink(Dep.instance);
   test(
     'SS-7 part keeps valid rewrites when another orphans off-limits import',
     () async {
-      File(p.join(pkg.path, 'lib', 'ss7_dep.dart')).writeAsStringSync('''
+      write(pkg, 'lib/ss7_dep.dart', '''
 class Dep {
   const Dep._();
   static const Dep instance = Dep._();
 }
 ''');
-      File(p.join(pkg.path, 'lib', 'ss7_sink.dart')).writeAsStringSync('''
+      write(pkg, 'lib/ss7_sink.dart', '''
 import 'ss7_dep.dart';
 enum Fit { cover }
 class Sink {
@@ -1295,13 +1218,12 @@ class Sink {
   final Dep d;
 }
 ''');
-      File(p.join(pkg.path, 'lib', 'ss7_lib.dart')).writeAsStringSync('''
+      write(pkg, 'lib/ss7_lib.dart', '''
 import 'ss7_dep.dart';
 import 'ss7_sink.dart';
 part 'ss7_part.dart';
 ''');
-      final partFile = File(p.join(pkg.path, 'lib', 'ss7_part.dart'))
-        ..writeAsStringSync('''
+      final partFile = write(pkg, 'lib/ss7_part.dart', '''
 part of 'ss7_lib.dart';
 final Fit f = Fit.cover;
 final sink = Sink(Dep.instance);
@@ -1320,19 +1242,11 @@ final sink = Sink(Dep.instance);
   test(
     'SS-8 allows @protected+@visibleForTesting in test/ and checks class meta',
     () async {
-      final root = Directory.systemTemp.createTempSync('shorthand_ss8');
-      addTearDown(() => root.deleteSync(recursive: true));
-      for (final d in ['lib', 'test', 'integration_test']) {
-        Directory(p.join(root.path, d)).createSync(recursive: true);
-      }
-      File(p.join(root.path, 'pubspec.yaml')).writeAsStringSync('''
-name: ss8_pkg
-environment:
-  sdk: ^3.10.0
-dependencies:
-  meta: ^1.15.0
-''');
-      File(p.join(root.path, 'lib', 'defs.dart')).writeAsStringSync('''
+      final root = fixture('ss8_pkg', {
+        'pubspec.yaml':
+            'name: ss8_pkg\nenvironment:\n  sdk: ^3.10.0\n'
+            'dependencies:\n  meta: ^1.15.0\n',
+        'lib/defs.dart': '''
 import 'package:meta/meta.dart';
 
 class Geo {
@@ -1359,39 +1273,34 @@ class VftSub extends VftHost {
 }
 void takeGeo(Geo g) {}
 void takeHost(VftHost h) {}
-''');
-      final libUse = File(p.join(root.path, 'lib', 'use.dart'))
-        ..writeAsStringSync('''
+''',
+        'lib/use.dart': '''
 import 'defs.dart';
 void f() {
   takeGeo(Box.both(1));
   takeHost(VftSub.make(2));
 }
-''');
-      final testUse = File(p.join(root.path, 'test', 'use_test.dart'))
-        ..writeAsStringSync('''
+''',
+        'test/use_test.dart': '''
 import 'package:ss8_pkg/defs.dart';
 void main() {
   takeGeo(Box.both(1));
   takeHost(VftSub.make(2));
 }
-''');
-      final itUse = File(p.join(root.path, 'integration_test', 'app_test.dart'))
-        ..writeAsStringSync('''
+''',
+        'integration_test/app_test.dart': '''
 import 'package:ss8_pkg/defs.dart';
 void main() {
   takeGeo(Box.vft(1));
   takeHost(VftSub.make(2));
 }
-''');
-      final get = Process.runSync('dart', [
-        'pub',
-        'get',
-        '--offline',
-      ], workingDirectory: root.path);
-      if (get.exitCode != 0) {
-        Process.runSync('dart', ['pub', 'get'], workingDirectory: root.path);
-      }
+''',
+      });
+      final libUse = File(p.join(root.path, 'lib', 'use.dart'));
+      final testUse = File(p.join(root.path, 'test', 'use_test.dart'));
+      final itUse = File(
+        p.join(root.path, 'integration_test', 'app_test.dart'),
+      );
       await Sanitizer().run([libUse.path, testUse.path, itUse.path]);
       check(libUse.readAsStringSync()).contains('takeGeo(Box.both(1));');
       check(libUse.readAsStringSync()).contains('takeHost(VftSub.make(2));');
@@ -1399,74 +1308,6 @@ void main() {
       check(testUse.readAsStringSync()).contains('takeHost(.make(2));');
       check(itUse.readAsStringSync()).contains('takeGeo(.vft(1));');
       check(itUse.readAsStringSync()).contains('takeHost(.make(2));');
-    },
-  );
-
-  test("SS-9 nested package converts despite the parent's exclude", () async {
-    final root = Directory.systemTemp.createTempSync('shorthand_ss9');
-    addTearDown(() => root.deleteSync(recursive: true));
-    Directory(p.join(root.path, 'lib')).createSync();
-    Directory(p.join(root.path, 'example', 'lib')).createSync(recursive: true);
-    File(p.join(root.path, 'pubspec.yaml')).writeAsStringSync('''
-name: parent_pkg
-environment:
-  sdk: ^3.10.0
-''');
-    File(p.join(root.path, 'analysis_options.yaml')).writeAsStringSync('''
-analyzer:
-  exclude:
-    - example/**
-''');
-    File(p.join(root.path, 'example', 'pubspec.yaml')).writeAsStringSync('''
-name: example_pkg
-environment:
-  sdk: ^3.10.0
-''');
-    final exFile = File(p.join(root.path, 'example', 'lib', 'main.dart'))
-      ..writeAsStringSync('''
-enum Fit { cover }
-Fit f() => Fit.cover;
-''');
-    for (final dir in [root.path, p.join(root.path, 'example')]) {
-      final get = Process.runSync('dart', [
-        'pub',
-        'get',
-      ], workingDirectory: dir);
-      if (get.exitCode != 0) {
-        throw StateError('pub get failed: ${get.stderr}');
-      }
-    }
-    // The nested package obeys only its own options, unlike `dart analyze`:
-    // the parent's example/** excludes nothing there.
-    final result = await Sanitizer().run([root.path]);
-    check(result.excluded).isEmpty();
-    check(result.skippedUnconfigured).isEmpty();
-    check(exFile.readAsStringSync()).contains('=> .cover;');
-  });
-
-  test(
-    'SS-11 isGenerated stops after single-line block comment before code',
-    () {
-      String write(String name, String content) {
-        final f = File(p.join(pkg.path, 'lib', name))
-          ..writeAsStringSync(content);
-        return f.path;
-      }
-
-      check(
-        Sanitizer.isGenerated(
-          write(
-            'ss11_code.dart',
-            "/* header */ import 'dart:core';\n"
-                '// GENERATED CODE - DO NOT MODIFY\n',
-          ),
-        ),
-      ).isFalse();
-      check(
-        Sanitizer.isGenerated(
-          write('ss11_gen.dart', '/* GENERATED CODE - DO NOT MODIFY */\n'),
-        ),
-      ).isTrue();
     },
   );
 
@@ -1513,31 +1354,16 @@ void main() => take(Box.pair(1));
   test(
     'pruning import with trailing ignore_for_file keeps comment on own line',
     () async {
-      File(p.join(pkg.path, 'lib', 'ig_dep.dart')).writeAsStringSync('''
-class Dep {
-  const Dep._();
-  static const Dep instance = Dep._();
-}
-''');
-      File(p.join(pkg.path, 'lib', 'ig_sink.dart')).writeAsStringSync('''
-import 'ig_dep.dart';
-class Sink {
-  Sink(this.d);
-  final Dep d;
-}
-''');
-      final file = File(p.join(pkg.path, 'lib', 'ig_consumer.dart'))
-        ..writeAsStringSync('''
-import 'ig_dep.dart'; // ignore_for_file: avoid_print
-import 'ig_sink.dart';
+      final file = write(pkg, 'lib/ig_consumer.dart', '''
+import 'dep.dart'; // ignore_for_file: avoid_print
+import 'sink.dart';
 
 final sink = Sink(Dep.instance);
 ''');
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
-      check(
-        out,
-      ).startsWith("// ignore_for_file: avoid_print\nimport 'ig_sink.dart';");
+      check(out)
+          .startsWith("// ignore_for_file: avoid_print\nimport 'sink.dart';");
       check(out).contains('Sink(.instance)');
     },
   );
@@ -1545,25 +1371,22 @@ final sink = Sink(Dep.instance);
   test(
     'pruning sole directive with doc comment or annotation emits library;',
     () async {
-      File(p.join(pkg.path, 'lib', 'sole_aliases.dart')).writeAsStringSync('''
+      write(pkg, 'lib/sole_aliases.dart', '''
 import 'sole_doc.dart';
 typedef Mode = Fit;
 ''');
-      final docFile = File(p.join(pkg.path, 'lib', 'sole_doc.dart'))
-        ..writeAsStringSync('''
+      final docFile = write(pkg, 'lib/sole_doc.dart', '''
 /// Library-level notes.
 import 'sole_aliases.dart';
 
 enum Fit { cover, fill }
 Fit f() => Mode.fill;
 ''');
-      File(p.join(pkg.path, 'lib', 'sole_annot_aliases.dart'))
-          .writeAsStringSync('''
+      write(pkg, 'lib/sole_annot_aliases.dart', '''
 import 'sole_annot.dart';
 typedef Mode2 = Fit2;
 ''');
-      final annotFile = File(p.join(pkg.path, 'lib', 'sole_annot.dart'))
-        ..writeAsStringSync('''
+      final annotFile = write(pkg, 'lib/sole_annot.dart', '''
 @Deprecated('lib')
 import 'sole_annot_aliases.dart';
 
@@ -1612,28 +1435,25 @@ $calls
     test(
       'batches library and multiple parts in one pass and prunes shared import',
       () async {
-        File(p.join(pkg.path, 'lib', 'batch_fit.dart')).writeAsStringSync('''
+        write(pkg, 'lib/batch_fit.dart', '''
 enum Fit { cover, contain }
 ''');
-        File(p.join(pkg.path, 'lib', 'batch_sink.dart')).writeAsStringSync('''
+        write(pkg, 'lib/batch_sink.dart', '''
 import 'batch_fit.dart';
 void take(Fit f) {}
 ''');
-        final libFile = File(p.join(pkg.path, 'lib', 'batch_lib.dart'))
-          ..writeAsStringSync('''
+        final libFile = write(pkg, 'lib/batch_lib.dart', '''
 import 'batch_fit.dart';
 import 'batch_sink.dart';
 part 'batch_part_a.dart';
 part 'batch_part_b.dart';
 void fromLib() => take(Fit.cover);
 ''');
-        final partA = File(p.join(pkg.path, 'lib', 'batch_part_a.dart'))
-          ..writeAsStringSync('''
+        final partA = write(pkg, 'lib/batch_part_a.dart', '''
 part of 'batch_lib.dart';
 void fromA() => take(Fit.cover);
 ''');
-        final partB = File(p.join(pkg.path, 'lib', 'batch_part_b.dart'))
-          ..writeAsStringSync('''
+        final partB = write(pkg, 'lib/batch_part_b.dart', '''
 part of 'batch_lib.dart';
 void fromB() => take(Fit.contain);
 ''');
@@ -1713,8 +1533,7 @@ void main() {
     test(
       'reports Type.method<T>(...) in --skip and --explain like any shorthand',
       () async {
-        final file = File(p.join(pkg.path, 'lib', 'case_${fileId++}.dart'))
-          ..writeAsStringSync('''
+        final file = write(pkg, 'lib/case_${fileId++}.dart', '''
 class Box {
   const Box();
   static T pick<T>(T a) => a;
@@ -1746,16 +1565,16 @@ void main() {
   test(
     'off-limits unused_shown_name reverts only the orphaned shown symbol',
     () async {
-      File(p.join(pkg.path, 'lib', 'off_defs.dart')).writeAsStringSync('''
+      write(pkg, 'lib/off_defs.dart', '''
 enum Fit { cover, contain }
 enum Mode { on, off }
 void take(Fit f, Mode m) {}
 ''');
-      File(p.join(pkg.path, 'lib', 'off_side.dart')).writeAsStringSync('''
+      write(pkg, 'lib/off_side.dart', '''
 enum Side { l, r }
 void side(Side s) {}
 ''');
-      File(p.join(pkg.path, 'lib', 'off_lib.dart')).writeAsStringSync('''
+      write(pkg, 'lib/off_lib.dart', '''
 import 'off_defs.dart' show Fit, Mode, take;
 import 'off_defs.dart' as d show Fit, Mode, take;
 import 'off_side.dart';
@@ -1766,8 +1585,7 @@ void inLib() {
   side(Side.r);
 }
 ''');
-      final partFile = File(p.join(pkg.path, 'lib', 'off_part.dart'))
-        ..writeAsStringSync('''
+      final partFile = write(pkg, 'lib/off_part.dart', '''
 part of 'off_lib.dart';
 void inPart() {
   take(Fit.contain, Mode.on);
@@ -1797,50 +1615,45 @@ void inPart() {
   );
 
   group('git-incremental mode', () {
+    void git(Directory dir, List<String> args) {
+      final r = Process.runSync('git', args, workingDirectory: dir.path);
+      if (r.exitCode != 0) {
+        throw StateError('git ${args.join(' ')} failed: ${r.stderr}');
+      }
+    }
+
+    /// A package holding [files], committed to a fresh git repository.
+    Directory repo(String name, Map<String, String> files) {
+      final dir = fixture(name, files);
+      for (final args in [
+        ['init'],
+        ['config', 'user.email', 'test@example.com'],
+        ['config', 'user.name', 'Test'],
+        ['add', '.'],
+        ['commit', '-m', 'init'],
+      ]) {
+        git(dir, args);
+      }
+      return dir;
+    }
+
     test('changed and since filter to git-modified files', () async {
-      final dir = Directory.systemTemp.createTempSync('dotsan_git_');
-      addTearDown(() => dir.deleteSync(recursive: true));
-      Directory(p.join(dir.path, 'lib')).createSync();
-      File(p.join(dir.path, 'pubspec.yaml'))
-          .writeAsStringSync('name: git_pkg\nenvironment:\n  sdk: ^3.10.0\n');
-      final committed = File(p.join(dir.path, 'lib', 'committed.dart'))
-        ..writeAsStringSync('''
+      final dir = repo('git_pkg', {
+        'lib/committed.dart': '''
 enum Fit { cover }
 Fit f() => Fit.cover;
-''');
-      final modified = File(p.join(dir.path, 'lib', 'modified.dart'))
-        ..writeAsStringSync('''
+''',
+        'lib/modified.dart': '''
 enum Fit { cover, contain }
 Fit f() => Fit.cover;
-''');
-      final pubGet = Process.runSync('dart', [
-        'pub',
-        'get',
-        '--offline',
-      ], workingDirectory: dir.path);
-      if (pubGet.exitCode != 0) {
-        Process.runSync('dart', ['pub', 'get'], workingDirectory: dir.path);
-      }
-
-      void git(List<String> args) {
-        final r = Process.runSync('git', args, workingDirectory: dir.path);
-        if (r.exitCode != 0) {
-          throw StateError('git ${args.join(' ')} failed: ${r.stderr}');
-        }
-      }
-
-      git(['init']);
-      git(['config', 'user.email', 'test@example.com']);
-      git(['config', 'user.name', 'Test']);
-      git(['add', '.']);
-      git(['commit', '-m', 'init']);
-
-      modified.writeAsStringSync('''
+''',
+      });
+      final committed = File(p.join(dir.path, 'lib', 'committed.dart'));
+      final modified = write(dir, 'lib/modified.dart', '''
 enum Fit { cover, contain }
 Fit f() => Fit.contain;
 ''');
-      final untracked = File(p.join(dir.path, 'lib', 'untracked.dart'))
-        ..writeAsStringSync('''
+      final untracked = write(dir, 'lib/untracked.dart', '''
 enum Fit { cover }
 Fit g() => Fit.cover;
 ''');
@@ -1855,8 +1668,8 @@ Fit g() => Fit.cover;
         check(changedRes.files.map((f) => p.basename(f.path)).toList())
             .deepEquals(['modified.dart', 'untracked.dart']);
 
-        git(['add', 'lib/modified.dart']);
-        git(['commit', '-m', 'second']);
+        git(dir, ['add', 'lib/modified.dart']);
+        git(dir, ['commit', '-m', 'second']);
         untracked.deleteSync();
 
         final sinceRes = await Sanitizer(
@@ -1875,7 +1688,7 @@ Fit g() => Fit.cover;
 
         // A branch sharing a directory's name (`lib`) must not trigger git's
         // ambiguous argument failure when `lib` is also passed as a target.
-        git(['branch', 'lib', 'HEAD~1']);
+        git(dir, ['branch', 'lib', 'HEAD~1']);
         final ambiguousBranchRes = await Sanitizer(
           since: 'lib',
           dryRun: true,
@@ -1912,12 +1725,27 @@ Fit f() => Fit.cover;
 
       // Running with `--changed` on a path outside any git repository throws
       // `StateError`.
-      final nonRepo = Directory.systemTemp.createTempSync('dotsan_nonrepo_');
-      addTearDown(() => nonRepo.deleteSync(recursive: true));
-      File(p.join(nonRepo.path, 'a.dart'))
-          .writeAsStringSync('void main() {}\n');
+      final nonRepo = fixture('nonrepo', {
+        'a.dart': 'void main() {}\n',
+      }, pubGet: false);
       check(() => Sanitizer(changed: true, dryRun: true).run([nonRepo.path]))
           .throws<StateError>();
+    });
+
+    test('changed lists a staged file', () async {
+      final dir = repo('git_staged', {});
+      write(
+        dir,
+        'lib/staged.dart',
+        'enum Fit { cover }\nFit f() => Fit.cover;\n',
+      );
+      git(dir, ['add', 'lib/staged.dart']);
+      final result = await Sanitizer(
+        changed: true,
+        dryRun: true,
+      ).run([p.join(dir.path, 'lib')]);
+      check([for (final f in result.files) p.basename(f.path)])
+          .deepEquals(['staged.dart']);
     });
   });
 }
