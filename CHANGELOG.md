@@ -10,6 +10,9 @@
   `dotsan -n --set-exit-if-changed` CI gates will exit 1 on newly convertible
   sites; pass `--skip=Type.member` (`Sanitizer(skips: {'Type.member'})`) to keep
   specific sites prefixed.
+- `Sanitizer.run()` throws an `ArgumentError` for a path that does not exist or
+  is neither a directory nor a `.dart` file, instead of skipping it silently;
+  `dotsan` already rejected both with exit 64.
 
 ### Added
 

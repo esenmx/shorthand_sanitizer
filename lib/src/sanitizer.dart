@@ -144,10 +144,22 @@ final class Sanitizer({
   /// Sanitizes every non-generated `.dart` file under [paths]
   /// (files or directories).
   ///
-  /// Throws a [StateError] when no Dart SDK is found (see [sdkPath]) or when
-  /// [changed] or [since] is used outside a git repository, or an
-  /// [ArgumentError] when [since] is not a valid git revision.
+  /// Throws an [ArgumentError] when a path does not exist or is neither a
+  /// directory nor a `.dart` file, or when [since] is not a valid git
+  /// revision; a [StateError] when no Dart SDK is found (see [sdkPath]) or
+  /// when [changed] or [since] is used outside a git repository.
   Future<SanitizeResult> run(List<String> paths) {
+    for (final path in paths) {
+      if (switch (FileSystemEntity.typeSync(path)) {
+            .directory => null,
+            .file when path.endsWith('.dart') => null,
+            .notFound => 'no such file or directory',
+            _ => 'not a directory or a .dart file',
+          }
+          case final problem?) {
+        throw ArgumentError.value(path, 'paths', problem);
+      }
+    }
     _realCache.clear();
     final sdk = sdkPath();
     if (sdk == null) {

@@ -96,10 +96,9 @@ List<String> _collectFiles(
 
   for (final rootPath in paths) {
     if (FileSystemEntity.isFileSync(rootPath)) {
-      if (rootPath.endsWith('.dart')) consider(rootPath);
+      consider(rootPath);
       continue;
     }
-    if (!FileSystemEntity.isDirectorySync(rootPath)) continue;
 
     final dirQueue = <Directory>[.new(rootPath)];
     while (dirQueue.isNotEmpty) {
