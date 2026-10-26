@@ -122,6 +122,34 @@ void main() {
     check(run.stderr as String).contains('does_not_exist');
   });
 
+  test('every bad path is reported, a non-Dart file included (exit 64)', () {
+    final run = dotsan(['-n', 'lib/does_not_exist.dart', 'pubspec.yaml']);
+    check(run.exitCode).equals(64);
+    check(run.stderr as String).equals(
+      'no such file or directory: lib/does_not_exist.dart\n'
+      'not a .dart file: pubspec.yaml\n',
+    );
+  });
+
+  test('no path and no conventional root is a usage error (exit 64)', () {
+    final dir = fixture('no_roots', {}, pubGet: false);
+    final run = dotsan(['-n'], cwd: dir.path);
+    check(run.exitCode).equals(64);
+    check(run.stderr as String)
+        .equals('no conventional root directory found (see --help)\n');
+  });
+
+  test('--help and -h print the usage on stdout', () {
+    final dir = fixture('help', {}, pubGet: false);
+    for (final flag in ['--help', '-h']) {
+      final run = dotsan([flag], cwd: dir.path);
+      check(because: '$flag: ${run.stderr}', run.exitCode).equals(0);
+      check(because: flag, run.stdout as String)
+        ..startsWith('Usage: dotsan [paths...] [options]\n')
+        ..endsWith('file could not be written.\n');
+    }
+  });
+
   test('SS-B11 an invalid --exclude glob is a usage error (exit 64)', () {
     final run = dotsan(['-n', 'lib', '--exclude=[']);
     check(run.exitCode).equals(64);
