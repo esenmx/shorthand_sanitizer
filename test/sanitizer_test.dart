@@ -1658,57 +1658,51 @@ enum Fit { cover }
 Fit g() => Fit.cover;
 ''');
 
-      final prevCwd = Directory.current;
-      Directory.current = dir;
-      try {
-        final changedRes = await Sanitizer(
-          changed: true,
-          dryRun: true,
-        ).run([p.join(dir.path, 'lib')]);
-        check(changedRes.files.map((f) => p.basename(f.path)).toList())
-            .deepEquals(['modified.dart', 'untracked.dart']);
+      final changedRes = await Sanitizer(
+        changed: true,
+        dryRun: true,
+      ).run([p.join(dir.path, 'lib')]);
+      check(changedRes.files.map((f) => p.basename(f.path)).toList())
+          .deepEquals(['modified.dart', 'untracked.dart']);
 
-        git(dir, ['add', 'lib/modified.dart']);
-        git(dir, ['commit', '-m', 'second']);
-        untracked.deleteSync();
+      git(dir, ['add', 'lib/modified.dart']);
+      git(dir, ['commit', '-m', 'second']);
+      untracked.deleteSync();
 
-        final sinceRes = await Sanitizer(
-          since: 'HEAD~1',
-          dryRun: true,
-        ).run([p.join(dir.path, 'lib')]);
-        check(sinceRes.files.map((f) => p.basename(f.path)).toList())
-            .deepEquals(['modified.dart']);
-        check(committed.readAsStringSync()).contains('Fit.cover');
+      final sinceRes = await Sanitizer(
+        since: 'HEAD~1',
+        dryRun: true,
+      ).run([p.join(dir.path, 'lib')]);
+      check(sinceRes.files.map((f) => p.basename(f.path)).toList())
+          .deepEquals(['modified.dart']);
+      check(committed.readAsStringSync()).contains('Fit.cover');
 
-        check(
-          () =>
-              Sanitizer(since: 'nonexistent_ref_xyz')
-                  .run([p.join(dir.path, 'lib')]),
-        ).throws<ArgumentError>();
+      check(
+        () =>
+            Sanitizer(since: 'nonexistent_ref_xyz')
+                .run([p.join(dir.path, 'lib')]),
+      ).throws<ArgumentError>();
 
-        // A branch sharing a directory's name (`lib`) must not trigger git's
-        // ambiguous argument failure when `lib` is also passed as a target.
-        git(dir, ['branch', 'lib', 'HEAD~1']);
-        final ambiguousBranchRes = await Sanitizer(
-          since: 'lib',
-          dryRun: true,
-        ).run(['lib']);
-        check(ambiguousBranchRes.files.map((f) => p.basename(f.path)).toList())
-            .deepEquals(['modified.dart']);
+      // A branch sharing a directory's name (`lib`) must not trigger git's
+      // ambiguous argument failure when `lib` is also passed as a target.
+      git(dir, ['branch', 'lib', 'HEAD~1']);
+      final ambiguousBranchRes = await Sanitizer(
+        since: 'lib',
+        dryRun: true,
+      ).run([p.join(dir.path, 'lib')]);
+      check(ambiguousBranchRes.files.map((f) => p.basename(f.path)).toList())
+          .deepEquals(['modified.dart']);
 
-        // `--changed` with `--exclude` / `--skip` does not emit false
-        // unmatched warnings for files git filtered out.
-        final filteredWarnings = await Sanitizer(
-          changed: true,
-          dryRun: true,
-          excludes: ['**/committed.dart'],
-          skips: {'Fit.cover'},
-        ).run([p.join(dir.path, 'lib')]);
-        check(filteredWarnings.unmatchedExcludes).isEmpty();
-        check(filteredWarnings.unmatchedSkips).isEmpty();
-      } finally {
-        Directory.current = prevCwd;
-      }
+      // `--changed` with `--exclude` / `--skip` does not emit false
+      // unmatched warnings for files git filtered out.
+      final filteredWarnings = await Sanitizer(
+        changed: true,
+        dryRun: true,
+        excludes: ['**/committed.dart'],
+        skips: {'Fit.cover'},
+      ).run([p.join(dir.path, 'lib')]);
+      check(filteredWarnings.unmatchedExcludes).isEmpty();
+      check(filteredWarnings.unmatchedSkips).isEmpty();
 
       // Running from a parent directory (or parent repo) resolves the nested
       // target's own git repo root.
