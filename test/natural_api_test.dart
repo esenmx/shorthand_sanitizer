@@ -227,6 +227,21 @@ void main() {
     });
   });
 
+  group('run rejects a path it cannot sanitize', () {
+    for (final (description, rel) in [
+      ('that does not exist', 'lib/missing.dart'),
+      ('to a file that is not Dart', 'notes.txt'),
+    ]) {
+      test('a path $description', () {
+        final dir = fixture('bad_path', {'notes.txt': ''}, pubGet: false);
+        check(() => Sanitizer().run([p.join(dir.path, rel)]))
+            .throws<ArgumentError>()
+            .has((e) => e.name, 'name')
+            .equals('paths');
+      });
+    }
+  });
+
   group('AU-7 excludes', () {
     test('an --exclude glob that matched no file is reported', () {
       final dir = fixture('au7_typo', {'lib/a.dart': convertible});
