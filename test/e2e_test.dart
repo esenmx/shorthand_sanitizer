@@ -5,6 +5,7 @@
 import 'dart:io';
 
 import 'package:checks/checks.dart';
+import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:test/test.dart';
@@ -40,34 +41,50 @@ void main() {
 /// unchanged and, when given, convert exactly [converted] sites.
 /// [allowErrors] keeps a fixture with a deliberate error from being skipped
 /// whole.
+@isTest
 void e2e(
   String name,
   Map<String, String> files, {
   int? converted,
   bool allowErrors = false,
   List<String> roots = const ['lib', 'bin'],
+  String? testOn,
+  Timeout timeout = const .new(.new(minutes: 3)),
+  Object? skip,
+  Object? tags,
+  Map<String, dynamic>? onPlatform,
+  int? retry,
 }) {
-  test('e2e $name', () async {
-    final root = fixture(name, files);
-    final diagnosticsBefore = _diagnostics(root);
-    final runBefore = _run(root);
-    final result = await Sanitizer(allowErrors: allowErrors).run([
-      for (final dir in roots)
-        if (Directory(p.join(root.path, dir)).existsSync())
-          p.join(root.path, dir),
-    ]);
+  test(
+    'e2e $name',
+    testOn: testOn,
+    timeout: timeout,
+    skip: skip,
+    tags: tags,
+    onPlatform: onPlatform,
+    retry: retry,
+    () async {
+      final root = fixture(name, files);
+      final diagnosticsBefore = _diagnostics(root);
+      final runBefore = _run(root);
+      final result = await Sanitizer(allowErrors: allowErrors).run([
+        for (final dir in roots)
+          if (Directory(p.join(root.path, dir)).existsSync())
+            p.join(root.path, dir),
+      ]);
 
-    check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
+      check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
 
-    final surplus = _diagnostics(root);
-    diagnosticsBefore.forEach(surplus.remove);
-    check(
-      because: 'new diagnostics:\n${surplus.join('\n')}',
-      surplus,
-    ).isEmpty();
-    check(_run(root)).equals(runBefore);
-    if (converted != null) check(result.convertedCount).equals(converted);
-  }, timeout: const .new(.new(minutes: 3)));
+      final surplus = _diagnostics(root);
+      diagnosticsBefore.forEach(surplus.remove);
+      check(
+        because: 'new diagnostics:\n${surplus.join('\n')}',
+        surplus,
+      ).isEmpty();
+      check(_run(root)).equals(runBefore);
+      if (converted != null) check(result.convertedCount).equals(converted);
+    },
+  );
 }
 
 /// `severity|code|file|message` of each `dart analyze --format=machine` line.
