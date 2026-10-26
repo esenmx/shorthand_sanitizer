@@ -5,36 +5,15 @@ import 'package:checks/checks.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
-final Directory pkg = .systemTemp.createTempSync('dotsan_cli_test');
+import 'helpers.dart';
 
 void main() {
-  setUpAll(() {
-    Directory(p.join(pkg.path, 'lib')).createSync();
-    // Floor below 3.10 so the run exercises the warning path.
-    const spec = 'name: floor_fixture\nenvironment:\n  sdk: ^3.0.0\n';
-    File(p.join(pkg.path, 'pubspec.yaml')).writeAsStringSync(spec);
-    File(p.join(pkg.path, 'lib', 'main.dart')).writeAsStringSync('''
-enum Fit { cover, contain }
-void main() {
-  Fit f = Fit.cover;
-  print(f);
-}
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: pkg.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-  });
-
-  tearDownAll(() => pkg.deleteSync(recursive: true));
-
   test('--explain lists kept sites after the converted ones', () {
     final file = explainFixture();
     final run = dotsan(['--dry-run', '--explain', file.parent.path]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
-      '${p.normalize(p.absolute(file.path))}\n'
+      '${canonical(file.path)}\n'
       '  4: Fit.cover -> .cover\n'
       '  3: Fit.contain kept: no context type\n'
       'would convert 1 site(s) in 1 file(s), 1 kept\n',
@@ -45,12 +24,17 @@ void main() {
     // Full-string equality is the oracle: piped stdout is the parseable
     // report, so no progress/spinner text and no ANSI codes may leak into
     // either stream when they are not terminals. A skipped package fails the
-    // run (65).
+    // run (65); its floor is below 3.10 to exercise the warning path.
+    final pkg = fixture('floor_fixture', {
+      'pubspec.yaml': 'name: floor_fixture\nenvironment:\n  sdk: ^3.0.0\n',
+      'lib/main.dart':
+          'enum Fit { cover }\nvoid main() {\n  Fit f = Fit.cover;\n}\n',
+    });
     final run = dotsan(['--dry-run', p.join(pkg.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(65);
     check(run.stdout as String)
         .equals('would convert 0 site(s) in 0 file(s)\n');
-    final root = p.normalize(p.absolute(pkg.path));
+    final root = canonical(pkg.path);
     check(run.stderr as String).equals(
       'warning: skipped 1 file(s) in $root at language version 3.0 — dot '
       'shorthands need 3.10. Raise `environment: sdk:` in '
@@ -108,7 +92,7 @@ void main() {
           'unmatchedExcludes': <Object?>[],
           'files': [
             {
-              'path': p.normalize(p.absolute(file.path)),
+              'path': canonical(file.path),
               'removedImports': 0,
               'prunedImports': <Object?>[],
               'sites': [
@@ -145,162 +129,44 @@ void main() {
   });
 
   test('SS-M4 file lines are relative to the working directory', () {
-    final fixture = Directory.systemTemp.createTempSync('dotsan_relative');
-    addTearDown(() => fixture.deleteSync(recursive: true));
-    Directory(p.join(fixture.path, 'lib')).createSync();
-    const spec = 'name: relative_fixture\nenvironment:\n  sdk: ^3.10.0\n';
-    File(p.join(fixture.path, 'pubspec.yaml')).writeAsStringSync(spec);
-    File(p.join(fixture.path, 'lib', 'main.dart')).writeAsStringSync('''
-enum Fit { cover, contain }
-void main() {
-  Fit f = Fit.cover;
-  print(f);
-}
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: fixture.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-
-    final run = Process.runSync(Platform.resolvedExecutable, [
-      '--packages=${p.absolute('.dart_tool/package_config.json')}',
-      p.absolute('bin/dotsan.dart'),
-      '-n',
-      'lib',
-    ], workingDirectory: fixture.path);
+    final dir = fixture('relative_fixture', {
+      'lib/main.dart': 'enum Fit { cover }\nFit f() => Fit.cover;\n',
+    });
+    final run = dotsan(['-n', 'lib'], cwd: dir.path);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).startsWith('${p.join('lib', 'main.dart')}\n');
   });
 
-  test('discovers default roots under pub workspace members', () {
-    final ws = Directory.systemTemp.createTempSync('dotsan_workspace');
-    addTearDown(() => ws.deleteSync(recursive: true));
-    File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync('''
-name: ws_root
-publish_to: none
-environment:
-  sdk: ^3.10.0
-workspace:
-  - pkgs/pkg_a
-''');
-    final member = Directory(p.join(ws.path, 'pkgs', 'pkg_a'))
-      ..createSync(recursive: true);
-    File(p.join(member.path, 'pubspec.yaml')).writeAsStringSync('''
-name: pkg_a
-resolution: workspace
-environment:
-  sdk: ^3.10.0
-''');
-    Directory(p.join(member.path, 'lib')).createSync();
-    File(p.join(member.path, 'lib', 'a.dart')).writeAsStringSync('''
-enum Fit { cover }
-void main() {
-  Fit f = Fit.cover;
-  print(f);
-}
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: ws.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-
-    final run = Process.runSync(Platform.resolvedExecutable, [
-      '--packages=${p.absolute('.dart_tool/package_config.json')}',
-      p.absolute('bin/dotsan.dart'),
-      '-n',
-    ], workingDirectory: ws.path);
-    check(because: '${run.stderr}', run.exitCode).equals(0);
-    check(run.stdout as String)
-        .contains('${p.join('pkgs', 'pkg_a', 'lib', 'a.dart')}\n');
-    check(run.stdout as String)
-        .endsWith('would convert 1 site(s) in 1 file(s)\n');
-
-    // Also supports flow-style and glob workspace members (`workspace: [pkgs/*]`)
-    // even when the root itself has a default directory (`tool/`).
-    Directory(p.join(ws.path, 'tool')).createSync();
-    File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync('''
-name: ws_root
-publish_to: none
-environment:
-  sdk: ^3.10.0
-workspace: [pkgs/*]
-''');
-    final globRun = Process.runSync(Platform.resolvedExecutable, [
-      '--packages=${p.absolute('.dart_tool/package_config.json')}',
-      p.absolute('bin/dotsan.dart'),
-      '-n',
-    ], workingDirectory: ws.path);
-    check(because: '${globRun.stderr}', globRun.exitCode).equals(0);
-    check(globRun.stdout as String)
-        .contains('${p.join('pkgs', 'pkg_a', 'lib', 'a.dart')}\n');
-
-    // A declared workspace member that matches nothing exits 64.
-    File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync('''
-name: ws_root
-publish_to: none
-environment:
-  sdk: ^3.10.0
-workspace:
-  - pkgs/nonexistent_*
-''');
-    final badMemberRun = Process.runSync(Platform.resolvedExecutable, [
-      '--packages=${p.absolute('.dart_tool/package_config.json')}',
-      p.absolute('bin/dotsan.dart'),
-      '-n',
-    ], workingDirectory: ws.path);
-    check(badMemberRun.exitCode).equals(64);
-    check(badMemberRun.stderr as String)
-        .contains('workspace member "pkgs/nonexistent_*" matched no directory');
-  });
-
   group('workspace list', () {
-    // Pub expands workspace globs from language 3.11 on.
+    // Pub expands workspace globs from language 3.11 on. The root's own
+    // default directory (`tool/`) must not hide the members'.
     const spec = 'environment:\n  sdk: ^3.11.0\n';
-    Directory workspace(String declaration, {bool pubGet = true}) {
-      final ws = Directory.systemTemp.createTempSync('dotsan_workspace_list');
-      addTearDown(() => ws.deleteSync(recursive: true));
-      File(p.join(ws.path, 'pubspec.yaml')).writeAsStringSync(
-        'name: ws_root\npublish_to: none\n$spec$declaration\n',
-      );
-      for (final name in ['pkg_a', 'pkg_b']) {
-        final lib = Directory(p.join(ws.path, 'pkgs', name, 'lib'))
-          ..createSync(recursive: true);
-        File(p.join(lib.parent.path, 'pubspec.yaml'))
-            .writeAsStringSync('name: $name\nresolution: workspace\n$spec');
-        File(p.join(lib.path, '$name.dart'))
-            .writeAsStringSync('enum Fit { cover }\nFit f() => Fit.cover;\n');
-      }
-      if (pubGet) {
-        final get = Process.runSync('dart', [
-          'pub',
-          'get',
-        ], workingDirectory: ws.path);
-        if (get.exitCode != 0) {
-          throw StateError('pub get failed: ${get.stderr}');
-        }
-      }
-      return ws;
-    }
-
-    ProcessResult dotsanIn(Directory ws) =>
-        Process.runSync(Platform.resolvedExecutable, [
-          '--packages=${p.absolute('.dart_tool/package_config.json')}',
-          p.absolute('bin/dotsan.dart'),
-          '-n',
-        ], workingDirectory: ws.path);
+    Directory workspace(
+      String declaration, {
+      bool pubGet = true,
+    }) => fixture('ws_root', {
+      'pubspec.yaml': 'name: ws_root\npublish_to: none\n$spec$declaration\n',
+      'tool/.keep': '',
+      for (final name in ['pkg_a', 'pkg_b']) ...{
+        'pkgs/$name/pubspec.yaml': 'name: $name\nresolution: workspace\n$spec',
+        'pkgs/$name/lib/$name.dart':
+            'enum Fit { cover }\nFit f() => Fit.cover;\n',
+      },
+    }, pubGet: pubGet);
 
     for (final (form, declaration) in [
+      ('an indented block list', 'workspace:\n  - pkgs/pkg_a\n  - pkgs/pkg_b'),
       ('column-0 block items', 'workspace:\n- pkgs/pkg_a\n- pkgs/pkg_b'),
+      ('a flow glob', 'workspace: [pkgs/*]'),
       ('a brace glob', 'workspace: ["pkgs/{pkg_a,pkg_b}"]'),
       ('a bracket glob', 'workspace: ["pkgs/pkg_[ab]"]'),
     ]) {
       test('finds both members declared as $form', () {
-        final run = dotsanIn(workspace(declaration));
+        final run = dotsan(['-n'], cwd: workspace(declaration).path);
         check(because: '${run.stderr}', run.exitCode).equals(0);
         check(run.stdout as String)
-            .endsWith('would convert 2 site(s) in 2 file(s)\n');
+          ..contains('${p.join('pkgs', 'pkg_a', 'lib', 'pkg_a.dart')}\n')
+          ..endsWith('would convert 2 site(s) in 2 file(s)\n');
       });
     }
 
@@ -315,9 +181,25 @@ workspace:
         'workspace: [pkgs/pkg_a',
         "expected ',' or ']'",
       ),
+      (
+        'a member glob that matches nothing',
+        'workspace:\n  - pkgs/nonexistent_*',
+        'workspace member "pkgs/nonexistent_*" matched no directory',
+      ),
+      (
+        'a member that does not exist',
+        'workspace:\n  - pkgs/pkg_c',
+        'workspace member "pkgs/pkg_c" does not exist',
+      ),
+      (
+        'an invalid member glob',
+        'workspace: ["pkgs/["]',
+        'invalid workspace member glob "pkgs/["',
+      ),
     ]) {
       test('exits 64 on $form', () {
-        final run = dotsanIn(workspace(declaration, pubGet: false));
+        final ws = workspace(declaration, pubGet: false);
+        final run = dotsan(['-n'], cwd: ws.path);
         check(because: '${run.stderr}', run.exitCode).equals(64);
         check(run.stderr as String).contains(error);
       });
@@ -372,13 +254,11 @@ workspace:
       final alias = Directory.systemTemp.createTempSync('dotsan_alias');
       addTearDown(() => alias.deleteSync(recursive: true));
       final link = Link(p.join(alias.path, 'pkg'))..createSync(root);
-      final run = Process.runSync(Platform.resolvedExecutable, [
-        '--packages=${p.absolute('.dart_tool/package_config.json')}',
-        p.absolute('bin/dotsan.dart'),
+      final run = dotsan([
         '-n',
         '--exclude=lib/main.dart',
         p.join(link.path, 'lib'),
-      ], workingDirectory: root);
+      ], cwd: root);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stdout as String)
           .equals('would convert 0 site(s) in 0 file(s)\n');
@@ -395,45 +275,23 @@ workspace:
     check(dotsan(['--version']).stdout as String).equals('dotsan $version\n');
   });
 
-  test('SS-I1 names the pruned import and counts its file in changed', () {
-    final dir = Directory.systemTemp.createTempSync('dotsan_part_orphan');
-    addTearDown(() => dir.deleteSync(recursive: true));
-    Directory(p.join(dir.path, 'lib')).createSync();
-    File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync('''
-name: part_orphan_cli
-environment:
-  sdk: ^3.10.0
-''');
-    File(p.join(dir.path, 'lib', 'fit.dart')).writeAsStringSync('''
-enum Fit { cover }
-''');
-    File(p.join(dir.path, 'lib', 'sink.dart')).writeAsStringSync('''
-import 'fit.dart';
-void take(Fit f) {}
-''');
-    final libFile = File(p.join(dir.path, 'lib', 'lib.dart'))
-      ..writeAsStringSync('''
-import 'fit.dart';
-import 'sink.dart';
-part 'part.dart';
-''');
-    final partFile = File(p.join(dir.path, 'lib', 'part.dart'))
-      ..writeAsStringSync('''
-part of 'lib.dart';
-void run() => take(Fit.cover);
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: dir.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
+  /// A part whose one site orphans its library's import of `fit.dart`.
+  Map<String, String> partOrphan({String lib = ''}) => {
+    'lib/fit.dart': 'enum Fit { cover }\n',
+    'lib/sink.dart': "import 'fit.dart';\nvoid take(Fit f) {}\n",
+    'lib/lib.dart':
+        "import 'fit.dart';\nimport 'sink.dart';\npart 'part.dart';\n$lib",
+    'lib/part.dart': "part of 'lib.dart';\nvoid run() => take(Fit.cover);\n",
+  };
 
+  test('SS-I1 names the pruned import and counts its file in changed', () {
+    final dir = fixture('part_orphan_cli', partOrphan());
     final run = dotsan(['-n', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
-      '${p.normalize(p.absolute(partFile.path))}\n'
+      '${canonical(p.join(dir.path, 'lib', 'part.dart'))}\n'
       '  2: Fit.cover -> .cover\n'
-      '${p.normalize(p.absolute(libFile.path))}\n'
+      '${canonical(p.join(dir.path, 'lib', 'lib.dart'))}\n'
       "  1: import 'fit.dart' -> removed\n"
       'would convert 1 site(s) in 2 file(s), '
       'would prune 1 orphaned import(s)\n',
@@ -441,46 +299,17 @@ void run() => take(Fit.cover);
   });
 
   test("explain names the pruned import beside a library's kept sites", () {
-    final dir = Directory.systemTemp.createTempSync('dotsan_part_orphan');
-    addTearDown(() => dir.deleteSync(recursive: true));
-    Directory(p.join(dir.path, 'lib')).createSync();
-    File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync('''
-name: part_orphan_kept_cli
-environment:
-  sdk: ^3.10.0
-''');
-    File(p.join(dir.path, 'lib', 'fit.dart')).writeAsStringSync('''
-enum Fit { cover }
-''');
-    File(p.join(dir.path, 'lib', 'sink.dart')).writeAsStringSync('''
-import 'fit.dart';
-void take(Fit f) {}
-''');
-    final libFile = File(p.join(dir.path, 'lib', 'lib.dart'))
-      ..writeAsStringSync('''
-import 'fit.dart';
-import 'sink.dart';
-part 'part.dart';
-void other() => print(Duration.zero);
-''');
-    final partFile = File(p.join(dir.path, 'lib', 'part.dart'))
-      ..writeAsStringSync('''
-part of 'lib.dart';
-void run() => take(Fit.cover);
-''');
-    final get = Process.runSync('dart', [
-      'pub',
-      'get',
-    ], workingDirectory: dir.path);
-    if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-
+    final dir = fixture(
+      'part_orphan_kept_cli',
+      partOrphan(lib: 'void other() => print(Duration.zero);\n'),
+    );
     final run = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
-      '${p.normalize(p.absolute(libFile.path))}\n'
+      '${canonical(p.join(dir.path, 'lib', 'lib.dart'))}\n'
       '  4: Duration.zero kept: context type Object? declares no static zero\n'
       "  1: import 'fit.dart' -> removed\n"
-      '${p.normalize(p.absolute(partFile.path))}\n'
+      '${canonical(p.join(dir.path, 'lib', 'part.dart'))}\n'
       '  2: Fit.cover -> .cover\n'
       'would convert 1 site(s) in 2 file(s), 1 kept, '
       'would prune 1 orphaned import(s)\n',
@@ -502,33 +331,15 @@ void run() => take(Fit.cover);
 /// A fresh `^3.10.0` package whose `lib/main.dart` has one convertible site
 /// (line 4) and one without a context type (line 3); returns that file.
 File explainFixture() {
-  final dir = Directory.systemTemp.createTempSync('dotsan_explain');
-  addTearDown(() => dir.deleteSync(recursive: true));
-  Directory(p.join(dir.path, 'lib')).createSync();
-  const spec = 'name: explain_fixture\nenvironment:\n  sdk: ^3.10.0\n';
-  File(p.join(dir.path, 'pubspec.yaml')).writeAsStringSync(spec);
-  final file = File(p.join(dir.path, 'lib', 'main.dart'))
-    ..writeAsStringSync('''
+  final dir = fixture('explain_fixture', {
+    'lib/main.dart': '''
 enum Fit { cover, contain }
 void main() {
   final untyped = Fit.contain;
   Fit f = Fit.cover;
   print([f, untyped]);
 }
-''');
-  final get = Process.runSync('dart', [
-    'pub',
-    'get',
-  ], workingDirectory: dir.path);
-  if (get.exitCode != 0) throw StateError('pub get failed: ${get.stderr}');
-  return file;
+''',
+  });
+  return File(p.join(dir.path, 'lib', 'main.dart'));
 }
-
-/// dotsan writes UTF-8; the default decoding is the system code page, which
-/// is not UTF-8 on Windows (the warning's `—` came back as `â€”`).
-ProcessResult dotsan(List<String> args) => Process.runSync(
-  'dart',
-  ['run', 'bin/dotsan.dart', ...args],
-  stdoutEncoding: utf8,
-  stderrEncoding: utf8,
-);
