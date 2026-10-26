@@ -52,6 +52,28 @@ void main() {
       ]);
     });
 
+    test('a package without a package config exits 65 and says why', () {
+      final dir = fixture('au1_unconfigured', {
+        'lib/a.dart': convertible,
+      }, pubGet: false);
+      final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+      check(because: '${run.stderr}', run.exitCode).equals(65);
+      check(run.stderr as String).equals(
+        'warning: skipped 1 file(s) in ${canonical(dir.path)}: no package '
+        'config entry — run `dart pub get` there first.\n',
+      );
+    });
+
+    test('--allow-errors processes a library with analysis errors', () {
+      final dir = fixture('au1_allow', {
+        'lib/bad.dart': "$convertible\nint bad = '';\n",
+      });
+      final run = dotsan(['-n', '--allow-errors', p.join(dir.path, 'lib')]);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String)
+          .endsWith('would convert 1 site(s) in 1 file(s)\n');
+    });
+
     test('a skip outranks --set-exit-if-changed', () {
       final dir = fixture('au1_rank', {
         'lib/a.dart': convertible,
