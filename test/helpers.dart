@@ -4,6 +4,13 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 
+/// A fresh directory under the system temp directory, deleted after the test.
+Directory tempDir(String name) {
+  final dir = Directory.systemTemp.createTempSync('dotsan_$name');
+  addTearDown(() => dir.deleteSync(recursive: true));
+  return dir;
+}
+
 /// A fresh package under the system temp directory holding [files] (paths
 /// relative to its root, `/`-separated) beside a `^3.10.0` pubspec that
 /// [files] may replace, deleted after the test. `dart pub get` runs unless
@@ -13,8 +20,7 @@ Directory fixture(
   Map<String, String> files, {
   bool pubGet = true,
 }) {
-  final dir = Directory.systemTemp.createTempSync('dotsan_$name');
-  addTearDown(() => dir.deleteSync(recursive: true));
+  final dir = tempDir(name);
   final all = {
     'pubspec.yaml': 'name: $name\nenvironment:\n  sdk: ^3.10.0\n',
     ...files,

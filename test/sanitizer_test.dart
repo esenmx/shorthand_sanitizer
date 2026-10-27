@@ -7,13 +7,14 @@ import 'package:test/test.dart';
 
 import 'helpers.dart';
 
-final Directory pkg = .systemTemp.createTempSync('shorthand_sanitizer_test');
-int fileId = 0;
-
-/// Writes [source] into the fixture package, sanitizes it, and returns the
-/// resulting content (unchanged content when nothing converted).
-Future<String> sanitize(String source, {Set<String> skips = const {}}) async {
-  final file = write(pkg, 'lib/case_${fileId++}.dart', source);
+/// Writes [source] beside [files] into a fresh package, sanitizes it, and
+/// returns the resulting content (unchanged content when nothing converted).
+Future<String> sanitize(
+  String source, {
+  Map<String, String> files = const {},
+  Set<String> skips = const {},
+}) async {
+  final file = write(fixture('fixture', files), 'lib/case.dart', source);
   final result = await Sanitizer(skips: skips).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
@@ -21,29 +22,25 @@ Future<String> sanitize(String source, {Set<String> skips = const {}}) async {
   return file.readAsStringSync();
 }
 
-void main() {
-  setUpAll(() {
-    write(pkg, 'pubspec.yaml', 'name: fixture\nenvironment:\n  sdk: ^3.10.0\n');
-    // `Dep` appears in a consumer only as the prefix of `Dep.instance`, in a
-    // slot Sink's parameter witnesses: the rewrite orphans dep.dart's import.
-    write(pkg, 'lib/dep.dart', '''
+/// `Dep` appears in a consumer only as the prefix of `Dep.instance`, in a
+/// slot Sink's parameter witnesses: the rewrite orphans dep.dart's import.
+const orphaning = {
+  'lib/dep.dart': '''
 class Dep {
   const Dep._();
   static const Dep instance = Dep._();
 }
-''');
-    write(pkg, 'lib/sink.dart', '''
+''',
+  'lib/sink.dart': '''
 import 'dep.dart';
 class Sink {
   Sink(this.d);
   final Dep d;
 }
-''');
-    pubGetIn(pkg.path);
-  });
+''',
+};
 
-  tearDownAll(() => pkg.deleteSync(recursive: true));
-
+void main() {
   test('enum values convert at witnessed slots', () async {
     final out = await sanitize('''
 enum Fit { cover, contain }
@@ -322,7 +319,7 @@ void main() => take(Box.all(1));
   });
 
   test('prunes an import the dropped prefix orphaned', () async {
-    final file = write(pkg, 'lib/consumer.dart', '''
+    final file = write(fixture('prune', orphaning), 'lib/consumer.dart', '''
 import 'dep.dart';
 import 'sink.dart';
 final sink = Sink(Dep.instance);
@@ -338,6 +335,7 @@ final sink = Sink(Dep.instance);
   test('leaves a pre-existing unused import alone', () async {
     // dep2.dart stays used (Box), so nothing is orphaned; dart:async is unused
     // before we touch anything (the user's, not ours) — it must survive.
+    final pkg = fixture('unused', {});
     write(pkg, 'lib/dep2.dart', '''
 class Dep2 {
   const Dep2._();
@@ -461,7 +459,7 @@ final box = Box(Dep2.instance);
   });
 
   test('handwritten *.preview.dart files are sanitized', () async {
-    final file = write(pkg, 'lib/card.preview.dart', '''
+    final file = write(fixture('preview', {}), 'lib/card.preview.dart', '''
 enum Fit { cover, contain }
 Fit preview() => Fit.cover;
 ''');
@@ -474,6 +472,7 @@ Fit preview() => Fit.cover;
 enum Fit { cover }
 Fit f() => Fit.cover;
 ''';
+    final pkg = fixture('excludes', {});
     final excluded = write(pkg, 'lib/firebase_options.dart', source);
     final generated = write(
       pkg,
@@ -489,6 +488,7 @@ Fit f() => Fit.cover;
   });
 
   test('sanitized output keeps compiling and means the same thing', () async {
+    final pkg = fixture('roundtrip', {});
     final file = write(pkg, 'lib/roundtrip.dart', r'''
 enum Fit { cover, contain }
 class Insets {
@@ -536,36 +536,42 @@ void main() {
   });
 
   test('static const on prefixed-imported class converts', () async {
-    write(pkg, 'lib/dep_class.dart', '''
+    const scaler = '''
 class Scaler {
   const Scaler.all();
   static const Scaler noScaling = Scaler.all();
 }
-''');
-    final out = await sanitize('''
+''';
+    final out = await sanitize(
+      '''
 import 'dep_class.dart' as p;
 void main() {
   const p.Scaler ts = p.Scaler.noScaling;
   print(ts);
 }
-''');
+''',
+      files: {'lib/dep_class.dart': scaler},
+    );
     check(out).contains('const p.Scaler ts = .noScaling;');
   });
 
   test('static method on prefixed-imported class converts', () async {
-    write(pkg, 'lib/dep_class2.dart', '''
+    const scaler = '''
 class Scaler {
   const Scaler.all();
   static Scaler scale(double v) => Scaler.all();
 }
-''');
-    final out = await sanitize('''
+''';
+    final out = await sanitize(
+      '''
 import 'dep_class2.dart' as p;
 void main() {
   final p.Scaler ts = p.Scaler.scale(5);
   print(ts);
 }
-''');
+''',
+      files: {'lib/dep_class2.dart': scaler},
+    );
     check(out).contains('final p.Scaler ts = .scale(5);');
   });
 
@@ -589,8 +595,8 @@ void main() {
     // constants as its own (`topCenter`, `center`) and forwards a factory
     // (`all`). A `Geo` slot therefore binds every shorthand to `Geo`, never to
     // the `Align`/`Directional` the source names.
-    setUpAll(() {
-      write(pkg, 'lib/geometry.dart', '''
+    const geometry = {
+      'lib/geometry.dart': '''
 abstract class Geo {
   static const Geo topCenter = Align.topCenter;
   static const Geo center = Align.center;
@@ -610,8 +616,8 @@ class Directional implements Geo {
   final double v;
   static const Directional center = Directional(5);
 }
-''');
-    });
+''',
+    };
 
     test(
       'const alias converts — canonicalization makes it the same object',
@@ -622,7 +628,7 @@ void main() {
   const Geo g = Align.topCenter;
   print(g);
 }
-''');
+''', files: geometry);
         check(out).contains('const Geo g = .topCenter;');
       },
     );
@@ -634,7 +640,7 @@ void main() {
   final Geo g = Align.all(3);
   print(g);
 }
-''');
+''', files: geometry);
       // `.all(3)` binds Geo.all, which allocates a fresh instance — no
       // constant value, so nothing proves the two equivalent.
       check(out).contains('final Geo g = Align.all(3);');
@@ -647,7 +653,7 @@ void main() {
   final Geo g = Align.lazy;
   print(g);
 }
-''');
+''', files: geometry);
       // Geo.lazy is `final`, not `const` — no compile-time value, so both
       // sides being the same object is unprovable even though they are.
       check(out).contains('final Geo g = Align.lazy;');
@@ -660,7 +666,7 @@ void main() {
   const Geo g = Directional.center;
   print(g);
 }
-''');
+''', files: geometry);
       // Directional(5) and Geo.center's Align(5) carry identical field state;
       // only their type tells them apart, and it must.
       check(out).contains('const Geo g = Directional.center;');
@@ -688,6 +694,7 @@ void main() {
     });
 
     test('converted alias stays identical to what the source named', () async {
+      final pkg = fixture('alias', geometry);
       final file = write(pkg, 'lib/alias_roundtrip.dart', '''
 import 'geometry.dart';
 void main() {
@@ -790,6 +797,7 @@ $rows
 
   test('skips hidden directories and build folder during traversal', () async {
     const source = 'enum Fit { cover }\nFit f() => Fit.cover;\n';
+    final pkg = fixture('traversal', {});
     write(pkg, '.hidden/ignored.dart', source);
     write(pkg, 'build/ignored.dart', source);
     final normalFile = write(pkg, 'src/converted.dart', source);
@@ -874,7 +882,7 @@ void main() {
     });
 
     test('positions without a context type stay prefixed', () async {
-      final file = write(pkg, 'lib/case_${fileId++}.dart', '''
+      final file = write(fixture('context', {}), 'lib/case.dart', '''
 $box
 class Err implements Exception { const Err.code(this.c); final int c; }
 /// Prose about [Box.a] is not a site.
@@ -911,7 +919,7 @@ Future<void> main() async {
 
   group('explain', () {
     test('lists every site left prefixed, with the reason', () async {
-      final file = write(pkg, 'lib/case_${fileId++}.dart', '''
+      final file = write(fixture('explain', {}), 'lib/case.dart', '''
 class Color {
   const Color(this.v);
   final int v;
@@ -981,7 +989,7 @@ void main() {
     test(
       'a file with nothing to convert is reported only when explaining',
       () async {
-        final file = write(pkg, 'lib/case_${fileId++}.dart', '''
+        final file = write(fixture('quiet', {}), 'lib/case.dart', '''
 enum Fit { cover }
 void main() {
   final untyped = Fit.cover;
@@ -1093,7 +1101,7 @@ void main() {
   );
 
   test('SS-3 switch scrutinee and ternary receiver have no context', () async {
-    final file = write(pkg, 'lib/case_${fileId++}.dart', '''
+    final file = write(fixture('ss3', {}), 'lib/case.dart', '''
 enum Fit { cover, contain }
 class Box {
   const Box();
@@ -1186,7 +1194,7 @@ void inferred() {
   test(
     'SS-6 pruning first import keeps /// doc and strips trailing //',
     () async {
-      final file = write(pkg, 'lib/ss6_consumer.dart', '''
+      final file = write(fixture('ss6', orphaning), 'lib/ss6_consumer.dart', '''
 /// Library doc comment.
 import 'dep.dart'; // trailing comment
 import 'sink.dart';
@@ -1204,6 +1212,7 @@ final sink = Sink(Dep.instance);
   test(
     'SS-7 part keeps valid rewrites when another orphans off-limits import',
     () async {
+      final pkg = fixture('ss7', {});
       write(pkg, 'lib/ss7_dep.dart', '''
 class Dep {
   const Dep._();
@@ -1354,12 +1363,16 @@ void main() => take(Box.pair(1));
   test(
     'pruning import with trailing ignore_for_file keeps comment on own line',
     () async {
-      final file = write(pkg, 'lib/ig_consumer.dart', '''
+      final file = write(
+        fixture('ignore', orphaning),
+        'lib/ig_consumer.dart',
+        '''
 import 'dep.dart'; // ignore_for_file: avoid_print
 import 'sink.dart';
 
 final sink = Sink(Dep.instance);
-''');
+''',
+      );
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
       check(out)
@@ -1371,6 +1384,7 @@ final sink = Sink(Dep.instance);
   test(
     'pruning sole directive with doc comment or annotation emits library;',
     () async {
+      final pkg = fixture('sole', {});
       write(pkg, 'lib/sole_aliases.dart', '''
 import 'sole_doc.dart';
 typedef Mode = Fit;
@@ -1435,6 +1449,7 @@ $calls
     test(
       'batches library and multiple parts in one pass and prunes shared import',
       () async {
+        final pkg = fixture('batch', {});
         write(pkg, 'lib/batch_fit.dart', '''
 enum Fit { cover, contain }
 ''');
@@ -1533,7 +1548,7 @@ void main() {
     test(
       'reports Type.method<T>(...) in --skip and --explain like any shorthand',
       () async {
-        final file = write(pkg, 'lib/case_${fileId++}.dart', '''
+        final file = write(fixture('generic', {}), 'lib/case.dart', '''
 class Box {
   const Box();
   static T pick<T>(T a) => a;
@@ -1565,6 +1580,7 @@ void main() {
   test(
     'off-limits unused_shown_name reverts only the orphaned shown symbol',
     () async {
+      final pkg = fixture('offlimits', {});
       write(pkg, 'lib/off_defs.dart', '''
 enum Fit { cover, contain }
 enum Mode { on, off }

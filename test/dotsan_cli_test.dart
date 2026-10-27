@@ -236,8 +236,7 @@ void main() {
 
   test('SS-S1 an AOT build finds the SDK on PATH without DART_SDK', () {
     final file = explainFixture();
-    final out = Directory.systemTemp.createTempSync('dotsan_aot');
-    addTearDown(() => out.deleteSync(recursive: true));
+    final out = tempDir('aot');
     final exe = p.join(out.path, Platform.isWindows ? 'dotsan.exe' : 'dotsan');
     final compile = Process.runSync(Platform.resolvedExecutable, [
       'compile',
@@ -279,8 +278,7 @@ void main() {
     () {
       final file = explainFixture();
       final root = file.parent.parent.path;
-      final alias = Directory.systemTemp.createTempSync('dotsan_alias');
-      addTearDown(() => alias.deleteSync(recursive: true));
+      final alias = tempDir('alias');
       final link = Link(p.join(alias.path, 'pkg'))..createSync(root);
       final run = dotsan([
         '-n',
