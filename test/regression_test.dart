@@ -10,15 +10,15 @@ import 'package:test/test.dart';
 
 import 'helpers.dart';
 
-final Directory pkg = .systemTemp.createTempSync('sweep_shared');
-int fileId = 0;
-
+/// Writes [source] beside [files] into a fresh package, sanitizes it, and
+/// returns the resulting content.
 Future<String> sanitize(
   String source, {
+  Map<String, String> files = const {},
   Set<String> skips = const {},
   bool allowErrors = false,
 }) async {
-  final file = write(pkg, 'lib/case_${fileId++}.dart', source);
+  final file = write(fixture('sweep', files), 'lib/case.dart', source);
   final result = await Sanitizer(
     skips: skips,
     allowErrors: allowErrors,
@@ -63,9 +63,12 @@ extension BoxTag on Box {
 }
 ''';
 
-/// A part whose two sites orphan both of its library's imports of
-/// `<tag>_fit.dart`; returns the library and the part.
+const Map<String, String> geo = {'lib/geo.dart': geoLibrary};
+
+/// A fresh package with a part whose two sites orphan both of its library's
+/// imports of `<tag>_fit.dart`; returns the library and the part.
 (File, File) partPrune(String tag, {String header = ''}) {
+  final pkg = fixture(tag, {});
   write(pkg, 'lib/${tag}_fit.dart', 'enum Fit { cover }\nenum Mode { a }\n');
   write(
     pkg,
@@ -92,13 +95,6 @@ extension BoxTag on Box {
 }
 
 void main() {
-  setUpAll(() {
-    write(pkg, 'pubspec.yaml', 'name: sweep\nenvironment:\n  sdk: ^3.10.0\n');
-    write(pkg, 'lib/geo.dart', geoLibrary);
-    pubGetIn(pkg.path);
-  });
-  tearDownAll(() => pkg.deleteSync(recursive: true));
-
   test('SS-B1 typedef with fixed type arguments keeps its prefix', () async {
     // `IntG.of(1)` builds a G<int>; `.of(1)` in a G<num> slot builds a
     // G<num> — same element, different reified type argument.
@@ -122,7 +118,7 @@ final List<num> l = IntList.filled(1, 0);
 import 'geo.dart';
 final Geo a = Box.all(1)..tag();
 final Geo b = Box.zero..tag();
-''');
+''', files: geo);
     check(out).contains('Box.all(1)..tag()');
     check(out).contains('Box.zero..tag()');
   });
@@ -136,7 +132,7 @@ String f() {
   g = Box.all(2);
   return g.tag(); // BoxTag before, GeoTag after the rewrite
 }
-''');
+''', files: geo);
     check(out).contains('g = Box.all(2);');
   });
 
@@ -144,11 +140,15 @@ String f() {
     // The cascade is refused by the typed-slot rule before the multiset check
     // runs; e2e `duplicate_info` pins the multiset. allowErrors only keeps
     // the pre-existing error from skipping the file.
-    final out = await sanitize('''
+    final out = await sanitize(
+      '''
 import 'geo.dart';
 void pre(Geo g) => g.boxOnly(); // pre-existing error, same message
 final Geo fresh = Box.all(1)..boxOnly();
-''', allowErrors: true);
+''',
+      files: geo,
+      allowErrors: true,
+    );
     check(out).contains('Box.all(1)..boxOnly()');
   });
 
@@ -222,6 +222,7 @@ void run() {
   });
 
   test("SS-S4 a library sees its part's earlier write", () async {
+    final pkg = fixture('s4', {});
     write(pkg, 'lib/s4_fit.dart', 'enum Fit { cover, contain }\n');
     write(
       pkg,
@@ -249,11 +250,11 @@ void run() {
   test(
     'SS-I1 --skip=Type.member also covers prefixed and aliased spellings',
     () async {
-      write(pkg, 'lib/sk_fit.dart', '''
+      const fit = '''
 enum Fit { cover, contain }
 typedef Mode = Fit;
 void take(Fit f) {}
-''');
+''';
       final out = await sanitize(
         '''
 import 'sk_fit.dart' as m;
@@ -262,6 +263,7 @@ void a() => take(Fit.cover);
 void b() => m.take(m.Fit.cover);
 void c() => take(Mode.cover);
 ''',
+        files: {'lib/sk_fit.dart': fit},
         skips: {'Fit.cover'},
       );
       check(out).contains('take(Fit.cover)');
@@ -271,7 +273,7 @@ void c() => take(Mode.cover);
   );
 
   test('SS-B8 a rewrite keeps the UTF-8 BOM and CRLF line endings', () async {
-    final file = write(pkg, 'lib/bom_keep.dart', '')
+    final file = write(fixture('bom', {}), 'lib/bom_keep.dart', '')
       ..writeAsBytesSync([
         0xEF,
         0xBB,
@@ -291,27 +293,24 @@ void c() => take(Mode.cover);
   });
 
   test('pruning an import from a CRLF file leaves no blank line', () async {
-    write(pkg, 'lib/crlf_fit.dart', 'enum Fit { cover }\n');
-    write(
-      pkg,
-      'lib/crlf_sink.dart',
-      "import 'crlf_fit.dart';\nvoid take(Fit f) {}\n",
-    );
     final out = await sanitize(
       "import 'crlf_fit.dart';\r\nimport 'crlf_sink.dart';\r\n"
       'void r() => take(Fit.cover);\r\n',
+      files: {
+        'lib/crlf_fit.dart': 'enum Fit { cover }\n',
+        'lib/crlf_sink.dart': "import 'crlf_fit.dart';\nvoid take(Fit f) {}\n",
+      },
     );
     check(out)
         .equals("import 'crlf_sink.dart';\r\nvoid r() => take(.cover);\r\n");
   });
 
   test('SS-B9 overlapping path arguments are processed once', () async {
-    final dir = Directory(p.join(pkg.path, 'lib', 'dup'))..createSync();
-    write(pkg, 'lib/dup/a.dart', '''
+    final dir = write(fixture('dup', {}), 'lib/dup/a.dart', '''
 enum Fit { cover, contain }
 void t(Fit f) {}
 void r() => t(Fit.cover);
-''');
+''').parent;
     final result = await Sanitizer(dryRun: true)
         .run([dir.path, dir.path, '${dir.path}/.']);
     check(result.convertedCount).equals(1);
@@ -322,7 +321,7 @@ void r() => t(Fit.cover);
     const source =
         'enum Fit { cover }\nvoid t(Fit f) {}\nvoid r() => t(Fit.cover);\n'
         "int bad = '';\n";
-    final file = write(pkg, 'lib/s3_errors.dart', source);
+    final file = write(fixture('s3', {}), 'lib/s3_errors.dart', source);
     final result = await Sanitizer().run([file.path]);
     check(file.readAsStringSync()).equals(source);
     check(result.skippedWithErrors).deepEquals([canonical(file.path)]);
@@ -332,6 +331,7 @@ void r() => t(Fit.cover);
   });
 
   test('SS-R1 two same-named classes are different static types', () async {
+    final pkg = fixture('r1', {});
     write(pkg, 'lib/r1_b.dart', 'class X {\n  const X();\n}\n');
     write(
       pkg,
@@ -445,19 +445,20 @@ void run() {
   test(
     'SS-R5 pruning keeps the import the user had already left unused',
     () async {
-      write(pkg, 'lib/r5_fit.dart', 'enum Fit { cover }\nenum Mode { a }\n');
-      write(
-        pkg,
-        'lib/r5_sink.dart',
-        "import 'r5_fit.dart';\nvoid takeMode(Mode m) {}\n",
-      );
-      final out = await sanitize('''
+      final out = await sanitize(
+        '''
 import 'r5_fit.dart' show Mode;
 import 'r5_fit.dart' as keep_me;
 import 'r5_sink.dart';
 
 void run() => takeMode(Mode.a);
-''');
+''',
+        files: {
+          'lib/r5_fit.dart': 'enum Fit { cover }\nenum Mode { a }\n',
+          'lib/r5_sink.dart':
+              "import 'r5_fit.dart';\nvoid takeMode(Mode m) {}\n",
+        },
+      );
       check(out).equals('''
 import 'r5_fit.dart' as keep_me;
 import 'r5_sink.dart';
@@ -471,9 +472,9 @@ void run() => takeMode(.a);
     'R3-SS-4 a library reached through a symlink is still in scope',
     () async {
       final (lib, part) = partPrune('r34');
-      final alias = Directory.systemTemp.createTempSync('dotsan_alias');
-      addTearDown(() => alias.deleteSync(recursive: true));
-      final link = Link(p.join(alias.path, 'pkg'))..createSync(pkg.path);
+      final alias = tempDir('alias');
+      final link = Link(p.join(alias.path, 'pkg'))
+        ..createSync(lib.parent.parent.path);
       final result = await Sanitizer(dryRun: true)
           .run([p.join(link.path, 'lib', p.basename(lib.path)), part.path]);
       check(result.convertedCount).equals(2);
@@ -485,6 +486,7 @@ void run() => takeMode(.a);
     for (final dryRun in [true, false]) {
       test(dryRun ? 'in a dry run' : 'in a write', () async {
         final tag = dryRun ? 'n1d' : 'n1w';
+        final pkg = fixture(tag, {});
         write(pkg, 'lib/${tag}_fit.dart', 'enum Fit { cover, contain }\n');
         write(pkg, 'lib/${tag}_mode.dart', 'enum Mode { on, off }\n');
         write(
@@ -526,6 +528,7 @@ void run() => takeMode(.a);
     for (final dryRun in [true, false]) {
       test(dryRun ? 'in a dry run' : 'in a write', () async {
         final tag = dryRun ? 'n1hd' : 'n1hw';
+        final pkg = fixture(tag, {});
         final fit = '${tag}_fit_with_a_rather_long_file_name.dart';
         write(pkg, 'lib/$fit', 'enum Fit { cover }\n');
         write(pkg, 'lib/${tag}_mode.dart', 'enum Mode { on }\n');
@@ -604,6 +607,7 @@ void main() => take(Box.pair(1));
 
   test('prunes orphaned identifier from show combinator and reports the '
       'edited import (including in a prune-only library unit)', () async {
+    final pkg = fixture('shown', {});
     write(
       pkg,
       'lib/show_defs.dart',
@@ -682,6 +686,7 @@ void main() {
   test(
     'prunes orphaned import in library when a part has only failing candidates',
     () async {
+      final pkg = fixture('recover', {});
       write(pkg, 'lib/mode_only.dart', 'enum Mode { on, off }\n');
       write(pkg, 'lib/mode_api.dart', '''
 import 'mode_only.dart';
@@ -769,7 +774,7 @@ void run(Holder h, Fit f) {
     FactoryItem.block(),
   ]);
 }
-''');
+''', files: geo);
     check(out).contains('factory FactoryItem.zero() => const .raw(0);');
     check(out).contains('return const .raw(1);');
     check(out).contains('assert(f != .cover);');
