@@ -1,6 +1,6 @@
 name: shorthand_sanitizer
 description: Batch codemod for Dart 3.10 dot shorthands — rewrites Type.member to .member only where the analyzer proves it a no-op, prunes imports it orphans. Ships the dotsan CLI.
-version: 0.11.1
+version: 0.12.0
 repository: https://github.com/esenmx/shorthand_sanitizer
 issue_tracker: https://github.com/esenmx/shorthand_sanitizer/issues
 
@@ -27,6 +27,7 @@ dependencies:
   yaml: ^3.1.4
 
 dev_dependencies:
+  api_summary: ^1.2.0
   checks: ^0.3.2
   frontend_server_client: ^4.1.0
   meta: ^1.19.0

@@ -8,7 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:yaml/yaml.dart';
 
-const _version = '0.11.1';
+const _version = '0.12.0';
 
 const _defaultRoots = [
   'lib',
@@ -356,7 +356,7 @@ Set<String> _namedFiles(List<String> rest) => {
 /// Throws a [YamlException] when [text] is not YAML or `workspace` is not a
 /// list of strings.
 List<String> _declaredWorkspaceMembers(String text) {
-  final Object? doc = loadYaml(text, sourceUrl: Uri.file('pubspec.yaml'));
+  final Object? doc = loadYaml(text, sourceUrl: .file('pubspec.yaml'));
   if (doc is! YamlMap) return const [];
   return switch (doc.nodes['workspace']) {
     null || YamlScalar(value: null) => const [],
