@@ -161,8 +161,8 @@ dotsan -v
   analyzer's own error on the shorthand, and `skip-listed`. Sites dotsan never
   considers, such as `Enum.values`, `@Type.member` annotations, unnamed
   constructors (`Text(...)`), or a static field read as a receiver
-  (`Fit.cover.name`), are not listed. Point it at one file — a Flutter
-  app keeps thousands of `Theme.of(context)`-style sites prefixed.
+  (`Fit.cover.name`), are not listed. Point it at one file — a Flutter app keeps
+  thousands of `Theme.of(context)`-style sites prefixed.
 - `--set-exit-if-changed`: Exits 1 if any site converted (or, with `--dry-run`,
   would convert). Without `--dry-run` the files are still written, as with
   `dart format`. A skipped file fails the run with 65 whether or not this flag
@@ -183,8 +183,8 @@ dotsan -v
   or `/** */` doc comment counts only when it opens with the marker
   (`/// Generated file.`, as slang writes), so a library doc that merely
   mentions generated code is processed. `--explain` counts and lists the
-  generated files a run skipped on stderr; a generated file named on the
-  command line gets a warning.
+  generated files a run skipped on stderr; a generated file named on the command
+  line gets a warning.
 - **Directories**: Walks skip hidden directories and each package's own `build/`
   output; a `build/` directory of sources deeper in a package is processed.
 - **Pruning** never edits a file the run leaves alone (excluded, generated or

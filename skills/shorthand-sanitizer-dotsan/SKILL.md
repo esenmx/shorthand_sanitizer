@@ -12,6 +12,8 @@ never regex them (silent rebinds: `Base x = Sub.a` → `.a` binds `Base.a`).
 ```bash
 dotsan lib test              # rewrite in place, per-site report
 dotsan lib --dry-run         # preview
+dotsan --changed             # only git-modified/untracked files
+dotsan --since=origin/main   # only files changed since a git ref
 dotsan --skip=AsyncValue.error lib
 dotsan --exclude=glob,glob   # skip matching files (/ globs: CWD-relative)
 # also rewrite what the package's own analysis_options.yaml excludes

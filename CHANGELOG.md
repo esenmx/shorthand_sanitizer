@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 - 2026-10-31
 
 ### Breaking
 
@@ -44,10 +44,10 @@
 
 ### Fixed
 
-- When a shorthand conversion orphans a single identifier in an `import ... show
-  A, B;` combinator (`unused_shown_name`), the unused shown name is pruned
-  (`import ... show A;`) and reported in `prunedImports` instead of refusing the
-  conversion or bisecting the file's candidates.
+- When a shorthand conversion orphans a single identifier in an
+  `import ... show A, B;` combinator (`unused_shown_name`), the unused shown
+  name is pruned (`import ... show A;`) and reported in `prunedImports` instead
+  of refusing the conversion or bisecting the file's candidates.
 - Speculative trial overlay states stay in memory and are no longer persisted to
   the on-disk analyzer cache (capped at 64 MiB).
 - Prefix tokens separated from `.member` by an interior comment
