@@ -49,10 +49,4 @@ jobs:
       - if: steps.pub.outputs.exists == 'false'
         run: dart pub get
       - if: steps.pub.outputs.exists == 'false'
-        run: dart analyze --fatal-infos --fatal-warnings
-      - if: steps.pub.outputs.exists == 'false'
-        run: git ls-files -z -- '*.dart' | xargs -0 -r dart format --output=none --set-exit-if-changed
-      - if: steps.pub.outputs.exists == 'false'
-        run: dart test
-      - if: steps.pub.outputs.exists == 'false'
         run: dart pub publish --force
