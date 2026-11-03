@@ -138,6 +138,8 @@ Map<_DiagKey, int> _census(ResolvedLibraryResult lib) {
 List<Diagnostic> _byPosition(List<Diagnostic> diagnostics) =>
     [...diagnostics]..sort((a, b) => a.offset.compareTo(b.offset));
 
+typedef _HoistEntry = ({_Candidate candidate, Element? targetElement});
+
 final class _CandidateCollector({
   required final TypeProvider typeProvider,
   required final Uri selfUri,
@@ -145,6 +147,10 @@ final class _CandidateCollector({
   required final String scopePath,
 }) extends RecursiveAstVisitor<void> {
   final List<_Candidate> candidates = [];
+
+  /// Candidates inside an untyped list or set literal that only gain a context
+  /// type if `<Type>` is hoisted onto that literal.
+  final Map<TypedLiteral, List<_HoistEntry>> hoistGroups = {};
 
   /// Sites ruled out by [_viability] before any resolve.
   final List<_Kept> unviable = [];
@@ -182,6 +188,7 @@ final class _CandidateCollector({
     required String display,
     required String memberName,
     required Element? memberElement,
+    required Element? targetElement,
     String replacement = '',
     bool isEndExclusive = true,
     String? typeArgTypes,
@@ -201,7 +208,8 @@ final class _CandidateCollector({
       ));
       return;
     }
-    final slot = _viability.typedSlotOf(node);
+    var slot = _viability.typedSlotOf(node);
+    TypedLiteral? hoistLiteral;
     if (_viability.whyNot(
           node,
           memberName,
@@ -209,37 +217,54 @@ final class _CandidateCollector({
           typedSlot: slot,
         )
         case final reason?) {
-      unviable.add((
-        offset: startToken.offset,
-        display: display,
-        reason: reason,
-      ));
-      return;
+      final rescue = reason == 'no context type'
+          ? _viability.hoistTargetFor(
+              node,
+              memberName,
+              memberElement: memberElement,
+            )
+          : null;
+      if (rescue == null) {
+        unviable.add((
+          offset: startToken.offset,
+          display: display,
+          reason: reason,
+        ));
+        return;
+      }
+      hoistLiteral = rescue.literal;
+      slot = rescue.typedSlot;
     }
     final type = node.staticType;
-    candidates.add(
-      .new(
-        unitPath: unitPath,
-        scopePath: scopePath,
-        deleteStart: startToken.offset,
-        deleteEnd: isEndExclusive ? endToken.offset : endToken.end,
-        replacement: replacement,
-        owner: owner,
-        display: display,
-        memberName: memberName,
-        containerName: container,
-        libraryUri: memberElement?.library?.uri.toString(),
-        signature: memberElement is ConstructorElement
-            ? _constructorSignature(memberElement)
-            : null,
-        typeArgTypes: typeArgTypes,
-        staticType: type == null ? null : _typeKey(type),
-        shownType: type?.getDisplayString(),
-        typedSlot: slot,
-        restrictions: _restrictionsOf(memberElement),
-        groupKey: (unitPath, _groupKeyOf(node)),
-      ),
+    final candidate = _Candidate(
+      unitPath: unitPath,
+      scopePath: scopePath,
+      deleteStart: startToken.offset,
+      deleteEnd: isEndExclusive ? endToken.offset : endToken.end,
+      replacement: replacement,
+      owner: owner,
+      display: display,
+      memberName: memberName,
+      containerName: container,
+      libraryUri: memberElement?.library?.uri.toString(),
+      signature: memberElement is ConstructorElement
+          ? _constructorSignature(memberElement)
+          : null,
+      typeArgTypes: typeArgTypes,
+      staticType: type == null ? null : _typeKey(type),
+      shownType: type?.getDisplayString(),
+      typedSlot: slot,
+      restrictions: _restrictionsOf(memberElement),
+      groupKey: (unitPath, _groupKeyOf(node)),
     );
+    if (hoistLiteral != null) {
+      (hoistGroups[hoistLiteral] ??= []).add((
+        candidate: candidate,
+        targetElement: targetElement,
+      ));
+    } else {
+      candidates.add(candidate);
+    }
   }
 
   /// Whether any comment token sits between [start] and [end] (or on [end]
@@ -312,6 +337,7 @@ final class _CandidateCollector({
           display: '${node.prefix.name}.${node.identifier.name}',
           memberName: node.identifier.name,
           memberElement: member,
+          targetElement: node.prefix.element,
         );
       }
     }
@@ -326,7 +352,7 @@ final class _CandidateCollector({
   void visitPropertyAccess(PropertyAccess node) {
     final target = node.target;
     final member = node.propertyName.element;
-    if (target != null &&
+    if (target is Identifier &&
         !node.isCascaded &&
         _isTypeRef(target) &&
         _isStaticMember(member)) {
@@ -347,6 +373,7 @@ final class _CandidateCollector({
           display: '$owner.${node.propertyName.name}',
           memberName: node.propertyName.name,
           memberElement: member,
+          targetElement: target.element,
         );
       }
     }
@@ -361,7 +388,7 @@ final class _CandidateCollector({
     final target = node.target;
     final dot = node.operator;
     final typeArgs = node.typeArguments;
-    if (target != null &&
+    if (target is Identifier &&
         dot != null &&
         _isTypeRef(target) &&
         _isStaticMember(node.methodName.element)) {
@@ -376,6 +403,7 @@ final class _CandidateCollector({
           display: '$owner.$name',
           memberName: name,
           memberElement: node.methodName.element,
+          targetElement: target.element,
         );
       } else {
         _add(
@@ -388,6 +416,7 @@ final class _CandidateCollector({
           display: '$owner.$name',
           memberName: name,
           memberElement: node.methodName.element,
+          targetElement: target.element,
           typeArgTypes: node.typeArgumentTypes?.map(_typeKey).join(', '),
         );
       }
@@ -414,6 +443,7 @@ final class _CandidateCollector({
         display: '${type.qualifiedName()}.${name.name}',
         memberName: name.name,
         memberElement: node.constructorName.element,
+        targetElement: type.element,
       );
     }
     super.visitInstanceCreationExpression(node);
@@ -707,11 +737,49 @@ final class _Viability(final TypeProvider typeProvider, final Uri selfUri) {
         final body? => _yieldContext(parent, body),
         null => null,
       },
-      ListLiteral(:final staticType) ||
-      SetOrMapLiteral(:final staticType) => _elementType(staticType, 0),
-      MapLiteralEntry(:final key) => _elementType(
-        parent.thisOrAncestorOfType<SetOrMapLiteral>()?.staticType,
-        identical(key, head) ? 0 : 1,
+      ForEachPartsWithDeclaration(:final loopVariable, :final iterable)
+          when identical(iterable, head) =>
+        switch (loopVariable.type?.type) {
+          final varType? => _forEachIterableType(parent, varType),
+          null => none,
+        },
+      ForEachPartsWithIdentifier(:final identifier, :final iterable)
+          when identical(iterable, head) =>
+        switch (identifier.staticType) {
+          final varType? => _forEachIterableType(parent, varType),
+          null => null,
+        },
+      ForEachPartsWithPattern(:final pattern, :final iterable)
+          when identical(iterable, head) =>
+        switch (pattern) {
+          WildcardPattern(:final type?) => switch (type.type) {
+            final varType? => _forEachIterableType(parent, varType),
+            null => null,
+          },
+          _ when !_patternHasType(pattern) => none,
+          _ => null,
+        },
+      SpreadElement(:final expression) when identical(expression, head) =>
+        switch (parent.parent) {
+          final ListLiteral lit => switch (_downwardsElementContext(lit)) {
+            final NeverType n => n,
+            final elem? => typeProvider.iterableType(elem),
+            null => null,
+          },
+          final SetOrMapLiteral lit when lit.isSet =>
+            switch (_downwardsElementContext(lit)) {
+              final NeverType n => n,
+              final elem? => typeProvider.iterableType(elem),
+              null => null,
+            },
+          _ => null,
+        },
+      ListLiteral() => _downwardsElementContext(parent),
+      SetOrMapLiteral() =>
+        parent.isSet ? _downwardsElementContext(parent) : none,
+      MapLiteralEntry(:final key) => _downwardsMapEntryContext(
+        parent,
+        isKey: identical(key, head),
       ),
       _ => null,
     };
@@ -986,6 +1054,378 @@ final class _Viability(final TypeProvider typeProvider, final Uri selfUri) {
       ? literal.typeArguments[index]
       : null;
 
+  DartType _forEachIterableType(ForEachParts parts, DartType elementType) {
+    final owner = parts.parent;
+    final isAsync =
+        (owner is ForStatement && owner.awaitKeyword != null) ||
+        (owner is ForElement && owner.awaitKeyword != null);
+    return isAsync
+        ? typeProvider.streamType(elementType)
+        : typeProvider.iterableType(elementType);
+  }
+
+  static bool _patternHasType(DartPattern pattern) => switch (pattern) {
+    DeclaredVariablePattern(:final type) ||
+    WildcardPattern(:final type) => type != null,
+    CastPattern() || ObjectPattern() => true,
+    ParenthesizedPattern(:final pattern) ||
+    NullAssertPattern(:final pattern) ||
+    NullCheckPattern(:final pattern) => _patternHasType(pattern),
+    LogicalAndPattern(:final leftOperand, :final rightOperand) ||
+    LogicalOrPattern(
+      :final leftOperand,
+      :final rightOperand,
+    ) => _patternHasType(leftOperand) || _patternHasType(rightOperand),
+    ListPattern(:final typeArguments, :final elements) =>
+      typeArguments != null ||
+          elements.any(
+            (e) => switch (e) {
+              DartPattern() => _patternHasType(e),
+              RestPatternElement(:final pattern?) => _patternHasType(pattern),
+              _ => false,
+            },
+          ),
+    MapPattern(:final typeArguments, :final elements) =>
+      typeArguments != null ||
+          elements.any(
+            (e) => switch (e) {
+              MapPatternEntry(:final value) => _patternHasType(value),
+              _ => false,
+            },
+          ),
+    RecordPattern(:final fields) => fields.any(
+      (f) => _patternHasType(f.pattern),
+    ),
+    _ => false,
+  };
+
+  /// Element context type supplied top-down to [literal] (explicit `<T>` on the
+  /// literal itself, or an enclosing `Iterable<T>` context); `Never` when the
+  /// literal's element type was inferred only bottom-up from its elements.
+  DartType? _downwardsElementContext(TypedLiteral literal) {
+    if (literal.typeArguments != null) {
+      return _elementType(literal.staticType, 0);
+    }
+    AstNode head = literal;
+    for (
+      var parent = head.parent;
+      parent != null && _passesContextTo(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    final parent = head.parent;
+    if (parent is SpreadElement) {
+      return switch (parent.parent) {
+        final ListLiteral enc => _downwardsElementContext(enc),
+        final SetOrMapLiteral enc when enc.isSet => _downwardsElementContext(
+          enc,
+        ),
+        _ => typeProvider.neverType,
+      };
+    }
+    if (parent is ArgumentList && head is Argument) {
+      if (_hasUnpinnedCollectionTypeParam(head)) {
+        return typeProvider.neverType;
+      }
+    }
+    var outer = _contextOf(head);
+    while (outer is InterfaceType && outer.isDartAsyncFutureOr) {
+      outer = outer.typeArguments.first;
+    }
+    return switch (outer) {
+      NeverType() || DynamicType() || VoidType() => typeProvider.neverType,
+      InterfaceType() =>
+        outer.asInstanceOf(typeProvider.iterableElement)?.typeArguments.first ??
+            typeProvider.neverType,
+      null => null,
+      _ => typeProvider.neverType,
+    };
+  }
+
+  DartType? _downwardsMapEntryContext(
+    MapLiteralEntry entry, {
+    required bool isKey,
+  }) {
+    final map = entry.thisOrAncestorOfType<SetOrMapLiteral>();
+    if (map == null) return null;
+    final index = isKey ? 0 : 1;
+    if (map.typeArguments != null) return _elementType(map.staticType, index);
+    AstNode head = map;
+    for (
+      var parent = head.parent;
+      parent != null && _passesContextTo(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    if (head.parent is SpreadElement) {
+      return switch (head.parent?.parent) {
+        final SetOrMapLiteral enc when enc.isMap => _downwardsMapLiteralContext(
+          enc,
+          index,
+        ),
+        _ => typeProvider.neverType,
+      };
+    }
+    return _downwardsMapLiteralContext(map, index, head: head);
+  }
+
+  DartType? _downwardsMapLiteralContext(
+    SetOrMapLiteral map,
+    int index, {
+    AstNode? head,
+  }) {
+    if (map.typeArguments != null) return _elementType(map.staticType, index);
+    var mapHead = head ?? map;
+    if (head == null) {
+      for (
+        var parent = mapHead.parent;
+        parent != null && _passesContextTo(parent, mapHead);
+        parent = mapHead.parent
+      ) {
+        mapHead = parent;
+      }
+    }
+    if (mapHead.parent is ArgumentList && mapHead is Argument) {
+      if (_hasUnpinnedCollectionTypeParam(mapHead)) {
+        return typeProvider.neverType;
+      }
+    }
+    var outer = _contextOf(mapHead);
+    while (outer is InterfaceType && outer.isDartAsyncFutureOr) {
+      outer = outer.typeArguments.first;
+    }
+    return switch (outer) {
+      NeverType() || DynamicType() || VoidType() => typeProvider.neverType,
+      InterfaceType() =>
+        outer.asInstanceOf(typeProvider.mapElement)?.typeArguments[index] ??
+            typeProvider.neverType,
+      null => null,
+      _ => typeProvider.neverType,
+    };
+  }
+
+  /// Whether [arg]'s declared parameter type mentions an unconstrained type
+  /// parameter of the call that no outer context on the call can pin (such as
+  /// `List.of([Fit.a, Fit.b])` or `ValueNotifier([Fit.a, Fit.b])` in an
+  /// untyped variable).
+  bool _hasUnpinnedCollectionTypeParam(Argument arg) {
+    final param = arg.correspondingParameter;
+    if (param == null) return false;
+    final call = arg.parent?.parent;
+    if (_hasExplicitTypeArgs(call)) return false;
+    final unbound = <TypeParameterElement>{};
+    _collectCallTypeParams(param.baseElement.type, call, unbound);
+    if (unbound.isEmpty) return false;
+
+    final baseReturn = switch (call) {
+      MethodInvocation(:final methodName) =>
+        switch (methodName.element?.baseElement) {
+          ExecutableElement(:final returnType) => returnType,
+          _ => null,
+        },
+      InstanceCreationExpression(:final constructorName) =>
+        constructorName.element?.baseElement.returnType,
+      FunctionExpressionInvocation(:final element) =>
+        element?.baseElement.returnType,
+      _ => null,
+    };
+    AstNode? callCtxNode;
+    if (call != null) {
+      var callHead = call;
+      for (
+        var parent = callHead.parent;
+        parent != null && _isSelectorFor(parent, callHead);
+        parent = callHead.parent
+      ) {
+        callHead = parent;
+      }
+      for (
+        var parent = callHead.parent;
+        parent != null && _passesContextTo(parent, callHead);
+        parent = callHead.parent
+      ) {
+        callHead = parent;
+      }
+      callCtxNode = callHead;
+    }
+    final callCtx = callCtxNode == null ? null : _contextOf(callCtxNode);
+    final callUnconstrained =
+        callCtx == null ||
+        callCtx is NeverType ||
+        callCtx is DynamicType ||
+        callCtx is VoidType ||
+        callCtx.isDartCoreObject;
+    for (final tp in unbound) {
+      final bound = tp.bound;
+      if (bound != null && bound is! DynamicType && !bound.isDartCoreObject) {
+        continue;
+      }
+      if (callUnconstrained ||
+          (baseReturn != null && !_mentionsTypeParam(baseReturn, tp))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static void _collectCallTypeParams(
+    DartType type,
+    AstNode? call,
+    Set<TypeParameterElement> out,
+  ) {
+    switch (type) {
+      case TypeParameterType(:final element):
+        if (element.enclosingElement is! InstanceElement ||
+            call is InstanceCreationExpression) {
+          out.add(element);
+        }
+      case InterfaceType(:final typeArguments):
+        for (final arg in typeArguments) {
+          _collectCallTypeParams(arg, call, out);
+        }
+      case FunctionType(:final returnType, :final formalParameters):
+        _collectCallTypeParams(returnType, call, out);
+        for (final p in formalParameters) {
+          _collectCallTypeParams(p.type, call, out);
+        }
+      case RecordType(:final positionalFields, :final namedFields):
+        for (final f in positionalFields) {
+          _collectCallTypeParams(f.type, call, out);
+        }
+        for (final f in namedFields) {
+          _collectCallTypeParams(f.type, call, out);
+        }
+    }
+  }
+
+  static bool _mentionsTypeParam(DartType type, TypeParameterElement target) =>
+      switch (type) {
+        TypeParameterType(:final element) => element == target,
+        InterfaceType(:final typeArguments) => typeArguments.any(
+          (a) => _mentionsTypeParam(a, target),
+        ),
+        FunctionType(:final returnType, :final formalParameters) =>
+          _mentionsTypeParam(returnType, target) ||
+              formalParameters.any((p) => _mentionsTypeParam(p.type, target)),
+        RecordType(:final positionalFields, :final namedFields) =>
+          positionalFields.any((f) => _mentionsTypeParam(f.type, target)) ||
+              namedFields.any((f) => _mentionsTypeParam(f.type, target)),
+        _ => false,
+      };
+
+  static InterfaceType? _literalInferredElement(TypedLiteral literal) {
+    if (literal.typeArguments != null) return null;
+    final type = literal.staticType;
+    if (type is! InterfaceType || type.typeArguments.length != 1) return null;
+    if (literal is ListLiteral && !type.isDartCoreList) return null;
+    if (literal is SetOrMapLiteral && (!literal.isSet || !type.isDartCoreSet)) {
+      return null;
+    }
+    final elem = type.typeArguments.first;
+    if (elem is! InterfaceType || elem.isDartCoreObject) return null;
+    return elem;
+  }
+
+  /// Enclosing untyped `List` or `Set` literal whose inferred element type
+  /// would give [site] a valid shorthand context if `<Type>` were hoisted onto
+  /// it; null when none applies.
+  ({TypedLiteral literal, String? typedSlot})? hoistTargetFor(
+    Expression site,
+    String member, {
+    Element? memberElement,
+  }) {
+    if (_holdersOf(memberElement).any((e) => e.metadata.hasUseResult)) {
+      return null;
+    }
+    AstNode head = site;
+    for (
+      var parent = head.parent;
+      parent != null && _isSelectorFor(parent, head);
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    for (
+      var parent = head.parent;
+      parent != null &&
+          (_passesContextTo(parent, head) ||
+              (parent is BinaryExpression &&
+                  parent.operator.type == .QUESTION_QUESTION &&
+                  identical(parent.rightOperand, head)));
+      parent = head.parent
+    ) {
+      head = parent;
+    }
+    final parent = head.parent;
+    if (parent is! TypedLiteral) return null;
+    final elem = _literalInferredElement(parent);
+    if (elem == null || _downwardsElementContext(parent) is! NeverType) {
+      return null;
+    }
+
+    var root = parent;
+    var rootElem = elem;
+    final rootElemKey = _typeKey(elem);
+    while (true) {
+      AstNode spreadHead = root;
+      for (
+        var next = spreadHead.parent;
+        next != null && _passesContextTo(next, spreadHead);
+        next = spreadHead.parent
+      ) {
+        spreadHead = next;
+      }
+      if (spreadHead.parent is! SpreadElement) break;
+      final enc = spreadHead.parent?.parent;
+      if (enc is! TypedLiteral) break;
+      final encElem = _literalInferredElement(enc);
+      if (encElem == null ||
+          _downwardsElementContext(enc) is! NeverType ||
+          _typeKey(encElem) != rootElemKey) {
+        break;
+      }
+      root = enc;
+      rootElem = encElem;
+    }
+
+    AstNode slotHead = site;
+    while (true) {
+      final slotParent = slotHead.parent;
+      if (slotParent != null && _isTransparent(slotParent, slotHead)) {
+        slotHead = slotParent;
+        continue;
+      }
+      if (slotParent is TypedLiteral && !identical(slotParent, root)) {
+        slotHead = slotParent;
+        continue;
+      }
+      if (slotParent is SpreadElement && slotHead is Expression) {
+        slotHead = slotParent;
+        continue;
+      }
+      break;
+    }
+    final rawKey = _typeKey(rootElem);
+    final slotKey = identical(slotHead.parent, root)
+        ? (rawKey.endsWith('?')
+              ? rawKey.substring(0, rawKey.length - 1)
+              : rawKey)
+        : null;
+
+    if (_refusal(
+          rootElem,
+          member,
+          memberElement: memberElement,
+          typedSlot: slotKey,
+        ) !=
+        null) {
+      return null;
+    }
+    return (literal: root, typedSlot: slotKey);
+  }
+
   /// Why a context type [type] cannot hold a static [member] the verdict
   /// would accept, or null when it could. `FutureOr<T>` resolves the
   /// shorthand on `T`; `Never` is [_contextOf]'s "no context type".
@@ -1074,4 +1514,263 @@ extension _NamedTypeQualifiedName on NamedType {
     final prefix? => '${prefix.name.lexeme}.${name.lexeme}',
     null => name.lexeme,
   };
+}
+
+extension _TypedLiteralBracket on TypedLiteral {
+  int leftBracketOffset() => switch (this) {
+    ListLiteral(:final leftBracket) ||
+    SetOrMapLiteral(:final leftBracket) => leftBracket.offset,
+  };
+
+  NodeList<CollectionElement> literalElements() => switch (this) {
+    ListLiteral(:final elements) ||
+    SetOrMapLiteral(:final elements) => elements,
+  };
+}
+
+String _stripNullable(String key) =>
+    key.endsWith('?') ? key.substring(0, key.length - 1) : key;
+
+Set<String> _enclosingTypeParamNames(AstNode node) {
+  final names = <String>{};
+  for (AstNode? cur = node; cur != null; cur = cur.parent) {
+    final params = switch (cur) {
+      ClassDeclaration(:final namePart) => namePart.typeParameters,
+      EnumDeclaration(:final namePart) => namePart.typeParameters,
+      ExtensionTypeDeclaration(:final namePart) => namePart.typeParameters,
+      MixinDeclaration(:final typeParameters) ||
+      ExtensionDeclaration(:final typeParameters) ||
+      MethodDeclaration(:final typeParameters) ||
+      FunctionExpression(:final typeParameters) ||
+      GenericTypeAlias(:final typeParameters) ||
+      FunctionTypeAlias(:final typeParameters) => typeParameters,
+      _ => null,
+    };
+    if (params != null) {
+      for (final p in params.typeParameters) {
+        names.add(p.name.lexeme);
+      }
+    }
+  }
+  return names;
+}
+
+String? _spellLiteralTypeArg(
+  TypedLiteral literal,
+  List<_HoistEntry> entries,
+  ResolvedUnitResult unit,
+) {
+  final elemType = _Viability._literalInferredElement(literal);
+  if (elemType == null) return null;
+  final shadowed = _enclosingTypeParamNames(literal);
+  final isNullable = elemType.nullabilitySuffix == .question;
+  final nullSuffix = isNullable ? '?' : '';
+  final nonNullKey = _stripNullable(_typeKey(elemType));
+
+  for (final (:candidate, :targetElement) in entries) {
+    final unshadowed =
+        candidate.owner.contains('.') || !shadowed.contains(candidate.owner);
+    if (targetElement is TypeAliasElement &&
+        targetElement.typeParameters.isEmpty &&
+        unshadowed) {
+      final aliased = targetElement.aliasedType;
+      if (_stripNullable(_typeKey(aliased)) == nonNullKey) {
+        final aliasNullable = aliased.nullabilitySuffix == .question;
+        if (!aliasNullable) return '${candidate.owner}$nullSuffix';
+        if (isNullable) return candidate.owner;
+      }
+    }
+  }
+
+  for (final (:candidate, :targetElement) in entries) {
+    final unshadowed =
+        candidate.owner.contains('.') || !shadowed.contains(candidate.owner);
+    if (targetElement is InterfaceElement &&
+        targetElement.baseElement == elemType.element.baseElement &&
+        unshadowed) {
+      if (elemType.typeArguments.isEmpty) {
+        return '${candidate.owner}$nullSuffix';
+      }
+      final args = <String>[];
+      for (final arg in elemType.typeArguments) {
+        final spelled = _spellInScopeType(arg, unit, shadowed);
+        if (spelled == null) return null;
+        args.add(spelled);
+      }
+      return '${candidate.owner}<${args.join(', ')}>$nullSuffix';
+    }
+  }
+
+  return _spellInScopeType(elemType, unit, shadowed);
+}
+
+String? _spellInScopeType(
+  DartType type,
+  ResolvedUnitResult unit,
+  Set<String> shadowed,
+) {
+  if (type is DynamicType) return 'dynamic';
+  if (type is VoidType) return 'void';
+  if (type is NeverType) {
+    return type.nullabilitySuffix == .question ? 'Never?' : 'Never';
+  }
+  if (type is! InterfaceType) return null;
+  final element = type.element.baseElement;
+  final name = element.name;
+  if (name == null || name.isEmpty) return null;
+  final ownerName = _lookupInScopeName(element, name, unit, shadowed);
+  if (ownerName == null) return null;
+  final nullSuffix = type.nullabilitySuffix == .question ? '?' : '';
+  if (type.typeArguments.isEmpty) return '$ownerName$nullSuffix';
+  final args = <String>[];
+  for (final arg in type.typeArguments) {
+    final spelled = _spellInScopeType(arg, unit, shadowed);
+    if (spelled == null) return null;
+    args.add(spelled);
+  }
+  return '$ownerName<${args.join(', ')}>$nullSuffix';
+}
+
+String? _lookupInScopeName(
+  Element target,
+  String name,
+  ResolvedUnitResult unit,
+  Set<String> shadowed,
+) {
+  final fragment = unit.unit.declaredFragment;
+  if (fragment == null) return null;
+  if (!shadowed.contains(name) &&
+      fragment.scope.lookup(name).getter?.baseElement == target) {
+    return name;
+  }
+  for (
+    LibraryFragment? cur = fragment;
+    cur != null;
+    cur = cur.enclosingFragment
+  ) {
+    for (final imp in cur.libraryImports) {
+      final prefixName = imp.prefix?.element.name;
+      if (prefixName == null || prefixName.isEmpty) continue;
+      if (fragment.scope.lookup(prefixName).getter is! PrefixElement) continue;
+      if (imp.namespace.get2('$prefixName.$name')?.baseElement == target) {
+        return '$prefixName.$name';
+      }
+    }
+  }
+  return null;
+}
+
+List<_HoistExprSig> _hoistElementSignatures(TypedLiteral literal) {
+  final out = <_HoistExprSig>[];
+  for (final element in literal.literalElements()) {
+    _walkHoistCollectionElement(element, out);
+  }
+  return out;
+}
+
+void _walkHoistCollectionElement(
+  CollectionElement element,
+  List<_HoistExprSig> out,
+) {
+  switch (element) {
+    case IfElement(:final thenElement, :final elseElement):
+      _walkHoistCollectionElement(thenElement, out);
+      if (elseElement != null) _walkHoistCollectionElement(elseElement, out);
+    case ForElement(:final body):
+      _walkHoistCollectionElement(body, out);
+    case NullAwareElement(:final value):
+      _walkHoistExpr(value, out);
+    case SpreadElement(:final expression):
+      _walkHoistExpr(expression, out);
+    case MapLiteralEntry(:final key, :final value):
+      _walkHoistExpr(key, out);
+      _walkHoistExpr(value, out);
+    case Expression():
+      _walkHoistExpr(element, out);
+    case _:
+      break;
+  }
+}
+
+void _walkHoistExpr(Expression expr, List<_HoistExprSig> out) {
+  final shorthandOffset = switch (expr) {
+    DotShorthandPropertyAccess(:final period) ||
+    DotShorthandInvocation(:final period) ||
+    DotShorthandConstructorInvocation(:final period) => period.offset,
+    _ => null,
+  };
+  final type = expr.staticType;
+  final baseKey = type == null ? null : _typeKey(type);
+  final typeArgs = switch (expr) {
+    InvocationExpression(:final typeArgumentTypes?)
+        when typeArgumentTypes.isNotEmpty =>
+      typeArgumentTypes.map(_typeKey).join(','),
+    FunctionReference(:final typeArgumentTypes?)
+        when typeArgumentTypes.isNotEmpty =>
+      typeArgumentTypes.map(_typeKey).join(','),
+    _ => null,
+  };
+  out.add((
+    sig: typeArgs == null ? baseKey : '$baseKey<$typeArgs>',
+    shorthandOffset: shorthandOffset,
+  ));
+  switch (expr) {
+    case ParenthesizedExpression(:final expression) ||
+        AwaitExpression(:final expression) ||
+        CascadeExpression(target: final expression):
+      _walkHoistExpr(expression, out);
+    case PostfixExpression(:final operand, :final operator)
+        when operator.type == .BANG:
+      _walkHoistExpr(operand, out);
+    case ConditionalExpression(:final thenExpression, :final elseExpression):
+      _walkHoistExpr(thenExpression, out);
+      _walkHoistExpr(elseExpression, out);
+    case BinaryExpression(
+          :final operator,
+          :final leftOperand,
+          :final rightOperand,
+        )
+        when operator.type == .QUESTION_QUESTION:
+      _walkHoistExpr(leftOperand, out);
+      _walkHoistExpr(rightOperand, out);
+    case SwitchExpression(:final cases):
+      for (final c in cases) {
+        _walkHoistExpr(c.expression, out);
+      }
+    case TypedLiteral():
+      for (final e in expr.literalElements()) {
+        _walkHoistCollectionElement(e, out);
+      }
+    case RecordLiteral(:final fields):
+      for (final f in fields) {
+        _walkHoistExpr(f.fieldExpression, out);
+      }
+    case FunctionExpression(:final body):
+      if (body case ExpressionFunctionBody(:final expression)) {
+        _walkHoistExpr(expression, out);
+      }
+    case InstanceCreationExpression(:final argumentList) ||
+        DotShorthandConstructorInvocation(:final argumentList) ||
+        DotShorthandInvocation(:final argumentList):
+      _walkHoistArgs(argumentList, out);
+    case MethodInvocation(:final target, :final argumentList):
+      if (target != null && !_CandidateCollector._isTypeRef(target)) {
+        _walkHoistExpr(target, out);
+      }
+      _walkHoistArgs(argumentList, out);
+    case FunctionExpressionInvocation(:final function, :final argumentList):
+      _walkHoistExpr(function, out);
+      _walkHoistArgs(argumentList, out);
+    case PropertyAccess(:final target)
+        when target != null && !_CandidateCollector._isTypeRef(target):
+      _walkHoistExpr(target, out);
+    case IndexExpression(:final target):
+      if (target != null) _walkHoistExpr(target, out);
+  }
+}
+
+void _walkHoistArgs(ArgumentList argumentList, List<_HoistExprSig> out) {
+  for (final arg in argumentList.arguments) {
+    _walkHoistExpr(arg.argumentExpression, out);
+  }
 }

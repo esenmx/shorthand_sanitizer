@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- Untyped `List` and `Set` literals with no outer element context and at least
+  two convertible elements now hoist `<Type>` and shorten their elements
+  (`[Fit.cover, Fit.contain]` → `<Fit>[.cover, .contain]`), so existing
+  `dotsan -n --set-exit-if-changed` CI gates will exit 1 on newly convertible
+  collections; pass `--skip=Type.member` (`Sanitizer(skips: {'Type.member'})`)
+  to keep specific sites prefixed.
+
+### Added
+
+- Untyped `List` and `Set` literals without an outer element context hoist their
+  inferred `<Type>` (preserving `const`, `?` nullability, import prefixes,
+  type aliases, and in-scope generic type arguments) when at least two elements
+  convert and the collection's and its elements' static types are unchanged;
+  single-element `[Fit.cover]`, sibling namespaces (`[Colors.red, Colors.blue]`),
+  and widened slots (`List<Object?>`) stay prefixed.
+
 ## 0.12.0 - 2026-10-31
 
 ### Breaking

@@ -36,7 +36,11 @@ library. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace
 statics (`Colors.red` in a `Color` slot), `Enum.values`, metadata annotations
 (`@MyAnnot.instance`), unnamed constructors (`Text('Hi')`), and silent rebinds
 (`Base x = Sub.a`) all stay prefixed. Operator expressions split correctly:
-`Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`.
+`Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`. Untyped `List` and `Set`
+literals with no outer element context hoist `<Type>` when 2+ elements convert
+and element types stay unchanged (`[Fit.cover, Fit.contain]` →
+`<Fit>[.cover, .contain]`, `{Fit.cover, Fit.contain}` → `<Fit>{.cover, .contain}`);
+1-element `[Fit.cover]` and widened `List<Object?>` slots stay prefixed.
 
 Two rebinds are licensed, only in a slot typed exactly as the rebind (argument,
 typed declaration, constructor field initializer, return or `yield`, collection

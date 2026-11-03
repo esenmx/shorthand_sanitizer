@@ -1758,4 +1758,376 @@ Fit f() => Fit.cover;
           .deepEquals(['staged.dart']);
     });
   });
+
+  group('untyped collection hoisting', () {
+    test(
+      'hoists <Type> on untyped lists and sets with 2+ convertible elements',
+      () async {
+        final out = await sanitize('''
+enum Fit { cover, contain, fill }
+
+class Pad {
+  const Pad.all(this.v);
+  const Pad.sym({this.v = 0});
+  static const Pad zero = Pad.all(0);
+  final double v;
+}
+
+extension type const Meters._(int v) {
+  const Meters.of(int v) : this._(v);
+}
+
+class Box<T> {
+  const Box.of(this.v);
+  final T v;
+}
+
+typedef AliasFit = Fit;
+
+void demo(bool flag, Fit? maybe) {
+  final list = [Fit.cover, Fit.contain, Fit.fill];
+  final set = {Fit.cover, Fit.contain};
+  final constLit = const [Fit.cover, Fit.contain];
+  const constDecl = {Fit.cover, Fit.contain};
+  final nullable = [Fit.cover, null, Fit.contain];
+  final pads = [Pad.all(4), Pad.sym(v: 8), Pad.zero];
+  final meters = [Meters.of(1), Meters.of(2)];
+  final boxes = [Box.of(1), Box.of(2)];
+  final aliased = [AliasFit.cover, AliasFit.contain];
+  final flow = [
+    Fit.cover,
+    if (flag) Fit.contain else Fit.fill,
+    ?maybe,
+    ...[Fit.cover],
+  ];
+  final mixedSpread = [1, ...[Fit.cover, Fit.contain]];
+  final contains = {Fit.cover, Fit.contain}.contains(maybe);
+  final unpinnedList = List.of([Fit.cover, Fit.contain]);
+  final unpinnedSet = Set.of([Fit.cover, Fit.contain]);
+  final List<Fit> pinnedList = List.of([Fit.cover, Fit.contain]);
+  for (final f in [Fit.cover, Fit.contain]) {
+    print(f);
+  }
+  for (final _ in [Fit.cover, Fit.contain]) {}
+  for (final Fit f in [Fit.cover, Fit.contain]) {
+    print(f);
+  }
+  print([
+    list,
+    set,
+    constLit,
+    constDecl,
+    nullable,
+    pads,
+    meters,
+    boxes,
+    aliased,
+    flow,
+    mixedSpread,
+    contains,
+    unpinnedList,
+    unpinnedSet,
+    pinnedList,
+  ]);
+}
+''');
+        check(out)
+          ..contains('final list = <Fit>[.cover, .contain, .fill];')
+          ..contains('final set = <Fit>{.cover, .contain};')
+          ..contains('final constLit = const <Fit>[.cover, .contain];')
+          ..contains('const constDecl = <Fit>{.cover, .contain};')
+          ..contains('final nullable = <Fit?>[.cover, null, .contain];')
+          ..contains('final pads = <Pad>[.all(4), .sym(v: 8), .zero];')
+          ..contains('final meters = <Meters>[.of(1), .of(2)];')
+          ..contains('final boxes = <Box<int>>[.of(1), .of(2)];')
+          ..contains('final aliased = <AliasFit>[.cover, .contain];')
+          ..contains(
+            'final flow = <Fit>[\n'
+            '    .cover,\n'
+            '    if (flag) .contain else .fill,\n'
+            '    ?maybe,\n'
+            '    ...[.cover],\n'
+            '  ];',
+          )
+          ..contains('final mixedSpread = [1, ...<Fit>[.cover, .contain]];')
+          ..contains(
+            'final contains = <Fit>{.cover, .contain}.contains(maybe);',
+          )
+          ..contains('final unpinnedList = List.of(<Fit>[.cover, .contain]);')
+          ..contains('final unpinnedSet = Set.of(<Fit>[.cover, .contain]);')
+          ..contains('final List<Fit> pinnedList = .of([.cover, .contain]);')
+          ..contains('for (final f in <Fit>[.cover, .contain])')
+          ..contains('for (final _ in <Fit>[.cover, .contain])')
+          ..contains('for (final Fit f in [.cover, .contain])');
+      },
+    );
+
+    test('preserves import prefixes and licensed forwarders in hoisted '
+        'collections', () async {
+      final pkg = fixture('hoist_prefix', {
+        'lib/fit.dart': 'enum Fit { cover, contain }\n',
+        'lib/geo.dart': '''
+import 'box.dart';
+abstract class Geo {
+  const factory Geo.all(double v) = Box.all;
+}
+''',
+        'lib/box.dart': '''
+import 'geo.dart';
+class Box implements Geo {
+  const Box.all(this.v);
+  final double v;
+}
+''',
+      });
+      final mainFile = write(pkg, 'lib/main.dart', '''
+import 'box.dart';
+import 'fit.dart' as f;
+import 'geo.dart';
+
+final fits = [f.Fit.cover, f.Fit.contain];
+final geos = [Geo.all(1), Box.all(2)];
+''');
+      final res = await Sanitizer().run([mainFile.path]);
+      check(res.convertedCount).equals(4);
+      check(res.removedImportCount).equals(1);
+      check(mainFile.readAsStringSync())
+        ..not((it) => it.contains("import 'box.dart';"))
+        ..contains("import 'fit.dart' as f;")
+        ..contains("import 'geo.dart';")
+        ..contains('final fits = <f.Fit>[.cover, .contain];')
+        ..contains('final geos = <Geo>[.all(1), .all(2)];');
+    });
+
+    test('leaves 1-element, skip-reduced, widened, sibling-namespace, map, and '
+        'verify-rejected collections untyped', () async {
+      final pkg = fixture('hoist_neg', {});
+      final mainFile = write(pkg, 'lib/main.dart', '''
+enum Fit { cover, contain, fill }
+
+class Color {
+  const Color(this.v);
+  final int v;
+}
+
+class Palette {
+  static const Color red = Color(1);
+  static const Color blue = Color(2);
+}
+
+class Gen {
+  static Gen of<T>(T v) => Gen();
+}
+
+void main(Object listOrOther) {
+  final singleList = [Fit.cover];
+  final singleSet = {Fit.cover};
+  final skipReduced = [Fit.cover, Fit.fill];
+  final List<Object?> widened = [Fit.contain, Fit.fill];
+  final sibling = [Palette.red, Palette.blue];
+  final untypedMap = {Fit.contain: 1, Fit.fill: 2};
+  final oneVerifyBad = [Gen.of<num>(1), Gen.of<int>(2)];
+  final twoVerifyGood = [Gen.of<num>(1), Gen.of<int>(2), Gen.of<String>('a')];
+  if (listOrOther case [Fit.contain, Fit.fill]) {
+    print('matched');
+  }
+  print([
+    singleList,
+    singleSet,
+    skipReduced,
+    widened,
+    sibling,
+    untypedMap,
+    oneVerifyBad,
+    twoVerifyGood,
+  ]);
+}
+''');
+      final res = await Sanitizer(
+        skips: {'Fit.cover'},
+        explain: true,
+      ).run([mainFile.path]);
+      check(res.convertedCount).equals(2);
+      final out = mainFile.readAsStringSync();
+      check(out)
+        ..contains('final singleList = [Fit.cover];')
+        ..contains('final singleSet = {Fit.cover};')
+        ..contains('final skipReduced = [Fit.cover, Fit.fill];')
+        ..contains('final List<Object?> widened = [Fit.contain, Fit.fill];')
+        ..contains('final sibling = [Palette.red, Palette.blue];')
+        ..contains('final untypedMap = {Fit.contain: 1, Fit.fill: 2};')
+        ..contains('final oneVerifyBad = [Gen.of<num>(1), Gen.of<int>(2)];')
+        ..contains(
+          "final twoVerifyGood = <Gen>[Gen.of<num>(1), .of(2), .of('a')];",
+        )
+        ..contains('if (listOrOther case [Fit.contain, Fit.fill])');
+      final kept = res.files.single.kept;
+      check(kept).contains('20: Fit.cover kept: skip-listed');
+      check(kept).contains('20: Fit.fill kept: no context type');
+    });
+
+    test('refuses hoisting when <Type> re-infers a non-converted '
+        'element', () async {
+      final pkg = fixture('hoist_elem_reinfer', {});
+      final mainFile = write(pkg, 'lib/main.dart', '''
+class Box<T> {
+  const Box(this.v);
+  static Box<T> of<T>(T v) => Box(v);
+  static const Box<num> zero = Box(0);
+  static const Box<num> one = Box(1);
+  final T v;
+}
+
+void demo(bool flag, Box<num>? maybe) {
+  final xs = [Box.of(1), Box.zero, Box.one];
+  final ys = [Box(1), Box.zero, Box.one];
+  final cond = [flag ? Box(1) : Box.zero, Box.zero, Box.one];
+  final spread = [...[Box(1)], Box.zero, Box.one];
+  final lhsCoalesced = [(flag ? Box(1) : null) ?? Box.zero, Box.zero, Box.one];
+  final rhsCoalesced = [maybe ?? Box(1), Box.zero, Box.one];
+  final pinned = [Box.of<int>(1), Box.zero, Box.one];
+  print([xs, ys, cond, spread, lhsCoalesced, rhsCoalesced, pinned]);
+}
+''');
+      final res = await Sanitizer(explain: true).run([mainFile.path]);
+      check(res.convertedCount).equals(5);
+      final out = mainFile.readAsStringSync();
+      check(out)
+        ..contains('final xs = [Box.of(1), Box.zero, Box.one];')
+        ..contains('final ys = [Box(1), Box.zero, Box.one];')
+        ..contains(
+          'final cond = [flag ? Box(1) : Box.zero, Box.zero, Box.one];',
+        )
+        ..contains('final spread = [...[Box(1)], Box.zero, Box.one];')
+        ..contains(
+          'final lhsCoalesced = '
+          '[(flag ? Box(1) : null) ?? .zero, Box.zero, Box.one];',
+        )
+        ..contains(
+          'final rhsCoalesced = <Box<num>>[maybe ?? Box(1), .zero, .one];',
+        )
+        ..contains('final pinned = <Box<num>>[Box.of<int>(1), .zero, .one];');
+      final kept = res.files.single.kept;
+      check(kept)
+        ..contains(
+          '10: Box.of kept: changes the static type from Box<int> to Box<num>',
+        )
+        ..contains('10: Box.zero kept: changes an element static type')
+        ..contains('11: Box.zero kept: changes an element static type');
+    });
+
+    test('single-hoist _largestClean keeps the largest clean subset and bounds '
+        'all-dirty resolves', () async {
+      final pkg = fixture('hoist_largest_clean', {
+        'old_pkg/pubspec.yaml': '''
+name: old_pkg
+environment:
+  sdk: ^3.10.0
+''',
+        'old_pkg/lib/old.dart': '''
+enum Fit { a, b, c, d, e, f }
+
+@Deprecated('use Fit')
+typedef OldFit = Fit;
+''',
+        'pubspec.yaml': '''
+name: hoist_largest_clean
+environment:
+  sdk: ^3.10.0
+dependencies:
+  old_pkg:
+    path: old_pkg
+''',
+      });
+      final mainFile = write(pkg, 'lib/main.dart', '''
+import 'package:old_pkg/old.dart';
+
+typedef PubFit = Fit;
+typedef _OnlyOnce = Fit;
+
+void demo() {
+  final subset = [
+    PubFit.a,
+    _OnlyOnce.b,
+    Fit.c,
+    Fit.d,
+  ];
+  final allDirty = [
+    // ignore: deprecated_member_use
+    OldFit.a,
+    // ignore: deprecated_member_use
+    OldFit.b,
+    // ignore: deprecated_member_use
+    OldFit.c,
+    // ignore: deprecated_member_use
+    OldFit.d,
+    // ignore: deprecated_member_use
+    OldFit.e,
+    // ignore: deprecated_member_use
+    OldFit.f,
+  ];
+  print([subset, allDirty]);
+}
+''');
+      final res = await Sanitizer(explain: true).run([mainFile.path]);
+      check(res.convertedCount).equals(3);
+      final out = mainFile.readAsStringSync();
+      check(out)
+        ..contains(
+          'final subset = <PubFit>[\n'
+          '    .a,\n'
+          '    _OnlyOnce.b,\n'
+          '    .c,\n'
+          '    .d,\n'
+          '  ];',
+        )
+        ..contains('final allDirty = [');
+      final kept = res.files.single.kept;
+      check(kept)
+          .any((it) => it.startsWith('9: _OnlyOnce.b kept: introduces '));
+      check(kept).every((it) => it.not((s) => s.contains('11: Fit.d kept')));
+    });
+
+    test('recovers a sidelined hoist partner across multiple waves without '
+        'duplicating candidates', () async {
+      final pkg = fixture('hoist_partner_waves', {});
+      final mainFile = write(pkg, 'lib/main.dart', '''
+class Box<T> {
+  const Box(this.v);
+  static Box<T> of<T>(T v) => Box(v);
+  final T v;
+}
+
+class Pad {
+  const Pad();
+  static const Pad zero = Pad();
+  static SubPad<T> from<T>(Box<T> b) => SubPad<T>();
+  static Pad bad<T>(T x) => const Pad();
+}
+
+class SubPad<T> extends Pad {
+  const SubPad();
+}
+
+void demo() {
+  final Pad extra = Pad.bad<num>(1);
+  final xs = [
+    Pad.from(Box.of<num>(1)),
+    Pad.bad<num>(1),
+    Pad.zero,
+  ];
+  print([extra, xs]);
+}
+''');
+      final res = await Sanitizer().run([mainFile.path]);
+      check(res.convertedCount).equals(2);
+      check(mainFile.readAsStringSync()).contains(
+        'final xs = <Pad>[\n'
+        '    .from(Box.of<num>(1)),\n'
+        '    Pad.bad<num>(1),\n'
+        '    .zero,\n'
+        '  ];',
+      );
+    });
+  });
 }

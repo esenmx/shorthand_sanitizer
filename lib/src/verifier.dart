@@ -47,6 +47,10 @@ final class _LibrarySanitizer({
   /// The latest verdict's reason for each refused candidate.
   final _why = <_Candidate, String>{};
 
+  /// Non-culprit hoist siblings temporarily sidelined because a partner in the
+  /// same collection literal dropped below the 2-element threshold.
+  final _hoistPartners = <_LiteralHoist, Set<_Candidate>>{};
+
   /// Directive edits to apply on write, per unit path of [library].
   var _orphanCuts = const <String, List<_DirectiveCut>>{};
 
@@ -122,7 +126,14 @@ final class _LibrarySanitizer({
         for (final c in converted)
           if (c.unitPath == plan.unitPath) c,
       ];
+      final unitHoists = {for (final c in unitConverted) ?c.hoist};
       final edits = [
+        for (final h in unitHoists)
+          (
+            start: h.insertOffset,
+            end: h.insertOffset,
+            length: h.replacement.length,
+          ),
         for (final c in unitConverted)
           (
             start: c.deleteStart,
@@ -201,10 +212,10 @@ final class _LibrarySanitizer({
         for (final c in a.culprits) {
           if ((groupCounts[c.groupKey] ?? 0) > 1) _dropped.add(c);
         }
-        _active = [
+        _active = _pruneLonelyHoists([
           for (final c in _active)
             if (!a.culprits.contains(c)) c,
-        ];
+        ], savePartners: true);
         continue;
       }
       for (var round = 0; round < 3 && _active.isNotEmpty; round++) {
@@ -222,23 +233,159 @@ final class _LibrarySanitizer({
     return true;
   }
 
-  /// Largest subset of [set] that verifies clean.
-  Future<List<_Candidate>> _largestClean(List<_Candidate> set) async {
+  List<_Candidate> _pruneLonelyHoists(
+    List<_Candidate> list, {
+    bool savePartners = false,
+  }) {
+    final counts = <_LiteralHoist, int>{};
+    for (final c in list) {
+      if (c.hoist case final h?) {
+        counts.update(h, (n) => n + 1, ifAbsent: () => 1);
+      }
+    }
+    if (counts.values.every((n) => n >= 2)) return list;
+    final kept = <_Candidate>[];
+    for (final c in list) {
+      if (c.hoist case final h? when (counts[h] ?? 0) < 2) {
+        _why[c] ??= 'no context type';
+        if (savePartners) (_hoistPartners[h] ??= {}).add(c);
+      } else {
+        kept.add(c);
+      }
+    }
+    return kept;
+  }
+
+  /// Largest subset of [rawSet] that verifies clean.
+  Future<List<_Candidate>> _largestClean(List<_Candidate> rawSet) async {
+    final set = _pruneLonelyHoists(rawSet);
     if (set.isEmpty) return set;
     final a = await _attempt(set);
     if (a == null) return const [];
     if (a.isClean) return set;
-    if (set.length == 1) {
+    final firstHoist = set.first.hoist;
+    final singleHoist =
+        firstHoist != null && set.every((c) => identical(c.hoist, firstHoist));
+    if (set.length == 1 || (singleHoist && set.length == 2)) {
       if (a.stray case final stray?) {
-        _why[set.single] = 'introduces $stray';
+        for (final c in set) {
+          _why[c] = 'introduces $stray';
+        }
       }
       return const [];
     }
-    final mid = set.length ~/ 2;
+    if (singleHoist) return await _largestCleanSingleHoist(set, a.stray);
+    final chunks = <List<_Candidate>>[];
+    final byHoist = <_LiteralHoist, List<_Candidate>>{};
+    for (final c in set) {
+      if (c.hoist case final h?) {
+        final group = byHoist[h];
+        if (group == null) {
+          final fresh = [c];
+          byHoist[h] = fresh;
+          chunks.add(fresh);
+        } else {
+          group.add(c);
+        }
+      } else {
+        chunks.add([c]);
+      }
+    }
+    final mid = chunks.length ~/ 2;
     return [
-      ...await _largestClean(set.sublist(0, mid)),
-      ...await _largestClean(set.sublist(mid)),
+      ...await _largestClean([for (final ch in chunks.sublist(0, mid)) ...ch]),
+      ...await _largestClean([for (final ch in chunks.sublist(mid)) ...ch]),
     ];
+  }
+
+  Future<List<_Candidate>> _largestCleanSingleHoist(
+    List<_Candidate> set,
+    String? outerStray,
+  ) async {
+    final clean = await _findCleanHoistSubset(set, alreadyTried: true);
+    if (clean.isEmpty) {
+      if (outerStray != null) {
+        for (final c in set) {
+          _why[c] ??= 'introduces $outerStray';
+        }
+      }
+      return const [];
+    }
+    final cleanSet = clean.toSet();
+    final remaining = [
+      for (final c in set)
+        if (!cleanSet.contains(c)) c,
+    ];
+    return await _expandHoistAnchor(
+      clean,
+      remaining,
+      knownDirtyLength: set.length,
+      fallbackStray: outerStray,
+    );
+  }
+
+  Future<List<_Candidate>> _findCleanHoistSubset(
+    List<_Candidate> sub, {
+    bool alreadyTried = false,
+  }) async {
+    if (sub.length < 2) return const [];
+    if (!alreadyTried) {
+      final a = await _attempt(sub);
+      if (a == null) return const [];
+      if (a.isClean) return sub;
+    }
+    if (sub.length == 2) return const [];
+    if (sub.length == 3) {
+      for (final pair in [
+        [sub[1], sub[2]],
+        [sub[0], sub[2]],
+        [sub[0], sub[1]],
+      ]) {
+        final pa = await _attempt(pair);
+        if (pa != null && pa.isClean) return pair;
+      }
+      return const [];
+    }
+    final mid = sub.length ~/ 2;
+    final left = await _findCleanHoistSubset(sub.sublist(0, mid));
+    if (left.isNotEmpty) return left;
+    return await _findCleanHoistSubset(sub.sublist(mid));
+  }
+
+  Future<List<_Candidate>> _expandHoistAnchor(
+    List<_Candidate> anchor,
+    List<_Candidate> candidates, {
+    required int knownDirtyLength,
+    required String? fallbackStray,
+  }) async {
+    if (candidates.isEmpty) return anchor;
+    var dirtyLen = knownDirtyLength;
+    var stray = fallbackStray;
+    if (anchor.length + candidates.length < dirtyLen) {
+      final trial = [...anchor, ...candidates]..sort(_byOffset);
+      final a = await _attempt(trial);
+      if (a == null) return anchor;
+      if (a.isClean) return trial;
+      dirtyLen = trial.length;
+      stray = a.stray ?? stray;
+    }
+    if (candidates.length == 1) {
+      if (stray != null) _why[candidates.single] = 'introduces $stray';
+      return anchor;
+    }
+    final mid = candidates.length ~/ 2;
+    final withLeft = await _expandHoistAnchor(
+      anchor,
+      candidates.sublist(0, mid),
+      knownDirtyLength: dirtyLen,
+      fallbackStray: stray,
+    );
+    return await _expandHoistAnchor(
+      withLeft,
+      candidates.sublist(mid),
+      knownDirtyLength: dirtyLen,
+      fallbackStray: stray,
+    );
   }
 
   /// Re-offers the dropped candidates: one may have been unresolvable only
@@ -248,26 +395,55 @@ final class _LibrarySanitizer({
   Future<void> _recover() async {
     var pending = _dropped;
     while (pending.isNotEmpty) {
+      final activeHoists = {
+        for (final c in _active) ?c.hoist,
+        for (final MapEntry(:key, :value) in _hoistPartners.entries)
+          if (value.isNotEmpty) key,
+      };
       final seen = <(String, int)>{};
+      final unanchoredHoists = <_LiteralHoist>{};
       final wave = <_Candidate>[];
       final rest = <_Candidate>[];
       for (final c in pending) {
-        (seen.add(c.groupKey) ? wave : rest).add(c);
+        final h = c.hoist;
+        final joinUnanchored = h != null && unanchoredHoists.contains(h);
+        if (joinUnanchored || seen.add(c.groupKey)) {
+          wave.add(c);
+          if (h != null && !activeHoists.contains(h)) unanchoredHoists.add(h);
+        } else {
+          rest.add(c);
+        }
       }
       pending = rest;
-      if (_active.length + wave.length == allCandidates.length) continue;
+      final waveWithPartners = <_Candidate>{...wave};
+      for (final c in wave) {
+        if (c.hoist case final h?) {
+          if (_hoistPartners[h] case final partners?) {
+            waveWithPartners.addAll(partners);
+          }
+        }
+      }
+      final trial = _pruneLonelyHoists(
+        {..._active, ...waveWithPartners}.toList()..sort(_byOffset),
+      );
+      if (trial.length == _active.length ||
+          trial.length == allCandidates.length) {
+        continue;
+      }
 
-      final trial = [..._active, ...wave]..sort(_byOffset);
       final a = await _attempt(trial);
       if (a == null) break;
-      final regained = [
+      final regained = _pruneLonelyHoists([
         for (final c in trial)
           if (!a.culprits.contains(c)) c,
-      ];
+      ]);
       if (regained.length > _active.length) {
         final settled = a.isClean ? a : await _attempt(regained);
         if (settled != null && settled.isClean) {
           _active = a.isClean ? trial : regained;
+          for (final c in _active) {
+            if (c.hoist case final h?) _hoistPartners[h]?.remove(c);
+          }
           _accept(settled);
         } else if (settled?.stray case final stray?) {
           for (final c in wave) {
@@ -362,10 +538,11 @@ final class _LibrarySanitizer({
           for (final c in offenders) {
             _why[c] = reasonFor(c);
           }
-          _active = [
+          _active = _pruneLonelyHoists([
             for (final c in _active)
               if (!offenders.contains(c)) c,
-          ];
+          ]);
+          if (_active.isEmpty) return false;
           final retry = await _attempt(_active);
           if (retry == null || !retry.isClean) {
             for (final c in _active) {
@@ -496,11 +673,20 @@ final class _LibrarySanitizer({
 
   _LibraryRewritten _apply(List<_Candidate> set) {
     final byUnit = <String, List<_Candidate>>{};
+    final hoistCounts = <_LiteralHoist, int>{};
     for (final c in set) {
       (byUnit[c.unitPath] ??= []).add(c);
+      if (c.hoist case final h?) {
+        hoistCounts.update(h, (n) => n + 1, ifAbsent: () => 1);
+      }
+    }
+    final hoistsByUnit = <String, List<_LiteralHoist>>{};
+    for (final MapEntry(key: h, value: count) in hoistCounts.entries) {
+      if (count >= 2) (hoistsByUnit[h.unitPath] ??= []).add(h);
     }
     final texts = <String, String>{};
     final newOffsets = <_Candidate, int>{};
+    final newHoistBrackets = <_LiteralHoist, int>{};
     for (final plan in unitPlans) {
       final unitSet = byUnit[plan.unitPath];
       final content = plan.original.content;
@@ -509,21 +695,40 @@ final class _LibrarySanitizer({
         continue;
       }
       unitSet.sort(_byOffset);
+      final unitHoists = hoistsByUnit[plan.unitPath] ?? const <_LiteralHoist>[];
+      if (unitHoists.length > 1) {
+        unitHoists.sort((a, b) => a.insertOffset.compareTo(b.insertOffset));
+      }
       final buffer = StringBuffer();
       var cursor = 0;
       var delta = 0;
-      for (final c in unitSet) {
-        buffer
-          ..write(content.substring(cursor, c.deleteStart))
-          ..write(c.replacement);
-        newOffsets[c] = c.deleteStart + delta;
-        delta += c.replacement.length - (c.deleteEnd - c.deleteStart);
-        cursor = c.deleteEnd;
+      var hi = 0;
+      var ci = 0;
+      while (hi < unitHoists.length || ci < unitSet.length) {
+        if (hi < unitHoists.length &&
+            (ci >= unitSet.length ||
+                unitHoists[hi].insertOffset <= unitSet[ci].deleteStart)) {
+          final h = unitHoists[hi++];
+          buffer
+            ..write(content.substring(cursor, h.insertOffset))
+            ..write(h.replacement);
+          newHoistBrackets[h] = h.insertOffset + delta + h.replacement.length;
+          delta += h.replacement.length;
+          cursor = h.insertOffset;
+        } else {
+          final c = unitSet[ci++];
+          buffer
+            ..write(content.substring(cursor, c.deleteStart))
+            ..write(c.replacement);
+          newOffsets[c] = c.deleteStart + delta;
+          delta += c.replacement.length - (c.deleteEnd - c.deleteStart);
+          cursor = c.deleteEnd;
+        }
       }
       buffer.write(content.substring(cursor));
       texts[plan.unitPath] = buffer.toString();
     }
-    return .new(texts, newOffsets);
+    return .new(texts, newOffsets, newHoistBrackets);
   }
 
   /// Node-level verdict on an applied set across all units in [unitPlans].
@@ -547,9 +752,38 @@ final class _LibrarySanitizer({
     }
     final selfUri = checkLib.element.uri.toString();
 
+    final shorthandOffsetsByUnit = <String, Set<int>>{};
+    for (final MapEntry(key: c, value: offset)
+        in rewritten.newOffsets.entries) {
+      (shorthandOffsetsByUnit[c.unitPath] ??= {}).add(offset);
+    }
+
+    final failedHoistReasons = <_LiteralHoist, String>{};
+    for (final MapEntry(key: hoist, value: bracketOffset)
+        in rewritten.newHoistBrackets.entries) {
+      final idx = indices[hoist.unitPath];
+      final actual = idx?.literalTypesByBracket[bracketOffset];
+      if (actual != hoist.expectedStaticType) {
+        failedHoistReasons[hoist] = 'changes the collection static type';
+      } else if (!_hoistElementsMatch(
+        hoist.expectedElementTypes,
+        idx?.literalElementsByBracket[bracketOffset],
+        shorthandOffsetsByUnit[hoist.unitPath],
+      )) {
+        failedHoistReasons[hoist] = 'changes an element static type';
+      }
+    }
+
     final culprits = <_Candidate>{};
     for (final MapEntry(key: candidate, value: offset)
         in rewritten.newOffsets.entries) {
+      if (candidate.hoist case final h?) {
+        if (failedHoistReasons[h] case final reason?) {
+          culprits.add(candidate);
+          _why[candidate] = reason;
+          continue;
+        }
+      }
       final checkUnit = unitsByPath[candidate.unitPath];
       final shorthands = indices[candidate.unitPath];
       if (checkUnit == null || shorthands == null) {
@@ -745,8 +979,48 @@ String _describe(Diagnostic d) =>
 String _sentence(String message) =>
     message.endsWith('.') ? message.substring(0, message.length - 1) : message;
 
+bool _hoistElementsMatch(
+  List<String?> expected,
+  List<_HoistExprSig>? actual,
+  Set<int>? activeShorthandOffsets,
+) {
+  if (actual == null || actual.length != expected.length) return false;
+  for (var i = 0; i < expected.length; i++) {
+    final (:sig, :shorthandOffset) = actual[i];
+    if (shorthandOffset != null &&
+        activeShorthandOffsets != null &&
+        activeShorthandOffsets.contains(shorthandOffset)) {
+      continue;
+    }
+    if (sig != expected[i]) return false;
+  }
+  return true;
+}
+
 final class _ShorthandIndex extends RecursiveAstVisitor<void> {
   final byOffset = <int, _ResolvedShorthand>{};
+  final literalTypesByBracket = <int, String?>{};
+  final literalElementsByBracket = <int, List<_HoistExprSig>>{};
+
+  @override
+  void visitListLiteral(ListLiteral node) {
+    final type = node.staticType;
+    final offset = node.leftBracket.offset;
+    literalTypesByBracket[offset] = type == null ? null : _typeKey(type);
+    literalElementsByBracket[offset] = _hoistElementSignatures(node);
+    super.visitListLiteral(node);
+  }
+
+  @override
+  void visitSetOrMapLiteral(SetOrMapLiteral node) {
+    final type = node.staticType;
+    final offset = node.leftBracket.offset;
+    literalTypesByBracket[offset] = type == null ? null : _typeKey(type);
+    if (node.isSet) {
+      literalElementsByBracket[offset] = _hoistElementSignatures(node);
+    }
+    super.visitSetOrMapLiteral(node);
+  }
 
   void _add(
     int offset,
