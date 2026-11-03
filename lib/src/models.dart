@@ -1,5 +1,19 @@
 part of 'sanitizer.dart';
 
+/// Static-type signature of one expression inside a hoisted literal, plus the
+/// `.` offset when that expression is a dot shorthand.
+typedef _HoistExprSig = ({String? sig, int? shorthandOffset});
+
+/// `<Type>` inserted before an untyped list or set literal's opening bracket
+/// (`[` or `{`) so two or more elements inside it can shorten.
+final class _LiteralHoist({
+  required final String unitPath,
+  required final int insertOffset,
+  required final String replacement,
+  required final String expectedStaticType,
+  required final List<String?> expectedElementTypes,
+});
+
 /// One `Type.member` occurrence that may be shortened.
 final class _Candidate({
   /// Analyzer path of the compilation unit holding this candidate.
@@ -60,7 +74,33 @@ final class _Candidate({
   /// with different keys cannot affect each other's resolution — which is what
   /// lets the recovery pass test one per key at a time in a single resolve.
   final (String, int) groupKey = ('', -1),
-});
+
+  /// Enclosing untyped list or set literal `<Type>` insertion required for this
+  /// candidate to have a context type; null when the context already supplies
+  /// one.
+  final _LiteralHoist? hoist,
+}) {
+  _Candidate withHoist(_LiteralHoist value) => .new(
+    unitPath: unitPath,
+    scopePath: scopePath,
+    deleteStart: deleteStart,
+    deleteEnd: deleteEnd,
+    owner: owner,
+    display: display,
+    memberName: memberName,
+    containerName: containerName,
+    libraryUri: libraryUri,
+    replacement: replacement,
+    signature: signature,
+    typeArgTypes: typeArgTypes,
+    staticType: staticType,
+    shownType: shownType,
+    typedSlot: typedSlot,
+    restrictions: restrictions,
+    groupKey: groupKey,
+    hoist: value,
+  );
+}
 
 /// One reported `Type.member` site: converted, or (with [Sanitizer.explain])
 /// left prefixed.
@@ -256,11 +296,13 @@ final class _UnitPlan({
   required final List<_Kept>? kept,
 });
 
-/// Rewritten texts for the units of a library and where each candidate's
-/// shorthand `.` landed in its unit's text.
+/// Rewritten texts for the units of a library, where each candidate's
+/// shorthand `.` landed in its unit's text, and where each hoisted literal's
+/// opening `[` or `{` landed.
 final class _LibraryRewritten(
   final Map<String, String> texts,
   final Map<_Candidate, int> newOffsets,
+  final Map<_LiteralHoist, int> newHoistBrackets,
 );
 
 /// One verified rewrite of a candidate set across a library.

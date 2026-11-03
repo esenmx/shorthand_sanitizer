@@ -704,7 +704,7 @@ void runLib() => takeMode(Mode.on);
       final partFile = write(pkg, 'lib/recover_part.dart', '''
 part of 'recover_lib.dart';
 
-final xs = [Fit.cover, Fit.contain];
+final dynamic xs = Fit.cover;
 ''');
       final result = await Sanitizer().run([libFile.path, partFile.path]);
       check(result.skippedWithErrors).isEmpty();
@@ -714,7 +714,7 @@ final xs = [Fit.cover, Fit.contain];
         ..contains('takeMode(.on);')
         ..not((it) => it.contains("import 'mode_only.dart';"));
       check(partFile.readAsStringSync())
-          .contains('final xs = [Fit.cover, Fit.contain];');
+          .contains('final dynamic xs = Fit.cover;');
     },
   );
 

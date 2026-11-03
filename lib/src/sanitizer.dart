@@ -64,6 +64,12 @@ part 'workspace.dart';
 ///   untouched, so `.all(8)` in an `EdgeInsetsGeometry` slot constructs the
 ///   very `EdgeInsets` the prefix did.
 ///
+/// An untyped `List` or `Set` literal with no outer element context hoists its
+/// inferred `<Type>` (`[Fit.cover, Fit.contain]` → `<Fit>[.cover, .contain]`,
+/// `{Fit.cover, Fit.contain}` → `<Fit>{.cover, .contain}`) when at least two
+/// elements inside it convert and both the literal's and its elements' static
+/// types stay unchanged.
+///
 /// Dropping a `Type` prefix can orphan the import that supplied it. The
 /// verified resolve is the oracle: an `unused_import`/`unnecessary_import` it
 /// reports that the original did not is self-inflicted, so its directive is
@@ -497,6 +503,7 @@ final class Sanitizer({
     }
     final candidates = <_Candidate>[];
     final kept = [...collector.unviable];
+    var unviableCount = collector.unviable.length;
     for (final c in collector.candidates) {
       if (_isSkipped(c)) {
         result.skippedByList++;
@@ -509,13 +516,57 @@ final class Sanitizer({
         candidates.add(c);
       }
     }
+    for (final MapEntry(key: literal, value: entries)
+        in collector.hoistGroups.entries) {
+      final surviving = <_HoistEntry>[];
+      for (final entry in entries) {
+        final c = entry.candidate;
+        if (_isSkipped(c)) {
+          result.skippedByList++;
+          kept.add((
+            offset: c.deleteStart,
+            display: c.display,
+            reason: 'skip-listed',
+          ));
+        } else {
+          surviving.add(entry);
+        }
+      }
+      final literalType = literal.staticType;
+      final typeArg = surviving.length >= 2 && literalType != null
+          ? _spellLiteralTypeArg(literal, surviving, unit)
+          : null;
+      if (typeArg != null && literalType != null) {
+        final hoist = _LiteralHoist(
+          unitPath: unit.path,
+          insertOffset: literal.leftBracketOffset(),
+          replacement: '<$typeArg>',
+          expectedStaticType: _typeKey(literalType),
+          expectedElementTypes: [
+            for (final e in _hoistElementSignatures(literal)) e.sig,
+          ],
+        );
+        for (final (:candidate, targetElement: _) in surviving) {
+          candidates.add(candidate.withHoist(hoist));
+        }
+      } else {
+        unviableCount += surviving.length;
+        for (final (:candidate, targetElement: _) in surviving) {
+          kept.add((
+            offset: candidate.deleteStart,
+            display: candidate.display,
+            reason: 'no context type',
+          ));
+        }
+      }
+    }
     candidates.sort(_byOffset);
     return .new(
       scopePath: scopePath,
       unitPath: unit.path,
       original: unit,
       candidates: candidates,
-      unviable: collector.unviable.length,
+      unviable: unviableCount,
       kept: explain ? kept : null,
     );
   }

@@ -33,6 +33,7 @@ void main() {
     converted: 2,
     roots: ['lib', 'bin', 'test'],
   );
+  e2e('collection_hoist', collectionHoist, converted: 19);
 }
 
 /// Sanitizes `lib` and `bin` of a package built from [files] (paths relative
@@ -843,5 +844,81 @@ dependencies:
 import 'package:restrict_scope/src/local.dart';
 
 void main() => useLocal(LBox.vft(4));
+''',
+};
+
+const collectionHoist = {
+  'analysis_options.yaml': '''
+analyzer:
+  language:
+    strict-raw-types: true
+''',
+  'lib/types.dart': r'''
+enum Status { pending, active, completed }
+
+class Pad {
+  const Pad.all(this.v);
+  const Pad.sym(this.v);
+  final int v;
+  @override
+  String toString() => 'Pad($v)';
+}
+
+class Box<T> {
+  const Box(this.v);
+  static Box<T> of<T>(T v) => Box(v);
+  static const Box<num> zero = Box(0);
+  static const Box<num> one = Box(1);
+  final T v;
+  @override
+  String toString() => 'Box<$T>($v)';
+}
+
+class Palette {
+  static const int red = 1;
+  static const int blue = 2;
+}
+''',
+  'bin/main.dart': r'''
+import 'package:collection_hoist/types.dart';
+import 'package:collection_hoist/types.dart' as t;
+
+const topSet = {Status.pending, Status.active};
+
+String describe(Iterable<Object?> items) =>
+    '${items.runtimeType}:[${items.map((e) => '${e.runtimeType}:$e').join(', ')}]';
+
+void main() {
+  final list = [Status.pending, Status.active, Status.completed];
+  final constList = const [Status.pending, Status.completed];
+  final nullable = [Status.pending, null, Status.active];
+  final prefixed = [t.Status.pending, t.Status.active];
+  final pads = [Pad.all(4), Pad.sym(8)];
+  final boxes = [Box.of(1), Box.of(2)];
+  final mixedMethod = [Box.of(1), Box.zero, Box.one];
+  final mixedCtor = [Box(1), Box.zero, Box.one];
+  final pinnedMixed = [Box.of<int>(1), Box.zero, Box.one];
+  final single = [Status.pending];
+  final List<Object?> widened = [Status.pending, Status.active];
+  final sibling = [Palette.red, Palette.blue];
+  for (final s in [Status.active, Status.completed]) {
+    print('loop ${s.runtimeType}:$s');
+  }
+  print([
+    describe(topSet),
+    describe(list),
+    describe(constList),
+    describe(nullable),
+    describe(prefixed),
+    describe(pads),
+    describe(boxes),
+    '${describe(mixedMethod)} int0=${mixedMethod[0] is Box<int>}',
+    '${describe(mixedCtor)} int0=${mixedCtor[0] is Box<int>}',
+    '${describe(pinnedMixed)} int0=${pinnedMixed[0] is Box<int>}',
+    describe(single),
+    describe(widened),
+    describe(sibling),
+  ].join('\n'));
+}
 ''',
 };

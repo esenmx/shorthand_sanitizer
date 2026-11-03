@@ -222,6 +222,7 @@ dotsan -v
 | **Const aliases** in a slot of exactly that type | `Alignment.topCenter` | `.topCenter` |
 | **Redirecting-factory forwarders** in a slot of exactly that type | `padding: EdgeInsets.only(left: 8)` | `.only(left: 8)` |
 | **Generic static methods** whose `<T>` is inferred | `Box.of<int>(1)` | `.of(1)` |
+| **Untyped lists & sets** with 2+ convertible elements | `[Fit.cover, Fit.contain]` | `<Fit>[.cover, .contain]` |
 
 ### What stays prefixed
 
@@ -255,6 +256,15 @@ final Box b = Box.of<num>(1);
 final G<num> g = IntG.of(1); // typedef IntG = G<int> fixes the type argument
 
 final Geo a = Box.all(1)..log(); // the cascade observes the rebind's type
+
+// Single-element untyped collections (<Fit>[.cover] saves no repeated prefix)
+final single = [Fit.cover];
+
+// Widened collection slots (narrowing List<Object?> to List<Fit> breaks .add)
+final List<Object?> wide = [Fit.cover, Fit.contain];
+
+// Untyped collections where <Box<num>> would re-infer Box(1) as Box<num>
+final boxes = [Box(1), Box.zero, Box.one];
 ```
 
 ---
