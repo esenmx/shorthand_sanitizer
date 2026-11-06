@@ -4,6 +4,12 @@
 
 ### Breaking
 
+- The `dotsan` executable is renamed to `shorthand`, with no alias: update
+  scripts and CI gates, then run `dart install shorthand_sanitizer`, which
+  replaces the old binary. The analyzer cache moves to a `shorthand_sanitizer`
+  folder, so the next run rebuilds it and the old `dotsan` cache folder can be
+  deleted. The agent skill is renamed to
+  `shorthand-sanitizer-usage` (directory `skills/shorthand-sanitizer-usage/`).
 - Untyped `List` and `Set` literals with no outer element context and at least
   two convertible elements now hoist `<Type>` and shorten their elements
   (`[Fit.cover, Fit.contain]` → `<Fit>[.cover, .contain]`), so existing

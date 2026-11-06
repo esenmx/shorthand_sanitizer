@@ -10,7 +10,7 @@ import 'helpers.dart';
 void main() {
   test('--explain lists kept sites after the converted ones', () {
     final file = explainFixture();
-    final run = dotsan(['--dry-run', '--explain', file.parent.path]);
+    final run = shorthand(['--dry-run', '--explain', file.parent.path]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
       '${canonical(file.path)}\n'
@@ -30,7 +30,7 @@ void main() {
       'lib/main.dart':
           'enum Fit { cover }\nvoid main() {\n  Fit f = Fit.cover;\n}\n',
     });
-    final run = dotsan(['--dry-run', p.join(pkg.path, 'lib')]);
+    final run = shorthand(['--dry-run', p.join(pkg.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(65);
     check(run.stdout as String)
         .equals('would convert 0 site(s) in 0 file(s)\n');
@@ -47,7 +47,7 @@ void main() {
     test('a dry run that would convert exits 1 and writes nothing', () {
       final file = explainFixture();
       final before = file.readAsStringSync();
-      final run = dotsan(['-n', '--set-exit-if-changed', file.parent.path]);
+      final run = shorthand(['-n', '--set-exit-if-changed', file.parent.path]);
       check(because: '${run.stderr}', run.exitCode).equals(1);
       check(file.readAsStringSync()).equals(before);
     });
@@ -55,13 +55,13 @@ void main() {
     test('a run with nothing to convert exits 0', () {
       final file = explainFixture()
         ..writeAsStringSync('enum Fit { cover }\nvoid main() {}\n');
-      final run = dotsan(['-n', '--set-exit-if-changed', file.parent.path]);
+      final run = shorthand(['-n', '--set-exit-if-changed', file.parent.path]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
     });
 
     test('a real run exits 1 and still writes', () {
       final file = explainFixture();
-      final run = dotsan(['--set-exit-if-changed', file.parent.path]);
+      final run = shorthand(['--set-exit-if-changed', file.parent.path]);
       check(because: '${run.stderr}', run.exitCode).equals(1);
       check(file.readAsStringSync()).contains('Fit f = .cover;');
     });
@@ -69,7 +69,12 @@ void main() {
 
   test('SS-G3 --format=json prints the report as one JSON document', () {
     final file = explainFixture();
-    final run = dotsan(['-n', '--explain', '--format=json', file.parent.path]);
+    final run = shorthand([
+      '-n',
+      '--explain',
+      '--format=json',
+      file.parent.path,
+    ]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stderr as String).startsWith('note: using Dart SDK ');
     check(LineSplitter.split(run.stderr as String)).length.equals(1);
@@ -117,13 +122,13 @@ void main() {
   });
 
   test('SS-B10 a path that does not exist is an error, not a no-op', () {
-    final run = dotsan(['-n', 'lib/does_not_exist.dart']);
+    final run = shorthand(['-n', 'lib/does_not_exist.dart']);
     check(run.exitCode).equals(64);
     check(run.stderr as String).contains('does_not_exist');
   });
 
   test('every bad path is reported, a non-Dart file included (exit 64)', () {
-    final run = dotsan(['-n', 'lib/does_not_exist.dart', 'pubspec.yaml']);
+    final run = shorthand(['-n', 'lib/does_not_exist.dart', 'pubspec.yaml']);
     check(run.exitCode).equals(64);
     check(run.stderr as String).equals(
       'no such file or directory: lib/does_not_exist.dart\n'
@@ -133,7 +138,7 @@ void main() {
 
   test('no path and no conventional root is a usage error (exit 64)', () {
     final dir = fixture('no_roots', {}, pubGet: false);
-    final run = dotsan(['-n'], cwd: dir.path);
+    final run = shorthand(['-n'], cwd: dir.path);
     check(run.exitCode).equals(64);
     check(run.stderr as String)
         .equals('no conventional root directory found (see --help)\n');
@@ -142,16 +147,16 @@ void main() {
   test('--help and -h print the usage on stdout', () {
     final dir = fixture('help', {}, pubGet: false);
     for (final flag in ['--help', '-h']) {
-      final run = dotsan([flag], cwd: dir.path);
+      final run = shorthand([flag], cwd: dir.path);
       check(because: '$flag: ${run.stderr}', run.exitCode).equals(0);
       check(because: flag, run.stdout as String)
-        ..startsWith('Usage: dotsan [paths...] [options]\n')
+        ..startsWith('Usage: shorthand [paths...] [options]\n')
         ..endsWith('file could not be written.\n');
     }
   });
 
   test('SS-B11 an invalid --exclude glob is a usage error (exit 64)', () {
-    final run = dotsan(['-n', 'lib', '--exclude=[']);
+    final run = shorthand(['-n', 'lib', '--exclude=[']);
     check(run.exitCode).equals(64);
     check(run.stderr as String).not((it) => it.contains('Unhandled exception'));
   });
@@ -160,7 +165,7 @@ void main() {
     final dir = fixture('relative_fixture', {
       'lib/main.dart': 'enum Fit { cover }\nFit f() => Fit.cover;\n',
     });
-    final run = dotsan(['-n', 'lib'], cwd: dir.path);
+    final run = shorthand(['-n', 'lib'], cwd: dir.path);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).startsWith('${p.join('lib', 'main.dart')}\n');
   });
@@ -190,7 +195,7 @@ void main() {
       ('a bracket glob', 'workspace: ["pkgs/pkg_[ab]"]'),
     ]) {
       test('finds both members declared as $form', () {
-        final run = dotsan(['-n'], cwd: workspace(declaration).path);
+        final run = shorthand(['-n'], cwd: workspace(declaration).path);
         check(because: '${run.stderr}', run.exitCode).equals(0);
         check(run.stdout as String)
           ..contains('${p.join('pkgs', 'pkg_a', 'lib', 'pkg_a.dart')}\n')
@@ -227,7 +232,7 @@ void main() {
     ]) {
       test('exits 64 on $form', () {
         final ws = workspace(declaration, pubGet: false);
-        final run = dotsan(['-n'], cwd: ws.path);
+        final run = shorthand(['-n'], cwd: ws.path);
         check(because: '${run.stderr}', run.exitCode).equals(64);
         check(run.stderr as String).contains(error);
       });
@@ -237,11 +242,14 @@ void main() {
   test('SS-S1 an AOT build finds the SDK on PATH without DART_SDK', () {
     final file = explainFixture();
     final out = tempDir('aot');
-    final exe = p.join(out.path, Platform.isWindows ? 'dotsan.exe' : 'dotsan');
+    final exe = p.join(
+      out.path,
+      Platform.isWindows ? 'shorthand.exe' : 'shorthand',
+    );
     final compile = Process.runSync(Platform.resolvedExecutable, [
       'compile',
       'exe',
-      'bin/dotsan.dart',
+      'bin/shorthand.dart',
       '-o',
       exe,
     ]);
@@ -266,7 +274,7 @@ void main() {
     final before = file.readAsStringSync();
     Process.runSync('chmod', ['444', file.path]);
     addTearDown(() => Process.runSync('chmod', ['644', file.path]));
-    final run = dotsan([file.parent.path]);
+    final run = shorthand([file.parent.path]);
     check(because: '${run.stderr}', run.exitCode).equals(74);
     check(run.stderr as String).contains('could not write');
     check(run.stderr as String).not((it) => it.contains('Unhandled exception'));
@@ -280,7 +288,7 @@ void main() {
       final root = file.parent.parent.path;
       final alias = tempDir('alias');
       final link = Link(p.join(alias.path, 'pkg'))..createSync(root);
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--exclude=lib/main.dart',
         p.join(link.path, 'lib'),
@@ -298,7 +306,8 @@ void main() {
       multiLine: true,
     ).firstMatch(File('pubspec.yaml').readAsStringSync())?.group(1);
     check(version).isNotNull();
-    check(dotsan(['--version']).stdout as String).equals('dotsan $version\n');
+    check(shorthand(['--version']).stdout as String)
+        .equals('shorthand $version\n');
   });
 
   /// A part whose one site orphans its library's import of `fit.dart`.
@@ -312,7 +321,7 @@ void main() {
 
   test('SS-I1 names the pruned import and counts its file in changed', () {
     final dir = fixture('part_orphan_cli', partOrphan());
-    final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+    final run = shorthand(['-n', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
       '${canonical(p.join(dir.path, 'lib', 'part.dart'))}\n'
@@ -329,7 +338,7 @@ void main() {
       'part_orphan_kept_cli',
       partOrphan(lib: 'void other() => print(Duration.zero);\n'),
     );
-    final run = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
+    final run = shorthand(['-n', '-e', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String).equals(
       '${canonical(p.join(dir.path, 'lib', 'lib.dart'))}\n'
@@ -343,12 +352,12 @@ void main() {
   });
 
   test('--since with an unknown git revision or non-repo path exits 64', () {
-    final run = dotsan(['--since=unknown_revision_xyz', 'lib']);
+    final run = shorthand(['--since=unknown_revision_xyz', 'lib']);
     check(run.exitCode).equals(64);
     check(run.stderr as String).contains('unknown git revision');
 
     final file = explainFixture();
-    final nonRepo = dotsan(['--changed', file.path]);
+    final nonRepo = shorthand(['--changed', file.path]);
     check(nonRepo.exitCode).equals(64);
     check(nonRepo.stderr as String).contains('not a git repository');
   });

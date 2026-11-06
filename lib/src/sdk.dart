@@ -61,7 +61,7 @@ String? _dartOnPath() {
 ///
 /// Only `.unlinked2`, `.linked`, and `.linked.digest` keys are retained:
 /// `AnalysisDriver` also emits `.resolved` / `.resolved2` error+index bundles
-/// for `getErrors` and `getIndex`, which `dotsan` never calls. While
+/// for `getErrors` and `getIndex`, which `shorthand` never calls. While
 /// [_SanitizerByteStore.speculative] is true (during in-memory overlay
 /// verification or ephemeral temp-dir runs), new entries stay in the memory
 /// tier only so transient candidate waves, bisections, pre-prune states,
@@ -76,7 +76,7 @@ _SanitizerByteStore _initByteStore() {
     return .new(null);
   }
   try {
-    final dir = BaseDirectories('dotsan').cacheHome;
+    final dir = BaseDirectories('shorthand_sanitizer').cacheHome;
     Directory(dir).createSync(recursive: true);
     return .new(EvictingFileByteStore(dir, _maxDiskCacheBytes));
   } on Exception {

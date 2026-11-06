@@ -1,29 +1,29 @@
 ---
-name: shorthand-sanitizer-dotsan
-description: Batch-convert Type.member to Dart dot-shorthand .member via the dotsan CLI. Use when review flags full-prefix shorthand nits, after generating Dart code with type-prefixed statics, or when asked to adopt dot shorthands.
+name: shorthand-sanitizer-usage
+description: Batch-convert Type.member to Dart dot-shorthand .member via the `shorthand` CLI. Use when review flags full-prefix shorthand nits, after generating Dart code with type-prefixed statics, or when asked to adopt dot shorthands.
 license: MIT
 ---
 
-# shorthand-sanitizer-dotsan
+# shorthand-sanitizer-usage
 
-`dotsan` = type-resolved sweep; never hand-edit shorthand nits file by file, and
-never regex them (silent rebinds: `Base x = Sub.a` → `.a` binds `Base.a`).
+`shorthand` = type-resolved sweep; never hand-edit shorthand nits file by file,
+and never regex them (silent rebinds: `Base x = Sub.a` → `.a` binds `Base.a`).
 
 ```bash
-dotsan lib test              # rewrite in place, per-site report
-dotsan lib --dry-run         # preview
-dotsan --changed             # only git-modified/untracked files
-dotsan --since=origin/main   # only files changed since a git ref
-dotsan --skip=AsyncValue.error lib
-dotsan --exclude=glob,glob   # skip matching files (/ globs: CWD-relative)
+shorthand lib test              # rewrite in place, per-site report
+shorthand lib --dry-run         # preview
+shorthand --changed             # only git-modified/untracked files
+shorthand --since=origin/main   # only files changed since a git ref
+shorthand --skip=AsyncValue.error lib
+shorthand --exclude=glob,glob   # skip matching files (/ globs: CWD-relative)
 # also rewrite what the package's own analysis_options.yaml excludes
-dotsan --no-analyzer-excludes
-dotsan --include-generated   # also rewrite generated-marked files
-dotsan --allow-errors        # also rewrite files whose library has errors
-dotsan lib/page.dart -n --explain  # why each remaining site stays prefixed
+shorthand --no-analyzer-excludes
+shorthand --include-generated   # also rewrite generated-marked files
+shorthand --allow-errors        # also rewrite files whose library has errors
+shorthand lib/page.dart -n --explain  # why each remaining site stays prefixed
 # CI gate: 1 = would convert, 65 = a file was skipped
-dotsan lib -n --set-exit-if-changed
-dotsan lib -n --format=json   # machine-readable
+shorthand lib -n --set-exit-if-changed
+shorthand lib -n --format=json   # machine-readable
 ```
 
 Missing binary → `dart install shorthand_sanitizer`.
@@ -39,8 +39,9 @@ statics (`Colors.red` in a `Color` slot), `Enum.values`, metadata annotations
 `Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`. Untyped `List` and `Set`
 literals with no outer element context hoist `<Type>` when 2+ elements convert
 and element types stay unchanged (`[Fit.cover, Fit.contain]` →
-`<Fit>[.cover, .contain]`, `{Fit.cover, Fit.contain}` → `<Fit>{.cover, .contain}`);
-1-element `[Fit.cover]` and widened `List<Object?>` slots stay prefixed.
+`<Fit>[.cover, .contain]`, `{Fit.cover, Fit.contain}` →
+`<Fit>{.cover, .contain}`); 1-element `[Fit.cover]` and widened `List<Object?>`
+slots stay prefixed.
 
 Two rebinds are licensed, only in a slot typed exactly as the rebind (argument,
 typed declaration, constructor field initializer, return or `yield`, collection
