@@ -23,7 +23,7 @@ void main() {
         'lib/bad.dart': "$convertible\nint bad = '';\n",
       });
       final bad = canonical(p.join(dir.path, 'lib', 'bad.dart'));
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--set-exit-if-changed',
         '--format=json',
@@ -44,7 +44,7 @@ void main() {
         'pubspec.yaml': 'name: au1_floor\nenvironment:\n  sdk: ^3.0.0\n',
         'lib/a.dart': convertible,
       });
-      final run = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);
+      final run = shorthand(['-n', '--format=json', p.join(dir.path, 'lib')]);
       check(because: '${run.stderr}', run.exitCode).equals(65);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
       check(report['skippedBelowFloor']).isA<List<Object?>>().deepEquals([
@@ -56,7 +56,7 @@ void main() {
       final dir = fixture('au1_unconfigured', {
         'lib/a.dart': convertible,
       }, pubGet: false);
-      final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+      final run = shorthand(['-n', p.join(dir.path, 'lib')]);
       check(because: '${run.stderr}', run.exitCode).equals(65);
       check(run.stderr as String).equals(
         'warning: skipped 1 file(s) in ${canonical(dir.path)}: no package '
@@ -68,7 +68,7 @@ void main() {
       final dir = fixture('au1_allow', {
         'lib/bad.dart': "$convertible\nint bad = '';\n",
       });
-      final run = dotsan(['-n', '--allow-errors', p.join(dir.path, 'lib')]);
+      final run = shorthand(['-n', '--allow-errors', p.join(dir.path, 'lib')]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stdout as String)
           .endsWith('would convert 1 site(s) in 1 file(s)\n');
@@ -79,7 +79,7 @@ void main() {
         'lib/a.dart': convertible,
         'lib/bad.dart': "$convertible\nint bad = '';\n",
       });
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--set-exit-if-changed',
         p.join(dir.path, 'lib'),
@@ -97,7 +97,7 @@ void main() {
       final a = File(p.join(dir.path, 'lib', 'a.dart'));
       Process.runSync('chmod', ['444', a.path]);
       addTearDown(() => Process.runSync('chmod', ['644', a.path]));
-      final run = dotsan(['--format=json', p.join(dir.path, 'lib')]);
+      final run = shorthand(['--format=json', p.join(dir.path, 'lib')]);
       check(because: '${run.stderr}', run.exitCode).equals(74);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
       check(report['writeFailures'])
@@ -118,16 +118,16 @@ void main() {
         'lib/b.dart': convertible,
       });
       final gen = canonical(p.join(dir.path, 'lib', 'a.g.dart'));
-      final plain = dotsan(['-n', p.join(dir.path, 'lib')]);
+      final plain = shorthand(['-n', p.join(dir.path, 'lib')]);
       check(because: '${plain.stderr}', plain.exitCode).equals(0);
       check(plain.stderr as String).isEmpty();
 
-      final explained = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
+      final explained = shorthand(['-n', '-e', p.join(dir.path, 'lib')]);
       check(explained.stderr as String)
           .contains('skipped 1 generated file(s) (--include-generated');
       check(explained.stderr as String).contains('  $gen\n');
 
-      final json = dotsan(['-n', '--format=json', p.join(dir.path, 'lib')]);
+      final json = shorthand(['-n', '--format=json', p.join(dir.path, 'lib')]);
       final report = jsonDecode(json.stdout as String) as Map<String, Object?>;
       check(report['skippedGenerated']).isA<List<Object?>>().deepEquals([gen]);
     });
@@ -137,7 +137,7 @@ void main() {
         'lib/a.g.dart':
             '// GENERATED CODE - DO NOT MODIFY BY HAND\n$convertible',
       });
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--include-generated',
         p.join(dir.path, 'lib'),
@@ -153,7 +153,7 @@ void main() {
             '// GENERATED CODE - DO NOT MODIFY BY HAND\n$convertible',
       });
       final gen = p.join(dir.path, 'lib', 'a.g.dart');
-      final run = dotsan(['-n', gen]);
+      final run = shorthand(['-n', gen]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stderr as String)
           .contains('warning: skipped ${canonical(gen)}: generated');
@@ -179,7 +179,7 @@ void main() {
     final result = await Sanitizer(dryRun: true).run([p.join(dir.path, 'lib')]);
     check(result.skippedOrphanParts).deepEquals([part]);
 
-    final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+    final run = shorthand(['-n', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(65);
     check(run.stderr as String).contains(part);
   });
@@ -196,7 +196,7 @@ void main() {
     check([for (final d in result.unreadableDirectories) d.path])
         .deepEquals([canonical(locked)]);
 
-    final run = dotsan(['-n', p.join(dir.path, 'lib')]);
+    final run = shorthand(['-n', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(65);
     check(run.stderr as String).contains('could not read ${canonical(locked)}');
   }, testOn: '!windows');
@@ -204,7 +204,7 @@ void main() {
   group('AU-6 skip entries', () {
     test('a malformed --skip entry is a usage error', () {
       for (final entry in ['.cover', 'Fit.', 'a..b', 'Fit cover']) {
-        final run = dotsan(['-n', '--skip=$entry', 'lib']);
+        final run = shorthand(['-n', '--skip=$entry', 'lib']);
         check(
           because: 'entry "$entry": ${run.stderr}',
           run.exitCode,
@@ -215,7 +215,7 @@ void main() {
 
     test('padding around a comma-separated --skip list is fine', () {
       final dir = fixture('au6_pad', {'lib/a.dart': convertible});
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--skip=Fit.cover, Fit.contain',
         p.join(dir.path, 'lib'),
@@ -226,7 +226,7 @@ void main() {
 
     test('a --skip entry that matched no site is reported', () async {
       final dir = fixture('au6_typo', {'lib/a.dart': convertible});
-      final run = dotsan(['-n', '--skip=Fit.covr', p.join(dir.path, 'lib')]);
+      final run = shorthand(['-n', '--skip=Fit.covr', p.join(dir.path, 'lib')]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stderr as String)
           .contains('warning: --skip entry "Fit.covr" matched no site');
@@ -267,7 +267,7 @@ void main() {
   group('AU-7 excludes', () {
     test('an --exclude glob that matched no file is reported', () {
       final dir = fixture('au7_typo', {'lib/a.dart': convertible});
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--exclude=lib/aa.dart',
         p.join(dir.path, 'lib'),
@@ -282,7 +282,7 @@ void main() {
       () {
         final dir = fixture('au7_anchor', {'lib/a.dart': convertible});
         final a = p.join(p.basename(dir.path), 'lib', 'a.dart');
-        final missed = dotsan([
+        final missed = shorthand([
           '-n',
           '--exclude=lib/a.dart',
           a,
@@ -295,7 +295,11 @@ void main() {
         );
 
         final glob = p.posix.join(p.basename(dir.path), 'lib', 'a.dart');
-        final hit = dotsan(['-n', '--exclude=$glob', a], cwd: dir.parent.path);
+        final hit = shorthand([
+          '-n',
+          '--exclude=$glob',
+          a,
+        ], cwd: dir.parent.path);
         check(because: '${hit.stderr}', hit.exitCode).equals(0);
         check(hit.stdout as String)
             .equals('would convert 0 site(s) in 0 file(s)\n');
@@ -306,7 +310,7 @@ void main() {
   });
 
   test('AU-8 an invalid DART_SDK is an error naming the variable', () {
-    final run = dotsan(
+    final run = shorthand(
       ['-n', 'lib'],
       environment: {...Platform.environment, 'DART_SDK': '/nonexistent/sdk'},
     );
@@ -317,7 +321,7 @@ void main() {
 
   test('AU-8 --explain names the Dart SDK it analyzes with', () {
     final dir = fixture('au8_sdk', {'lib/a.dart': convertible});
-    final run = dotsan(['-n', '-e', p.join(dir.path, 'lib')]);
+    final run = shorthand(['-n', '-e', p.join(dir.path, 'lib')]);
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stderr as String).contains('Dart SDK ${sdkPath()}');
   });
@@ -350,7 +354,7 @@ void main() {
 
     test('in text, beside the conversions of the same file', () {
       final dir = make();
-      final run = dotsan(['-n', p.join(dir.path, 'lib', 'h.dart')]);
+      final run = shorthand(['-n', p.join(dir.path, 'lib', 'h.dart')]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stdout as String).equals(
         '${canonical(p.join(dir.path, 'lib', 'h.dart'))}\n'
@@ -364,7 +368,7 @@ void main() {
 
     test('in JSON, with the URI and the side edit', () {
       final dir = make();
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--format=json',
         p.join(dir.path, 'lib', 'h.dart'),
@@ -401,7 +405,7 @@ void main() {
             "import 'fit.dart'; // ignore_for_file: avoid_print\n"
             "import 'use.dart';\nvoid a() => use(Fit.fill);\n",
       });
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         p.join(dir.path, 'lib', 'doc.dart'),
         p.join(dir.path, 'lib', 'ig.dart'),
@@ -433,7 +437,7 @@ void main() {
 
     test('--no-analyzer-excludes processes them', () {
       final dir = make();
-      final run = dotsan([
+      final run = shorthand([
         '-n',
         '--no-analyzer-excludes',
         p.join(dir.path, 'lib'),
@@ -485,7 +489,7 @@ void main() {
     test('a named file they exclude is a warning', () {
       final dir = make();
       final old = p.join(dir.path, 'lib', 'legacy', 'old.dart');
-      final run = dotsan(['-n', old]);
+      final run = shorthand(['-n', old]);
       check(because: '${run.stderr}', run.exitCode).equals(0);
       check(run.stderr as String)
           .contains('warning: skipped ${canonical(old)}: excluded by');

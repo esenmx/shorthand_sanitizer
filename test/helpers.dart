@@ -6,7 +6,7 @@ import 'package:test/test.dart';
 
 /// A fresh directory under the system temp directory, deleted after the test.
 Directory tempDir(String name) {
-  final dir = Directory.systemTemp.createTempSync('dotsan_$name');
+  final dir = Directory.systemTemp.createTempSync('shorthand_$name');
   addTearDown(() => dir.deleteSync(recursive: true));
   return dir;
 }
@@ -57,10 +57,10 @@ void pubGetIn(String path) {
 
 String canonical(String path) => p.normalize(p.absolute(path));
 
-/// dotsan from this repo, run in [cwd] (default: the repo root). dotsan writes
-/// UTF-8; the default decoding is the system code page, which is not UTF-8 on
-/// Windows (the warning's `—` came back as `â€”`).
-ProcessResult dotsan(
+/// The `shorthand` CLI from this repo, run in [cwd] (default: the repo root).
+/// It writes UTF-8; the default decoding is the system code page, which is not
+/// UTF-8 on Windows (the warning's `—` came back as `â€”`).
+ProcessResult shorthand(
   List<String> args, {
   String? cwd,
   Map<String, String>? environment,
@@ -68,7 +68,7 @@ ProcessResult dotsan(
   Platform.resolvedExecutable,
   [
     '--packages=${p.absolute('.dart_tool/package_config.json')}',
-    p.absolute('bin/dotsan.dart'),
+    p.absolute('bin/shorthand.dart'),
     ...args,
   ],
   workingDirectory: cwd,

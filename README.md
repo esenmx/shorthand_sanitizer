@@ -5,7 +5,7 @@
 [![CI](https://github.com/esenmx/shorthand_sanitizer/actions/workflows/ci.yaml/badge.svg)](https://github.com/esenmx/shorthand_sanitizer/actions/workflows/ci.yaml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`dotsan` rewrites `Type.member` to Dart's
+`shorthand` rewrites `Type.member` to Dart's
 [dot shorthand](https://dart.dev/language/dot-shorthands) `.member` across a
 whole Dart or Flutter project, then removes the imports the dropped prefixes
 left unused. It keeps a rewrite only when the analyzer proves it changes
@@ -14,16 +14,16 @@ nothing.
 **Why.** By hand, you visit every `EdgeInsets.all(16)` and `TextAlign.center` in
 the project. Find-and-replace is faster but unsafe: some rewrites still compile
 yet point at a different member ([example](#what-stays-prefixed)). The IDE's
-_Convert to dot shorthand_ assist is safe but fixes one site at a time. dotsan
-does the whole project in one run, checks every rewrite with the analyzer, and
-`--explain` tells you why it left a site alone.
+_Convert to dot shorthand_ assist is safe but fixes one site at a time.
+`shorthand` does the whole project in one run, checks every rewrite with the
+analyzer, and `--explain` tells you why it left a site alone.
 
-**How.** Install it once, then run it from your project root. dotsan needs Dart
-3.13+ and rewrites packages at language version 3.10+.
+**How.** Install it once, then run it from your project root. `shorthand` needs
+Dart 3.13+ and rewrites packages at language version 3.10+.
 
 ```bash
 dart install shorthand_sanitizer
-dotsan && dart format .
+shorthand && dart format .
 ```
 
 <!-- no-compile -->
@@ -43,15 +43,15 @@ return Padding(
 <!-- no-compile -->
 
 ```dart
-// After `dotsan && dart format .`
+// After `shorthand && dart format .`
 return Padding(
   padding: .all(16),
   child: Text(label, textAlign: .center, overflow: .ellipsis),
 );
 ```
 
-dotsan drops the prefixes; `dart format` then reflows the arguments that now fit
-within your line length.
+`shorthand` drops the prefixes; `dart format` then reflows the arguments that
+now fit within your line length.
 
 ---
 
@@ -71,7 +71,7 @@ Alternative: `dart pub global activate shorthand_sanitizer`.
 
 ### Requirements
 
-- dotsan itself needs Dart **3.13** or later.
+- `shorthand` itself needs Dart **3.13** or later.
 - Target packages need language version ≥ **3.10**; packages below it, or with
   no package config (run `dart pub get`), are skipped with a warning naming the
   package, and the run exits 65.
@@ -81,48 +81,48 @@ Alternative: `dart pub global activate shorthand_sanitizer`.
 
 ## Usage
 
-Run `dotsan` from a package or pub workspace root. With no paths it processes
+Run `shorthand` from a package or pub workspace root. With no paths it processes
 each of `lib`, `bin`, `test`, `example`, `tool`, `integration_test` and
 `benchmark` that exists (at the root and in each `workspace:` member); pass
 files or directories to narrow the run.
 
 ```bash
 # Sanitize every default root that exists
-dotsan
+shorthand
 
 # Preview changes (--dry-run)
-dotsan lib test -n
+shorthand lib test -n
 
 # Keep specific members prefixed
-dotsan --skip=AsyncValue.error
+shorthand --skip=AsyncValue.error
 
 # Exclude matching file globs
-dotsan --exclude="**/legacy/**"
+shorthand --exclude="**/legacy/**"
 
 # Also rewrite files analysis_options.yaml excludes
-dotsan --no-analyzer-excludes
+shorthand --no-analyzer-excludes
 
 # Also rewrite generated files
-dotsan --include-generated
+shorthand --include-generated
 
 # Why did a site stay prefixed?
-dotsan lib/page.dart -n --explain
+shorthand lib/page.dart -n --explain
 
 # CI gate: exit 1 if any site would still convert, 65 if a file was skipped
-dotsan -n --set-exit-if-changed
+shorthand -n --set-exit-if-changed
 
 # Only process git-modified/untracked files, or files changed since a ref
-dotsan --changed
-dotsan --since=origin/main
+shorthand --changed
+shorthand --since=origin/main
 
 # Machine-readable report
-dotsan lib -n --format=json
+shorthand lib -n --format=json
 
 # Also rewrite files whose library already has analysis errors
-dotsan --allow-errors
+shorthand --allow-errors
 
 # Show version (-h for full options)
-dotsan -v
+shorthand -v
 ```
 
 ### Options
@@ -158,8 +158,8 @@ dotsan -v
   left prefixed with its reason, and on stderr names the Dart SDK used and lists
   each generated file skipped. Reasons include `no context type`,
   `context type Color declares no static red`, `rebinds to Base.a`, the
-  analyzer's own error on the shorthand, and `skip-listed`. Sites dotsan never
-  considers, such as `Enum.values`, `@Type.member` annotations, unnamed
+  analyzer's own error on the shorthand, and `skip-listed`. Sites `shorthand`
+  never considers, such as `Enum.values`, `@Type.member` annotations, unnamed
   constructors (`Text(...)`), or a static field read as a receiver
   (`Fit.cover.name`), are not listed. Point it at one file — a Flutter app keeps
   thousands of `Theme.of(context)`-style sites prefixed.
@@ -196,7 +196,7 @@ dotsan -v
 
 ## How it works
 
-`dotsan` uses the **Dart Analyzer API** directly:
+`shorthand` uses the **Dart Analyzer API** directly:
 
 1. Rewrites candidate expressions speculatively in memory.
 2. Re-resolves the AST in memory.
@@ -226,7 +226,7 @@ dotsan -v
 
 ### What stays prefixed
 
-`dotsan` leaves expressions prefixed when context type is ambiguous or would
+`shorthand` leaves expressions prefixed when context type is ambiguous or would
 change program semantics:
 
 <!-- no-compile -->
@@ -356,12 +356,13 @@ final boxes = [Box(1), Box.zero, Box.one];
 ## Cache and performance
 
 Every candidate verification requires an analyzer resolution. To make runs fast,
-`dotsan` caches analyzer data on the OS:
+`shorthand` caches analyzer data on the OS:
 
 - **Cache locations**:
-  - **macOS**: `~/Library/Caches/dotsan`
-  - **Linux**: `$XDG_CACHE_HOME/dotsan` (or `~/.cache/dotsan`)
-  - **Windows**: `%LOCALAPPDATA%\dotsan`
+  - **macOS**: `~/Library/Caches/shorthand_sanitizer`
+  - **Linux**: `$XDG_CACHE_HOME/shorthand_sanitizer` (or
+    `~/.cache/shorthand_sanitizer`)
+  - **Windows**: `%LOCALAPPDATA%\shorthand_sanitizer`
 - **What is cached**: Linked element models and unlinked unit summaries for the
   Dart SDK, dependencies, and project libraries are persisted to an evicting
   file byte store (capped at 64 MiB, LRU) fronted by an in-memory cache;
@@ -373,16 +374,16 @@ Every candidate verification requires an analyzer resolution. To make runs fast,
   - **Content-addressed & safe**: Cache entries are keyed by content signatures;
     stale entries never corrupt results.
   - **Safe to clear**: You can wipe the cache folder at any time
-    (`rm -rf ~/Library/Caches/dotsan`); `dotsan` rebuilds it automatically on
-    the next run.
-  - **No usable cache directory**: `dotsan` then caches in memory only, for the
-    length of the run.
+    (`rm -rf ~/Library/Caches/shorthand_sanitizer`); `shorthand` rebuilds it
+    automatically on the next run.
+  - **No usable cache directory**: `shorthand` then caches in memory only, for
+    the length of the run.
 
 ---
 
 ## Agent skill
 
-This package ships an agent skill in `skills/shorthand-sanitizer-dotsan/`.
+This package ships an agent skill in `skills/shorthand-sanitizer-usage/`.
 Install it into your project's agent config with:
 
 ```sh

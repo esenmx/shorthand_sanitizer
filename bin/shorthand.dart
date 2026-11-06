@@ -103,7 +103,7 @@ ArgParser _buildParser() {
 
 String _usage(ArgParser parser) {
   return '''
-Usage: dotsan [paths...] [options]
+Usage: shorthand [paths...] [options]
 ${parser.usage}
 Rewrites Type.member to dot-shorthand .member wherever the rewrite provably
 resolves to the same element, then prunes any import the dropped Type prefix
@@ -135,7 +135,7 @@ Future<void> main(List<String> args) async {
     return;
   }
   if (opts.flag('version')) {
-    stdout.writeln('dotsan $_version');
+    stdout.writeln('shorthand $_version');
     return;
   }
 

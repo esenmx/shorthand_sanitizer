@@ -9,7 +9,7 @@ body:
       label: What happened?
       description: A clear, concise description of the bug.
       placeholder: |
-        I ran `dotsan lib` and a converted site no longer compiles.
+        I ran `shorthand lib` and a converted site no longer compiles.
     validations: { required: true }
   - type: textarea
     id: reproduction

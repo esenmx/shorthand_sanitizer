@@ -1,13 +1,13 @@
 # shorthand_sanitizer example
 
-Install the `dotsan` command, then run it from your project root:
+Install the `shorthand` command, then run it from your project root:
 
 ```bash
 dart install shorthand_sanitizer
 
-dotsan                          # every existing root (lib, bin, test, ...)
-dotsan lib test --dry-run       # report only
-dotsan --skip=AsyncValue.error  # keep listed members prefixed
+shorthand                          # every existing root (lib, bin, test, ...)
+shorthand lib test --dry-run       # report only
+shorthand --skip=AsyncValue.error  # keep listed members prefixed
 ```
 
 Before:
@@ -25,7 +25,7 @@ return Text(
 );
 ```
 
-After `dotsan lib && dart format lib`:
+After `shorthand lib && dart format lib`:
 
 ```dart
 await SystemChrome.setPreferredOrientations([.portraitUp, .portraitDown]);
@@ -33,5 +33,5 @@ await SystemChrome.setPreferredOrientations([.portraitUp, .portraitDown]);
 return Text(label, textAlign: .center, overflow: .ellipsis);
 ```
 
-`dotsan` rewrites the prefixes; `dart format` then reflows what fits in 80
+`shorthand` rewrites the prefixes; `dart format` then reflows what fits in 80
 columns, which is where the line reduction comes from.
