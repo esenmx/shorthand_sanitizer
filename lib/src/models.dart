@@ -1,5 +1,18 @@
 part of 'sanitizer.dart';
 
+/// `git` could not answer a [Sanitizer.changed] or [Sanitizer.since] run: an
+/// unknown revision, a path outside any repository, or git failing or missing.
+final class GitException(
+  /// What went wrong, for the user.
+  final String message,
+) implements Exception {
+  /// Creates the failure with its [message].
+  this;
+
+  @override
+  String toString() => 'GitException: $message';
+}
+
 /// Static-type signature of one expression inside a hoisted literal, plus the
 /// `.` offset when that expression is a dot shorthand.
 typedef _HoistExprSig = ({String? sig, int? shorthandOffset});
@@ -156,18 +169,43 @@ final class PrunedImport({
   ].join();
 }
 
+/// One `<Type>` inserted before an untyped list or set literal so its elements
+/// could shorten.
+final class HoistedType({
+  /// 1-based line of the literal's opening bracket, in the file as the run
+  /// found it.
+  required final int line,
+
+  /// 1-based column of the literal's opening bracket, in the file as the run
+  /// found it.
+  required final int column,
+
+  /// The inserted text, angle brackets included (`<Fit>`).
+  required final String inserted,
+}) {
+  /// Creates a hoisted-type report.
+  this;
+
+  /// `"line: inserted <Fit>"`.
+  String get description => '$line: inserted $inserted';
+}
+
 /// Per-file outcome of a sanitize run.
 final class FileResult(
   /// Canonical path of the rewritten file.
   final String path,
   List<Site> sites,
 
-  /// Candidates that failed verification and were left prefixed.
+  /// Candidates of this file left prefixed, refused by the verify loop or
+  /// ruled out by the static pre-check; skip-listed sites do not count.
   final int reverted, {
 
   /// Imports pruned from this file because a conversion — here or in another
   /// unit of its library — orphaned them, by line.
   List<PrunedImport> prunedImports = const [],
+
+  /// `<Type>` insertions made in this file, by line, then column.
+  List<HoistedType> hoistedTypes = const [],
 }) {
   /// Creates a result for [path]; [sites] are kept sorted by line, then
   /// column.
@@ -179,6 +217,14 @@ final class FileResult(
 
   /// How many imports were pruned from this file.
   int get removedImports => prunedImports.length;
+
+  /// `<Type>` insertions made in this file, by line, then column.
+  final List<HoistedType> hoistedTypes = [...hoistedTypes]
+    ..sort(
+      (a, b) => a.line != b.line
+          ? a.line.compareTo(b.line)
+          : a.column.compareTo(b.column),
+    );
 
   /// Every converted site and, with [Sanitizer.explain], every site left
   /// prefixed — skip-listed, ruled out by the static pre-check, or refused by
@@ -234,9 +280,13 @@ final class SanitizeResult {
   /// written; [Sanitizer.run] records them here instead of throwing. `file`
   /// is the file whose conversion was dropped, `path` the one that could not
   /// be written (`file` itself, or a unit of its library losing an orphaned
-  /// import), `error` the OS's reason. A library's conversions and the
-  /// imports they prune are written all or nothing; libraries converted before
-  /// it stay written.
+  /// import), `error` the OS's reason. An entry here means none of the
+  /// library's units changed: each is written to a sibling temp file first,
+  /// the temp files replace the originals by rename only once all are written,
+  /// and units already renamed are restored if a later rename fails (`error`
+  /// names any that could not be). Libraries converted before it stay written.
+  /// A process killed between renames reports nothing and can leave a library
+  /// partly replaced: each rename is atomic, the set is not.
   final List<({String file, String path, String error})> writeFailures = [];
 
   /// Part files skipped whole because the library they declare `part of`
@@ -247,6 +297,11 @@ final class SanitizeResult {
   /// files were processed.
   final List<({String path, String error})> unreadableDirectories = [];
 
+  /// Files that could not be read or are not valid UTF-8, with the reason. The
+  /// analyzer would see them as empty, so neither they nor the rest of their
+  /// library were processed, whatever [Sanitizer.allowErrors] says.
+  final List<({String path, String error})> unreadableFiles = [];
+
   /// Files skipped because their leading comment declares them generated
   /// ([Sanitizer.isGenerated]), as canonical paths.
   final List<String> skippedGenerated = [];
@@ -255,31 +310,42 @@ final class SanitizeResult {
   /// exclude, as canonical paths, with the rule that matched.
   final List<({String path, String reason})> excluded = [];
 
-  /// [Sanitizer.skips] entries that matched no site in the run.
+  /// [Sanitizer.skips] entries that matched no site in the run. Always empty
+  /// with [Sanitizer.changed] or [Sanitizer.since], which see only part of the
+  /// project: a typo there goes unreported.
   final Set<String> unmatchedSkips = {};
 
-  /// [Sanitizer.excludes] globs that matched no file in the run.
+  /// [Sanitizer.excludes] globs that matched no file in the run. Always empty
+  /// with [Sanitizer.changed] or [Sanitizer.since], as for [unmatchedSkips].
   final List<String> unmatchedExcludes = [];
 
   /// Whether a file the run should have processed was skipped instead: below
   /// the language floor, unconfigured, with analysis errors, an orphan part,
-  /// or under an unreadable directory. Generated and excluded files are left
-  /// alone by request and do not count.
+  /// unreadable or not valid UTF-8, or under an unreadable directory. Generated
+  /// and excluded files are left alone by request and do not count.
   bool get hasSkips =>
       skippedBelowFloor.isNotEmpty ||
       skippedUnconfigured.isNotEmpty ||
       skippedWithErrors.isNotEmpty ||
       skippedOrphanParts.isNotEmpty ||
-      unreadableDirectories.isNotEmpty;
+      unreadableDirectories.isNotEmpty ||
+      unreadableFiles.isNotEmpty;
 
   /// Total converted sites.
   int get convertedCount => files.fold(0, (n, f) => n + f.converted.length);
 
-  /// Total reverted sites.
-  int get revertedCount => files.fold(0, (n, f) => n + f.reverted);
+  /// Total candidates left prefixed, refused by the verify loop or ruled out
+  /// by the static pre-check; skip-listed sites do not count. Unlike [files],
+  /// it does not depend on [Sanitizer.explain].
+  int get revertedCount => _reverted;
+  var _reverted = 0;
 
   /// Total imports pruned because the conversion orphaned them.
   int get removedImportCount => files.fold(0, (n, f) => n + f.removedImports);
+
+  /// Total `<Type>` insertions on untyped list and set literals.
+  int get hoistedTypeCount =>
+      files.fold(0, (n, f) => n + f.hoistedTypes.length);
 
   /// Total explained sites left prefixed, skip-listed ones included; zero
   /// without [Sanitizer.explain].
@@ -406,5 +472,18 @@ Site _siteAt(
     before: before,
     after: after,
     keptReason: keptReason,
+  );
+}
+
+HoistedType _hoistedTypeAt(
+  CharacterLocation Function(int offset) locate,
+  int offset,
+  String inserted,
+) {
+  final location = locate(offset);
+  return HoistedType(
+    line: location.lineNumber,
+    column: location.columnNumber,
+    inserted: inserted,
   );
 }

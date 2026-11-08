@@ -62,6 +62,20 @@ final class _PackageGate() {
   }
 }
 
+/// Why [path] cannot be analyzed as what it holds: the analyzer reads a file it
+/// cannot read or decode as empty, which would pass for a clean file.
+String? _decodeProblem(String path, {bool missingIsFine = false}) {
+  try {
+    utf8.decode(File(path).readAsBytesSync());
+    return null;
+  } on FileSystemException catch (e) {
+    if (missingIsFine && e is PathNotFoundException) return null;
+    return e.osError?.message ?? e.message;
+  } on FormatException {
+    return 'not valid UTF-8';
+  }
+}
+
 /// Canonical paths of the files under [paths], each once, sorted. Files
 /// left alone — excluded, generated — and unreadable directories are
 /// recorded in [result]. When [gitRealPaths] is provided, only files in that
@@ -131,20 +145,24 @@ List<String> _collectFiles(
   return files.values.toList()..sort();
 }
 
+ProcessResult _git(List<String> args) {
+  try {
+    return Process.runSync('git', args);
+  } on ProcessException catch (e) {
+    throw GitException('could not run git: ${e.message}');
+  }
+}
+
 /// Discovers `.dart` files modified, staged, or untracked in git (or changed
 /// since [since] when non-null) across the repositories containing [paths],
 /// returning their `_real(...)` paths.
 ///
-/// Throws a [StateError] when a target path is not inside a git repository or
-/// a git command fails, or an [ArgumentError] when [since] is not a valid git
-/// revision.
+/// Throws a [GitException] when a target path is not inside a git repository,
+/// [since] names no revision, or a git command fails.
 Set<String> _discoverGitChangedFiles({
   required List<String> paths,
   String? since,
 }) {
-  if (since != null && (since.isEmpty || since.startsWith('-'))) {
-    throw ArgumentError.value(since, 'since', 'unknown git revision "$since"');
-  }
   final probeTargets = paths.isEmpty ? [p.current] : paths;
   final repoRoots = <String>{};
   for (final target in probeTargets) {
@@ -152,14 +170,9 @@ Set<String> _discoverGitChangedFiles({
     final dir = FileSystemEntity.isDirectorySync(canon)
         ? canon
         : p.dirname(canon);
-    final ProcessResult top;
-    try {
-      top = Process.runSync('git', ['-C', dir, 'rev-parse', '--show-toplevel']);
-    } on ProcessException catch (e) {
-      throw StateError('could not run git: ${e.message}');
-    }
+    final top = _git(['-C', dir, 'rev-parse', '--show-toplevel']);
     if (top.exitCode != 0) {
-      throw StateError('not a git repository: $target');
+      throw GitException('not a git repository: $target');
     }
     repoRoots.add(_canonical(top.stdout.toString().trim()));
   }
@@ -167,7 +180,7 @@ Set<String> _discoverGitChangedFiles({
   final realPaths = <String>{};
   for (final repoRoot in repoRoots) {
     if (since != null) {
-      final verify = Process.runSync('git', [
+      final verify = _git([
         '-C',
         repoRoot,
         'rev-parse',
@@ -176,11 +189,7 @@ Set<String> _discoverGitChangedFiles({
         '$since^{commit}',
       ]);
       if (verify.exitCode != 0) {
-        throw ArgumentError.value(
-          since,
-          'since',
-          'unknown git revision "$since"',
-        );
+        throw GitException('unknown git revision "$since"');
       }
     }
 
@@ -221,9 +230,9 @@ Set<String> _discoverGitChangedFiles({
     ];
 
     for (final args in commands) {
-      final r = Process.runSync('git', args);
+      final r = _git(args);
       if (r.exitCode != 0) {
-        throw StateError('git failed: ${r.stderr.toString().trim()}');
+        throw GitException('git failed: ${r.stderr.toString().trim()}');
       }
       for (final rel in r.stdout.toString().split('\x00')) {
         if (rel.isEmpty || !rel.endsWith('.dart')) continue;

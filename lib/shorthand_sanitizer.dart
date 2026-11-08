@@ -2,4 +2,12 @@
 library;
 
 export 'src/sanitizer.dart'
-    show FileResult, PrunedImport, SanitizeResult, Sanitizer, Site, sdkPath;
+    show
+        FileResult,
+        GitException,
+        HoistedType,
+        PrunedImport,
+        SanitizeResult,
+        Sanitizer,
+        Site,
+        sdkPath;

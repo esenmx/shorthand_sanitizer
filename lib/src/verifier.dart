@@ -32,6 +32,14 @@ final class _LibrarySanitizer({
   final Set<_ImportIssue> _userImportIssues = _importIssuesOf(library);
   final _constCache = <(String, String, String), DartObject?>{};
 
+  /// A `part` the analyzer could not make a unit of may still use an import
+  /// that looks orphaned, so nothing is pruned.
+  final bool _hasPartWithoutUnit = library.units.any(
+    (u) => u.libraryFragment.partIncludes.any(
+      (part) => part.uri is! DirectiveUriWithUnit,
+    ),
+  );
+
   final List<_Candidate> allCandidates = [
     for (final plan in unitPlans) ...plan.candidates,
   ]..sort(_byOffset);
@@ -64,7 +72,15 @@ final class _LibrarySanitizer({
       // Written while the overlays still hold the same text: removing them
       // first would have the analyzer re-read the pre-write disk.
       if (texts != null && !dryRun) {
-        final failure = _unwritable(texts.keys) ?? _writeAll(texts);
+        final failure = replaceFiles({
+          for (final MapEntry(key: path, value: text) in texts.entries)
+            path: (
+              analyzed:
+                  library.unitWithPath(path)?.content ??
+                  (throw StateError('$path is not a unit of its library')),
+              text: text,
+            ),
+        });
         if (failure case (:final path, :final error)) {
           final failScope = scopePathOf(path);
           final authorFiles = {
@@ -164,16 +180,32 @@ final class _LibrarySanitizer({
         for (final cut in cuts[plan.unitPath] ?? const <_DirectiveCut>[])
           cut.info(locate(_unapply(edits, cut.keyword)).lineNumber),
       ];
+      final hoisted = [
+        for (final h in unitHoists)
+          _hoistedTypeAt(locate, h.insertOffset, h.replacement),
+      ];
       final revertedCount =
           plan.candidates.where((c) => !done.contains(c)).length +
           plan.unviable;
+      result._reverted += revertedCount;
       if (sites.isNotEmpty || plan.kept != null && unitPruned.isNotEmpty) {
         withSites.add(
-          .new(plan.scopePath, sites, revertedCount, prunedImports: unitPruned),
+          .new(
+            plan.scopePath,
+            sites,
+            revertedCount,
+            prunedImports: unitPruned,
+            hoistedTypes: hoisted,
+          ),
         );
       } else if (unitPruned.isNotEmpty) {
         pruneOnly.add(
-          .new(plan.scopePath, const [], 0, prunedImports: unitPruned),
+          .new(
+            plan.scopePath,
+            const [],
+            revertedCount,
+            prunedImports: unitPruned,
+          ),
         );
       }
     }
@@ -457,7 +489,9 @@ final class _LibrarySanitizer({
   void _accept(_Attempt a) {
     _clean = a.rewritten;
     _cleanLibrary = a.library;
-    _orphanCuts = _orphanRanges(a.library, _userImportIssues);
+    _orphanCuts = _hasPartWithoutUnit
+        ? const {}
+        : _orphanRanges(a.library, _userImportIssues);
   }
 
   /// The texts to write — [_clean] and every unit losing an orphaned import,
@@ -610,46 +644,6 @@ final class _LibrarySanitizer({
     overlay.setOverlay(path, content: text, modificationStamp: ++_stamp);
     _overlaid[path] = text;
     context.changeFile(path);
-  }
-
-  static ({String path, String error})? _unwritable(Iterable<String> paths) {
-    for (final path in paths) {
-      try {
-        File(path).openSync(mode: .append).closeSync();
-      } on FileSystemException catch (e) {
-        return (path: path, error: e.osError?.message ?? e.message);
-      }
-    }
-    return null;
-  }
-
-  static ({String path, String error})? _writeAll(Map<String, String> texts) {
-    for (final MapEntry(key: path, value: text) in texts.entries) {
-      try {
-        _write(path, text);
-      } on FileSystemException catch (e) {
-        return (path: path, error: e.osError?.message ?? e.message);
-      }
-    }
-    return null;
-  }
-
-  static void _write(String path, String text) {
-    final file = File(path);
-    file.writeAsStringSync(_hasBom(file) ? '\uFEFF$text' : text);
-  }
-
-  static bool _hasBom(File file) {
-    final raf = file.openSync();
-    try {
-      final head = raf.readSync(3);
-      return head.length == 3 &&
-          head[0] == 0xEF &&
-          head[1] == 0xBB &&
-          head[2] == 0xBF;
-    } finally {
-      raf.closeSync();
-    }
   }
 
   /// Rewrites all units in [unitPlans] with [set] applied and resolves the

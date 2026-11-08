@@ -5,14 +5,25 @@ executables:
 package:shorthand_sanitizer/shorthand_sanitizer.dart:
   sdkPath (function: String? Function())
   FileResult (class extends Object, final):
-    new (constructor: FileResult Function(String, List<Site>, int, {List<PrunedImport> prunedImports}))
+    new (constructor: FileResult Function(String, List<Site>, int, {List<HoistedType> hoistedTypes, List<PrunedImport> prunedImports}))
     converted (getter: List<String>)
+    hoistedTypes (getter: List<HoistedType>)
     kept (getter: List<String>)
     path (getter: String)
     prunedImports (getter: List<PrunedImport>)
     removedImports (getter: int)
     reverted (getter: int)
     sites (getter: List<Site>)
+  GitException (class extends Object implements Exception, final):
+    new (constructor: GitException Function(String))
+    message (getter: String)
+    toString (method: String Function())
+  HoistedType (class extends Object, final):
+    new (constructor: HoistedType Function({required int column, required String inserted, required int line}))
+    column (getter: int)
+    description (getter: String)
+    inserted (getter: String)
+    line (getter: int)
   PrunedImport (class extends Object, final):
     new (constructor: PrunedImport Function({String? deletedComment, String? keptComment, required int line, String? replacement, required String uri}))
     deletedComment (getter: String?)
@@ -27,6 +38,7 @@ package:shorthand_sanitizer/shorthand_sanitizer.dart:
     excluded (getter: List<({String path, String reason})>)
     files (getter: List<FileResult>)
     hasSkips (getter: bool)
+    hoistedTypeCount (getter: int)
     keptCount (getter: int)
     removedImportCount (getter: int)
     revertedCount (getter: int)
@@ -40,9 +52,11 @@ package:shorthand_sanitizer/shorthand_sanitizer.dart:
     unmatchedExcludes (getter: List<String>)
     unmatchedSkips (getter: Set<String>)
     unreadableDirectories (getter: List<({String error, String path})>)
+    unreadableFiles (getter: List<({String error, String path})>)
     writeFailures (getter: List<({String error, String file, String path})>)
   Sanitizer (class extends Object, final):
     isGenerated (static method: bool Function(String))
+    isRevision (static method: bool Function(String))
     isSkipEntry (static method: bool Function(String))
     new (constructor: Sanitizer Function({bool allowErrors, bool analyzerExcludes, bool changed, bool dryRun, List<String> excludes, bool explain, String? since, bool skipGenerated, Set<String> skips}))
     allowErrors (getter: bool)
@@ -65,6 +79,7 @@ package:shorthand_sanitizer/shorthand_sanitizer.dart:
 dart:async:
   Future (referenced)
 dart:core:
+  Exception (referenced)
   List (referenced)
   Map (referenced)
   Object (referenced)

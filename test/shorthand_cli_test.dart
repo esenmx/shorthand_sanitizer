@@ -86,11 +86,13 @@ void main() {
           'kept': 1,
           'skipListed': 0,
           'removedImports': 0,
+          'hoists': 0,
           'skippedWithErrors': <Object?>[],
           'skippedBelowFloor': <Object?>[],
           'skippedUnconfigured': <Object?>[],
           'skippedOrphanParts': <Object?>[],
           'unreadableDirectories': <Object?>[],
+          'unreadableFiles': <Object?>[],
           'skippedGenerated': <Object?>[],
           'writeFailures': <Object?>[],
           'unmatchedSkips': <Object?>[],
@@ -100,6 +102,7 @@ void main() {
               'path': canonical(file.path),
               'removedImports': 0,
               'prunedImports': <Object?>[],
+              'hoistedTypes': <Object?>[],
               'sites': [
                 {
                   'line': 3,
@@ -185,7 +188,14 @@ void main() {
         'pkgs/$name/lib/$name.dart':
             'enum Fit { cover }\nFit f() => Fit.cover;\n',
       },
-    }, pubGet: pubGet);
+      if (pubGet)
+        '.dart_tool/package_config.json':
+            '{"configVersion":2,"packages":['
+            '{"name":"ws_root","rootUri":"../","packageUri":"lib/","languageVersion":"3.11"},'
+            '{"name":"pkg_a","rootUri":"../pkgs/pkg_a","packageUri":"lib/","languageVersion":"3.11"},'
+            '{"name":"pkg_b","rootUri":"../pkgs/pkg_b","packageUri":"lib/","languageVersion":"3.11"}'
+            ']}\n',
+    }, pubGet: false);
 
     for (final (form, declaration) in [
       ('an indented block list', 'workspace:\n  - pkgs/pkg_a\n  - pkgs/pkg_b'),
@@ -361,6 +371,47 @@ void main() {
     check(nonRepo.exitCode).equals(64);
     check(nonRepo.stderr as String).contains('not a git repository');
   });
+
+  test('a git mode without git on the PATH exits 64', () {
+    final file = explainFixture();
+    final run = shorthand(['--changed', file.path], environment: {'PATH': ''});
+    check(because: '${run.stderr}', run.exitCode).equals(64);
+    check(run.stderr as String).startsWith('could not run git: ');
+  }, testOn: '!windows');
+
+  test('--changed with --since is a usage error, before any git call', () {
+    final file = explainFixture();
+    final before = file.readAsStringSync();
+    for (final args in [
+      ['--changed', '--since=HEAD~1', file.path],
+      ['--since=HEAD~1', '--changed', file.path],
+    ]) {
+      final run = shorthand(args);
+      check(because: '${run.stderr}', run.exitCode).equals(64);
+      check(run.stderr as String)
+          .equals('--changed and --since cannot be combined\n');
+    }
+    check(file.readAsStringSync()).equals(before);
+  });
+
+  for (final revision in ['', '-x', '--all']) {
+    test('--since="$revision" is a usage error, not a crash', () {
+      final run = shorthand(['-n', '--since=$revision', 'lib']);
+      check(because: '${run.stderr}', run.exitCode).equals(64);
+      check(run.stderr as String)
+          .equals('invalid --since revision "$revision"\n');
+    });
+  }
+
+  test('a path that is neither directory nor file is a usage error', () {
+    final dir = tempDir('fifo');
+    final fifo = p.join(dir.path, 'pipe');
+    Process.runSync('mkfifo', [fifo]);
+    final run = shorthand(['-n', fifo]);
+    check(because: '${run.stderr}', run.exitCode).equals(64);
+    check(run.stderr as String)
+        .equals('not a directory or a .dart file: $fifo\n');
+  }, testOn: '!windows');
 }
 
 /// A fresh `^3.10.0` package whose `lib/main.dart` has one convertible site
