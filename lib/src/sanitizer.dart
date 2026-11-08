@@ -34,6 +34,7 @@ part 'sdk.dart';
 part 'verifier.dart';
 part 'viability.dart';
 part 'workspace.dart';
+part 'write.dart';
 
 /// Rewrites `Type.member` to dot-shorthand `.member` (enum values, static
 /// getters/fields/methods, and named — incl. factory/const — constructors) at
@@ -107,15 +108,24 @@ final class Sanitizer({
   final bool analyzerExcludes = true,
 
   /// Only process `.dart` files with uncommitted changes in git (modified,
-  /// staged, or untracked).
+  /// staged, or untracked). Combining it with [since] throws an
+  /// [ArgumentError].
   final bool changed = false,
 
-  /// Only process `.dart` files changed in git since this revision (including
-  /// uncommitted changes).
+  /// Only process `.dart` files that differ in git from this revision,
+  /// comparing the working tree (so uncommitted changes count). It must satisfy
+  /// [isRevision], and combining it with [changed] throws an [ArgumentError].
   final String? since,
 }) {
   /// Creates a sanitizer; see [run].
-  this;
+  this {
+    if (changed && since != null) {
+      throw ArgumentError('changed and since cannot be combined');
+    }
+    if (since case final revision? when !isRevision(revision)) {
+      throw ArgumentError.value(revision, 'since', 'not a git revision');
+    }
+  }
 
   /// `Type.member`, `prefix.Type.member` or bare `member` names that must
   /// stay prefixed.
@@ -139,21 +149,26 @@ final class Sanitizer({
   /// `prefix.Type.member` or `member`, as written — no padding, no list.
   static bool isSkipEntry(String entry) => _skipShape.hasMatch(entry);
 
+  /// Whether [revision] can name a git revision: not empty, and not read as a
+  /// git option. Whether one exists is for git to say, in [run].
+  static bool isRevision(String revision) =>
+      revision.isNotEmpty && !revision.startsWith('-');
+
   /// Language version that introduced dot shorthands.
   static const _floorMajor = 3;
   static const _floorMinor = 10;
 
   /// Generated-code filter: the file's leading comment says so (build_runner,
-  /// FlutterFire, pigeon, protoc, slang).
+  /// FlutterFire, intl, mockito, pigeon, protoc, slang).
   static bool isGenerated(String path) => _isGeneratedFile(path);
 
   /// Sanitizes every non-generated `.dart` file under [paths]
   /// (files or directories).
   ///
   /// Throws an [ArgumentError] when a path does not exist or is neither a
-  /// directory nor a `.dart` file, or when [since] is not a valid git
-  /// revision; a [StateError] when no Dart SDK is found (see [sdkPath]) or
-  /// when [changed] or [since] is used outside a git repository.
+  /// directory nor a `.dart` file; a [StateError] when no Dart SDK is found
+  /// (see [sdkPath]); a [GitException] when [since] names no revision, or
+  /// [changed] or [since] is used outside a git repository or git fails.
   Future<SanitizeResult> run(List<String> paths) {
     for (final path in paths) {
       if (switch (FileSystemEntity.typeSync(path)) {
@@ -311,6 +326,8 @@ final class Sanitizer({
       for (final file in collected) {
         if (analyzerExcluded(file) case final reason?) {
           result.excluded.add((path: file, reason: reason));
+        } else if (_decodeProblem(file) case final error?) {
+          result.unreadableFiles.add((path: file, error: error));
         } else {
           files.add(file);
         }
@@ -397,6 +414,30 @@ final class Sanitizer({
         inScopeUnits.sort((a, b) => a.scopePath.compareTo(b.scopePath));
         if (inScopeUnits.isEmpty) continue;
 
+        // A part the analyzer reads as empty has no `part of`, so it is not in
+        // library.units: only its library's `part` directive still names it.
+        var unreadableUnit = false;
+        for (final path in {
+          for (final u in library.units) ...[
+            u.path,
+            for (final part in u.libraryFragment.partIncludes)
+              if (part.uri case DirectiveUriWithSource(:final source))
+                source.fullName,
+          ],
+        }) {
+          if (realToScope.containsKey(_real(path))) continue;
+          if (_decodeProblem(path, missingIsFine: true) case final error?) {
+            unreadableUnit = true;
+            final shown = scopePathOf(path);
+            if (!result.unreadableFiles.any(
+              (f) => _real(f.path) == _real(shown),
+            )) {
+              result.unreadableFiles.add((path: shown, error: error));
+            }
+          }
+        }
+        if (unreadableUnit) continue;
+
         final language = library.element.languageVersion.effective;
         if (language.major < _floorMajor ||
             (language.major == _floorMajor && language.minor < _floorMinor)) {
@@ -435,6 +476,9 @@ final class Sanitizer({
 
         final List<FileResult> batchResults;
         if (totalCandidates == 0) {
+          for (final plan in unitPlans) {
+            result._reverted += plan.unviable;
+          }
           batchResults = [
             if (explain)
               for (final plan in unitPlans)
@@ -473,6 +517,7 @@ final class Sanitizer({
               [...prior.sites, ...r.sites],
               prior.reverted + r.reverted,
               prunedImports: [...prior.prunedImports, ...r.prunedImports],
+              hoistedTypes: [...prior.hoistedTypes, ...r.hoistedTypes],
             ),
             ifAbsent: () => r,
           );

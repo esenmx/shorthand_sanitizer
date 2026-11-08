@@ -69,14 +69,14 @@ ArgParser _buildParser() {
       negatable: false,
       help:
           'Only process .dart files with uncommitted changes in git '
-          '(modified, staged, or untracked).',
+          '(modified, staged, or untracked). Not with --since.',
     )
     ..addOption(
       'since',
       valueHelp: 'ref',
       help:
           'Only process .dart files changed in git since <ref> (including '
-          'uncommitted changes).',
+          'uncommitted changes). Not with --changed.',
     )
     ..addFlag(
       'explain',
@@ -113,8 +113,9 @@ Default paths: every conventional root directory that exists
 (${_defaultRoots.join(', ')}).
 
 Exit codes: 0 done; 1 --set-exit-if-changed and a site converted; 64 usage
-error; 65 a file was skipped (analysis errors, language version below 3.10,
-no package config, orphan part, unreadable directory); 69 no Dart SDK; 74 a
+error, or git could not answer --changed/--since; 65 a file was skipped
+(analysis errors, language version below 3.10, no package config, orphan part,
+unreadable or non-UTF-8 file, unreadable directory); 69 no Dart SDK; 74 a
 file could not be written.''';
 }
 
@@ -141,15 +142,22 @@ Future<void> main(List<String> args) async {
 
   // Padding around the commas of a list is formatting, not part of a name.
   final skips = [for (final entry in opts.multiOption('skip')) entry.trim()];
+  final changed = opts.flag('changed');
+  final since = opts.option('since');
   final usageErrors = [
     for (final path in opts.rest)
       switch (FileSystemEntity.typeSync(path)) {
         .notFound => 'no such file or directory: $path',
-        .file when !path.endsWith('.dart') => 'not a .dart file: $path',
-        _ => null,
+        .directory => null,
+        .file when path.endsWith('.dart') => null,
+        .file => 'not a .dart file: $path',
+        _ => 'not a directory or a .dart file: $path',
       },
     for (final pattern in opts.multiOption('exclude')) _globError(pattern),
     for (final entry in skips) _skipError(entry),
+    if (changed && since != null) '--changed and --since cannot be combined',
+    if (since != null && !Sanitizer.isRevision(since))
+      'invalid --since revision "$since"',
   ].nonNulls.toList();
   if (usageErrors.isNotEmpty) {
     usageErrors.forEach(stderr.writeln);
@@ -202,20 +210,10 @@ Future<void> main(List<String> args) async {
       explain: explain,
       allowErrors: opts.flag('allow-errors'),
       analyzerExcludes: opts.flag('analyzer-excludes'),
-      changed: opts.flag('changed'),
-      since: opts.option('since'),
+      changed: changed,
+      since: since,
     ).run(paths);
-    // CLI boundary: library pre-flight throws ArgumentError / StateError per
-    // package conventions rather than custom Exception subclasses.
-    // ignore: avoid_catching_errors
-  } on ArgumentError catch (e) {
-    stderr.writeln(e.message);
-    exitCode = 64;
-    return;
-    // CLI boundary: library pre-flight throws StateError when target is not a
-    // git repo or git fails.
-    // ignore: avoid_catching_errors
-  } on StateError catch (e) {
+  } on GitException catch (e) {
     stderr.writeln(e.message);
     exitCode = 64;
     return;
@@ -234,6 +232,7 @@ Future<void> main(List<String> args) async {
       for (final line in [
         ...file.converted,
         ...file.kept,
+        for (final hoisted in file.hoistedTypes) hoisted.description,
         for (final pruned in file.prunedImports) pruned.description,
       ]) {
         stdout.writeln('  $line');
@@ -254,10 +253,13 @@ Future<void> main(List<String> args) async {
     final removed = result.removedImportCount;
     final verb = dryRun ? 'would convert' : 'converted';
     final pruneVerb = dryRun ? 'would prune' : 'pruned';
+    final hoists = result.hoistedTypeCount;
+    final hoistVerb = dryRun ? 'would hoist' : 'hoisted';
     stdout.writeln(
       '$verb ${result.convertedCount} site(s) in $changed file(s)'
       '${kept > 0 ? ', $kept kept' : ''}'
       '${skipped > 0 ? ', $skipped skip-listed' : ''}'
+      '${hoists > 0 ? ', $hoistVerb $hoists type(s)' : ''}'
       '${removed > 0 ? ', $pruneVerb $removed orphaned import(s)' : ''}',
     );
   }
@@ -469,6 +471,12 @@ void _warn(
       'processed.',
     );
   }
+  for (final (:path, :error) in result.unreadableFiles) {
+    warn(
+      'could not read ${_display(path)} ($error); it and its library were not '
+      'processed.',
+    );
+  }
   for (final entry in result.unmatchedSkips) {
     warn('--skip entry "$entry" matched no site');
   }
@@ -494,6 +502,7 @@ Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
   'kept': result.keptCount,
   'skipListed': result.skippedByList,
   'removedImports': result.removedImportCount,
+  'hoists': result.hoistedTypeCount,
   'files': [
     for (final file in result.files)
       {
@@ -507,6 +516,14 @@ Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
               'replacement': pruned.replacement,
               'deletedComment': pruned.deletedComment,
               'keptComment': pruned.keptComment,
+            },
+        ],
+        'hoistedTypes': [
+          for (final hoisted in file.hoistedTypes)
+            {
+              'line': hoisted.line,
+              'column': hoisted.column,
+              'inserted': hoisted.inserted,
             },
         ],
         'sites': [
@@ -539,6 +556,10 @@ Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
   ],
   'unreadableDirectories': [
     for (final (:path, :error) in result.unreadableDirectories)
+      {'path': _display(path), 'error': error},
+  ],
+  'unreadableFiles': [
+    for (final (:path, :error) in result.unreadableFiles)
       {'path': _display(path), 'error': error},
   ],
   'skippedGenerated': [

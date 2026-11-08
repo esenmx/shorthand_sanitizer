@@ -16,7 +16,438 @@ void take(Fit f) {}
 void run() => take(Fit.cover);
 ''';
 
+/// [source] with a non-UTF-8 byte (Latin-1 `é`) in a comment.
+List<int> latin1Comment(String source) => [
+  ...utf8.encode('// caf'),
+  0xE9,
+  ...utf8.encode('\n$source'),
+];
+
 void main() {
+  group('a file the analyzer cannot read as written is a skip', () {
+    test('a named non-UTF-8 file fails the gate instead of passing clean', () {
+      final dir = fixture('utf8_named', {});
+      final file = File(p.join(dir.path, 'lib', 'a.dart'))
+        ..parent.createSync()
+        ..writeAsBytesSync(latin1Comment(convertible));
+      final run = shorthand([
+        '-n',
+        '-e',
+        '--set-exit-if-changed',
+        p.join('lib', 'a.dart'),
+      ], cwd: dir.path);
+      check(because: '${run.stderr}', run.exitCode).equals(65);
+      check(run.stderr as String).contains(
+        'could not read ${p.join('lib', 'a.dart')} (not valid UTF-8); it and '
+        'its library were not processed.\n',
+      );
+      check(file.readAsBytesSync()).deepEquals(latin1Comment(convertible));
+    });
+
+    test('a walk still processes the rest and lists the file in JSON', () {
+      final dir = fixture('utf8_walk', {'lib/good.dart': convertible});
+      final bad = File(p.join(dir.path, 'lib', 'bad.dart'))
+        ..writeAsBytesSync(latin1Comment(convertible));
+      final run = shorthand(['--format=json', p.join(dir.path, 'lib')]);
+      check(because: '${run.stderr}', run.exitCode).equals(65);
+      final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
+      check(report['converted']).equals(1);
+      check(report['unreadableFiles']).isA<List<Object?>>().deepEquals([
+        {'path': canonical(bad.path), 'error': 'not valid UTF-8'},
+      ]);
+      check(bad.readAsBytesSync()).deepEquals(latin1Comment(convertible));
+    });
+
+    test('a file it may not read is listed with the reason', () {
+      final dir = fixture('unreadable_file', {'lib/a.dart': convertible});
+      final file = p.join(dir.path, 'lib', 'a.dart');
+      Process.runSync('chmod', ['000', file]);
+      addTearDown(() => Process.runSync('chmod', ['644', file]));
+      final run = shorthand(['-n', '--format=json', file]);
+      check(because: '${run.stderr}', run.exitCode).equals(65);
+      final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
+      check(report['unreadableFiles'])
+          .isA<List<Object?>>()
+          .single
+          .isA<Map<String, Object?>>()
+        ..['path'].equals(canonical(file))
+        ..['error'].isA<String>().isNotEmpty();
+    }, testOn: '!windows');
+
+    test('the library result counts it as a skip', () async {
+      final dir = fixture('utf8_lib', {});
+      final file = File(p.join(dir.path, 'lib', 'a.dart'))
+        ..parent.createSync()
+        ..writeAsBytesSync(latin1Comment(convertible));
+      final result = await Sanitizer(dryRun: true).run([file.path]);
+      check(result.hasSkips).isTrue();
+      check(result.unreadableFiles.single.path).equals(canonical(file.path));
+    });
+
+    test('a file left alone by request is not read as a skip', () {
+      final dir = fixture('utf8_request', {});
+      File(p.join(dir.path, 'lib', 'excluded.dart'))
+        ..parent.createSync()
+        ..writeAsBytesSync(latin1Comment(convertible));
+      File(p.join(dir.path, 'lib', 'generated.dart')).writeAsBytesSync([
+        ...utf8.encode('// GENERATED CODE - DO NOT MODIFY BY HAND\n'),
+        ...latin1Comment(convertible),
+      ]);
+      final run = shorthand([
+        '-n',
+        '--exclude=excluded.dart',
+        p.join(dir.path, 'lib'),
+      ]);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+    });
+
+    group('an unreadable part stops its whole library', () {
+      const library =
+          "import 'fit.dart';\nimport 'sink.dart';\npart 'p.dart';\n"
+          'void m() => take(Fit.a);\n';
+      Directory partFixture(String name) => fixture(name, {
+        'lib/fit.dart': 'enum Fit { a }\n',
+        'lib/sink.dart': "import 'fit.dart';\nvoid take(Fit f) {}\n",
+        'lib/m.dart': library,
+      });
+
+      for (final (description, name, flags) in [
+        ('with --allow-errors', 'part_allow', ['--allow-errors']),
+        ('without it', 'part_plain', const <String>[]),
+      ]) {
+        test('non-UTF-8, $description', () {
+          final dir = partFixture(name);
+          File(p.join(dir.path, 'lib', 'p.dart')).writeAsBytesSync([
+            ...utf8.encode("part of 'm.dart';\n// caf"),
+            0xE9,
+            ...utf8.encode('\nFit g() => Fit.a;\n'),
+          ]);
+          final m = p.join('lib', 'm.dart');
+
+          final run = shorthand([m, ...flags], cwd: dir.path);
+
+          check(because: '${run.stderr}', run.exitCode).equals(65);
+          check(run.stderr as String).contains(
+            'could not read ${p.join('lib', 'p.dart')} (not valid UTF-8); it '
+            'and its library were not processed.\n',
+          );
+          check(File(p.join(dir.path, m)).readAsStringSync()).equals(library);
+        });
+      }
+
+      test('one it may not read, with --allow-errors', () {
+        final dir = partFixture('part_denied');
+        final part = File(p.join(dir.path, 'lib', 'p.dart'))
+          ..writeAsStringSync("part of 'm.dart';\nFit g() => Fit.a;\n");
+        Process.runSync('chmod', ['000', part.path]);
+        addTearDown(() => Process.runSync('chmod', ['644', part.path]));
+        final m = p.join('lib', 'm.dart');
+
+        final run = shorthand([m, '--allow-errors'], cwd: dir.path);
+
+        check(because: '${run.stderr}', run.exitCode).equals(65);
+        check(File(p.join(dir.path, m)).readAsStringSync()).equals(library);
+      }, testOn: '!windows');
+
+      group('a part with no unit keeps the imports it may need', () {
+        for (final (description, uri, setUp, stopsLibrary)
+            in <(String, String, void Function(Directory lib), bool)>[
+              ('not generated yet', 'p.g.dart', (_) {}, false),
+              ('in an unknown package', 'package:nope/p.dart', (_) {}, false),
+              ('a dart: library', 'dart:foo', (_) {}, false),
+              ('over http', 'http://x.y/p.dart', (_) {}, false),
+              ('an invalid URI', ':bad:', (_) {}, false),
+              ('an empty URI', '', (_) {}, false),
+              (
+                'not a part',
+                'p.txt',
+                (lib) => write(lib, 'p.txt', 'Fit g() => Fit.a;\n'),
+                false,
+              ),
+              (
+                'outside lib',
+                '../other/p.dart',
+                (lib) =>
+                    write(lib.parent, 'other/p.dart', 'Fit g() => Fit.a;\n'),
+                false,
+              ),
+              (
+                'a dangling symlink',
+                'link.dart',
+                (lib) =>
+                    Link(p.join(lib.path, 'link.dart')).createSync('nowhere'),
+                false,
+              ),
+              (
+                'a symlink to itself',
+                'link.dart',
+                (lib) =>
+                    Link(p.join(lib.path, 'link.dart')).createSync('link.dart'),
+                true,
+              ),
+              (
+                'a symlink to a directory',
+                'link.dart',
+                (lib) => Link(p.join(lib.path, 'link.dart')).createSync('.'),
+                true,
+              ),
+              (
+                'a directory',
+                'dir.dart',
+                (lib) => Directory(p.join(lib.path, 'dir.dart')).createSync(),
+                true,
+              ),
+            ]) {
+          test(description, () async {
+            final dir = partFixture('part_no_unit');
+            final lib = Directory(p.join(dir.path, 'lib'));
+            final m = File(p.join(lib.path, 'm.dart'))
+              ..writeAsStringSync(library.replaceFirst('p.dart', uri));
+            setUp(lib);
+
+            final result = await Sanitizer(allowErrors: true).run([m.path]);
+
+            check(m.readAsStringSync()).contains("import 'fit.dart';");
+            check(result.removedImportCount).equals(0);
+            check(result.hasSkips).equals(stopsLibrary);
+            check(result.convertedCount).equals(stopsLibrary ? 0 : 1);
+          });
+        }
+
+        test('in a nested part', () async {
+          final dir = partFixture('part_no_unit_nested');
+          final m = File(p.join(dir.path, 'lib', 'm.dart'));
+          write(dir, 'lib/p.dart', "part of 'm.dart';\npart 'q.g.dart';\n");
+
+          final result = await Sanitizer(allowErrors: true).run([m.path]);
+
+          check(m.readAsStringSync())
+            ..contains("import 'fit.dart';")
+            ..contains('take(.a)');
+          check(result.removedImportCount).equals(0);
+        });
+      });
+
+      test('a nested unreadable part stops the library too', () async {
+        final dir = partFixture('part_nested');
+        final m = File(p.join(dir.path, 'lib', 'm.dart'));
+        write(dir, 'lib/p.dart', "part of 'm.dart';\npart 'q.dart';\n");
+        final q = File(p.join(dir.path, 'lib', 'q.dart'))
+          ..writeAsBytesSync([
+            ...utf8.encode("part of 'p.dart';\n// caf"),
+            0xE9,
+            ...utf8.encode('\n'),
+          ]);
+
+        final result = await Sanitizer(allowErrors: true).run([m.path]);
+
+        check(m.readAsStringSync()).equals(library);
+        check([for (final (:path, error: _) in result.unreadableFiles) path])
+            .deepEquals([canonical(q.path)]);
+      });
+
+      group('a part in a directory it may not enter', () {
+        Directory denied(String name) {
+          final dir = partFixture(name);
+          write(dir, 'lib/m.dart', library.replaceFirst('p.dart', 'no/p.dart'));
+          final no = p.join(dir.path, 'lib', 'no');
+          write(dir, 'lib/no/p.dart', "part of '../m.dart';\n");
+          Process.runSync('chmod', ['000', no]);
+          addTearDown(() => Process.runSync('chmod', ['755', no]));
+          return dir;
+        }
+
+        String mText(Directory dir) =>
+            File(p.join(dir.path, 'lib', 'm.dart')).readAsStringSync();
+
+        for (final allowErrors in [true, false]) {
+          test('named, allowErrors: $allowErrors, stops the library', () async {
+            final dir = denied('part_no_entry_$allowErrors');
+            final before = mText(dir);
+
+            final result = await Sanitizer(allowErrors: allowErrors)
+                .run([p.join(dir.path, 'lib', 'm.dart')]);
+
+            check(result.hasSkips).isTrue();
+            check(mText(dir)).equals(before);
+          });
+        }
+
+        test('walked, the warning holds: nothing in it was rewritten', () {
+          final dir = denied('part_no_entry_walk');
+          final before = mText(dir);
+
+          final run = shorthand(['lib'], cwd: dir.path);
+
+          check(because: '${run.stderr}', run.exitCode).equals(65);
+          check(run.stderr as String).contains('none of its files were');
+          check(mText(dir)).equals(before);
+        });
+      }, testOn: '!windows');
+
+      test(
+        'the library result lists it once when both were collected',
+        () async {
+          final dir = partFixture('part_once');
+          final part = File(p.join(dir.path, 'lib', 'p.dart'))
+            ..writeAsBytesSync([
+              ...utf8.encode("part of 'm.dart';\n// caf"),
+              0xE9,
+              ...utf8.encode('\n'),
+            ]);
+          final result = await Sanitizer(allowErrors: true)
+              .run([p.join(dir.path, 'lib')]);
+          check([for (final (:path, error: _) in result.unreadableFiles) path])
+              .deepEquals([canonical(part.path)]);
+          check(result.convertedCount).equals(0);
+        },
+      );
+    });
+
+    test('a file the package itself excludes is not read as a skip', () async {
+      final dir = fixture('utf8_analyzer_excluded', {
+        'analysis_options.yaml': 'analyzer:\n  exclude: [lib/legacy/**]\n',
+        'lib/a.dart': convertible,
+      });
+      final old = File(p.join(dir.path, 'lib', 'legacy', 'old.dart'))
+        ..parent.createSync()
+        ..writeAsBytesSync(latin1Comment(convertible));
+
+      final run = shorthand(['-n', 'lib'], cwd: dir.path);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stderr as String).isEmpty();
+
+      final result = await Sanitizer(dryRun: true)
+          .run([p.join(dir.path, 'lib')]);
+      check(result.hasSkips).isFalse();
+      check(result.unreadableFiles).isEmpty();
+      check([for (final (:path, reason: _) in result.excluded) path])
+          .deepEquals([canonical(old.path)]);
+    });
+
+    test('a git mode does not read a file git filtered out', () {
+      final dir = fixture('utf8_git', {'lib/changed.dart': convertible});
+      File(p.join(dir.path, '.gitignore'))
+          .writeAsStringSync('.dart_tool\nlib/ignored.dart\n');
+      final init = Process.runSync('git', [
+        'init',
+        '-q',
+      ], workingDirectory: dir.path);
+      check(because: '${init.stderr}', init.exitCode).equals(0);
+      File(p.join(dir.path, 'lib', 'ignored.dart'))
+          .writeAsBytesSync(latin1Comment(convertible));
+      final run = shorthand(['-n', '--changed', p.join(dir.path, 'lib')]);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      check(run.stdout as String)
+          .endsWith('would convert 1 site(s) in 1 file(s)\n');
+    });
+  });
+
+  group('every hoisted <Type> is reported', () {
+    const hoisted = '''
+enum Fit { a, b }
+final list = [Fit.a, Fit.b];
+final set = const {
+  Fit.a,
+  Fit.b,
+};
+''';
+
+    test('the JSON report names each insertion per file and in total', () {
+      final dir = fixture('hoist_json', {'lib/a.dart': hoisted});
+      final run = shorthand(['-n', '--format=json', 'lib'], cwd: dir.path);
+      check(because: '${run.stderr}', run.exitCode).equals(0);
+      final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
+      check(report['hoists']).equals(2);
+      check(report['files'])
+          .isA<List<Object?>>()
+          .single
+          .isA<Map<String, Object?>>()['hoistedTypes']
+          .isA<List<Object?>>()
+          .deepEquals([
+            {'line': 2, 'column': 14, 'inserted': '<Fit>'},
+            {'line': 3, 'column': 19, 'inserted': '<Fit>'},
+          ]);
+    });
+
+    test('text names each insertion and a real run makes the same edits', () {
+      final dir = fixture('hoist_text', {'lib/a.dart': hoisted});
+      final file = p.join('lib', 'a.dart');
+      final preview = shorthand(['-n', 'lib'], cwd: dir.path);
+      check(because: '${preview.stderr}', preview.exitCode).equals(0);
+      check(preview.stdout as String).equals(
+        '$file\n'
+        '  2: Fit.a -> .a\n'
+        '  2: Fit.b -> .b\n'
+        '  4: Fit.a -> .a\n'
+        '  5: Fit.b -> .b\n'
+        '  2: inserted <Fit>\n'
+        '  3: inserted <Fit>\n'
+        'would convert 4 site(s) in 1 file(s), would hoist 2 type(s)\n',
+      );
+
+      final real = shorthand(['lib'], cwd: dir.path);
+      check(because: '${real.stderr}', real.exitCode).equals(0);
+      check(real.stdout as String)
+          .endsWith('converted 4 site(s) in 1 file(s), hoisted 2 type(s)\n');
+      check(File(p.join(dir.path, file)).readAsStringSync())
+        ..contains('final list = <Fit>[.a, .b];')
+        ..contains('final set = const <Fit>{');
+    });
+
+    test(
+      'the library result carries them; a refused hoist reports none',
+      () async {
+        final dir = fixture('hoist_lib', {
+          'lib/a.dart': hoisted,
+          'lib/b.dart': 'enum Fit { a }\nfinal one = [Fit.a];\n',
+        });
+        final result = await Sanitizer(dryRun: true)
+            .run([p.join(dir.path, 'lib')]);
+        check(result.hoistedTypeCount).equals(2);
+        final file = result.files.single;
+        check(p.basename(file.path)).equals('a.dart');
+        check(file.hoistedTypes.map((h) => h.description).toList())
+            .deepEquals(['2: inserted <Fit>', '3: inserted <Fit>']);
+      },
+    );
+  });
+
+  group('revertedCount does not depend on explain', () {
+    const refused = '''
+class Base {
+  const Base();
+  static const a = Base();
+}
+class Sub extends Base {
+  const Sub();
+  static const a = Sub();
+}
+const Base x = Sub.a;
+''';
+    const unviable = 'enum Fit { a }\nfinal x = Fit.a;\n';
+    const skipListed = 'enum Fit { a }\nFit f() => Fit.a;\n';
+
+    for (final (description, source, skips, count) in [
+      ('a site the verify loop refused', refused, const <String>{}, 1),
+      ('a site the static pre-check ruled out', unviable, const <String>{}, 1),
+      ('a skip-listed site does not count', skipListed, {'Fit.a'}, 0),
+    ]) {
+      for (final explain in [false, true]) {
+        test('$description, explain: $explain', () async {
+          final dir = fixture('reverted', {'lib/a.dart': source});
+          final result = await Sanitizer(
+            dryRun: true,
+            explain: explain,
+            skips: skips,
+          ).run([p.join(dir.path, 'lib')]);
+          check(result.convertedCount).equals(0);
+          check(result.revertedCount).equals(count);
+        });
+      }
+    }
+  });
+
   group('AU-1 a skipped file fails the run', () {
     test('a library with analysis errors exits 65 and is listed in JSON', () {
       final dir = fixture('au1_errors', {
