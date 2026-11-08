@@ -436,6 +436,34 @@ void main(List<String> args) {
           .deepEquals(['a.dart']);
     }, testOn: 'mac-os');
 
+    test('a mode-444 file writable via an ACL is staged and replaced', () {
+      final dir = tempDir('write_acl_allow');
+      final file = File(p.join(dir.path, 'a.dart'))..writeAsStringSync('old');
+      _chmod('444', file.path);
+      final user = Platform.environment['USER'];
+      final allow = Process.runSync('chmod', [
+        '+a',
+        '$user allow write,append',
+        file.path,
+      ]);
+      check(because: '${allow.stderr}', allow.exitCode).equals(0);
+      addTearDown(() => _chmod('644', file.path));
+      final seen = <String>[];
+
+      final failure = replaceFiles(
+        {file.path: (analyzed: 'old', text: 'new')},
+        write: (path, bytes) {
+          seen.add(_mode(path));
+          File(path).writeAsBytesSync(bytes, flush: true);
+        },
+      );
+
+      check(failure).isNull();
+      check(seen).deepEquals(['644', '644']);
+      check(file.readAsStringSync()).equals('new');
+      check(_mode(file.path)).equals('444');
+    }, testOn: 'mac-os');
+
     test('a read-only file is refused before anything is staged', () {
       final dir = tempDir('write_read_only_seam');
       final file = File(p.join(dir.path, 'a.dart'))..writeAsStringSync('old');
