@@ -50,7 +50,7 @@ const _changedOnDisk = 'changed on disk since it was analyzed';
     final sibling = _createSibling(target);
     siblings.add(sibling);
     _matchGroup(sibling, group, mode);
-    _matchMode(sibling, mode & _accessBits);
+    _matchMode(sibling, (mode & _accessBits) | 0x80);
     write(sibling, bytes);
     _matchMode(sibling, mode);
     return sibling;
