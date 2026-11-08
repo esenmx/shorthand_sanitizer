@@ -140,6 +140,14 @@ List<Diagnostic> _byPosition(List<Diagnostic> diagnostics) =>
 
 typedef _HoistEntry = ({_Candidate candidate, Element? targetElement});
 
+final class _Unviable({
+  required final int offset,
+  @override required final String display,
+  @override required final String memberName,
+  @override required final String? containerName,
+  required final String reason,
+}) implements _SiteName;
+
 final class _CandidateCollector({
   required final TypeProvider typeProvider,
   required final Uri selfUri,
@@ -153,7 +161,7 @@ final class _CandidateCollector({
   final Map<TypedLiteral, List<_HoistEntry>> hoistGroups = {};
 
   /// Sites ruled out by [_viability] before any resolve.
-  final List<_Kept> unviable = [];
+  final List<_Unviable> unviable = [];
 
   /// Every site considered — viable or not, plus receiver-position static
   /// accesses — so `unmatchedSkips` knows whether a skip entry named anything
@@ -195,17 +203,19 @@ final class _CandidateCollector({
   }) {
     if (_inAnnotation) return;
     final container = memberElement?.enclosingElement?.displayName;
-    sites.add((
-      display: display,
-      memberName: memberName,
-      containerName: container,
-    ));
+    sites.add(
+      .new(display: display, memberName: memberName, containerName: container),
+    );
     if (_hasInteriorComment(startToken, endToken)) {
-      unviable.add((
-        offset: startToken.offset,
-        display: display,
-        reason: 'comment inside prefix',
-      ));
+      unviable.add(
+        .new(
+          offset: startToken.offset,
+          display: display,
+          memberName: memberName,
+          containerName: container,
+          reason: 'comment inside prefix',
+        ),
+      );
       return;
     }
     var slot = _viability.typedSlotOf(node);
@@ -225,11 +235,15 @@ final class _CandidateCollector({
             )
           : null;
       if (rescue == null) {
-        unviable.add((
-          offset: startToken.offset,
-          display: display,
-          reason: reason,
-        ));
+        unviable.add(
+          .new(
+            offset: startToken.offset,
+            display: display,
+            memberName: memberName,
+            containerName: container,
+            reason: reason,
+          ),
+        );
         return;
       }
       hoistLiteral = rescue.literal;
@@ -323,11 +337,13 @@ final class _CandidateCollector({
     if (_isTypeRef(node.prefix) && _isStaticMember(member)) {
       if (_isReceiverPosition(node) &&
           !_canChainResolve(node, node.identifier.name)) {
-        sites.add((
-          display: '${node.prefix.name}.${node.identifier.name}',
-          memberName: node.identifier.name,
-          containerName: member?.enclosingElement?.displayName,
-        ));
+        sites.add(
+          .new(
+            display: '${node.prefix.name}.${node.identifier.name}',
+            memberName: node.identifier.name,
+            containerName: member?.enclosingElement?.displayName,
+          ),
+        );
       } else {
         _add(
           node: node,
@@ -359,11 +375,13 @@ final class _CandidateCollector({
       final owner = target.toSource();
       if (_isReceiverPosition(node) &&
           !_canChainResolve(node, node.propertyName.name)) {
-        sites.add((
-          display: '$owner.${node.propertyName.name}',
-          memberName: node.propertyName.name,
-          containerName: member?.enclosingElement?.displayName,
-        ));
+        sites.add(
+          .new(
+            display: '$owner.${node.propertyName.name}',
+            memberName: node.propertyName.name,
+            containerName: member?.enclosingElement?.displayName,
+          ),
+        );
       } else {
         _add(
           node: node,

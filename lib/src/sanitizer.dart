@@ -385,7 +385,19 @@ final class Sanitizer({
             .getResolvedLibraryContaining(file);
         if (library is NotLibraryButPartResult) {
           visitedReal.add(fileReal);
-          result.skippedOrphanParts.add(file);
+          if (_unreadablePartContainer(context, file) case (
+            :final path,
+            :final error,
+          )) {
+            final shown = scopePathOf(path);
+            if (!result.unreadableFiles.any(
+              (f) => _real(f.path) == _real(shown),
+            )) {
+              result.unreadableFiles.add((path: shown, error: error));
+            }
+          } else {
+            result.skippedOrphanParts.add(file);
+          }
           continue;
         }
         if (library is! ResolvedLibraryResult) {
@@ -547,8 +559,11 @@ final class Sanitizer({
       matchedSkips.addAll(_skipsMatching(site));
     }
     final candidates = <_Candidate>[];
-    final kept = [...collector.unviable];
-    var unviableCount = collector.unviable.length;
+    final kept = <_Kept>[
+      for (final u in collector.unviable)
+        (offset: u.offset, display: u.display, reason: u.reason),
+    ];
+    var unviableCount = collector.unviable.where((u) => !_isSkipped(u)).length;
     for (final c in collector.candidates) {
       if (_isSkipped(c)) {
         result.skippedByList++;
@@ -616,11 +631,7 @@ final class Sanitizer({
     );
   }
 
-  bool _isSkipped(_Candidate c) => _skipsMatching((
-    display: c.display,
-    memberName: c.memberName,
-    containerName: c.containerName,
-  )).isNotEmpty;
+  bool _isSkipped(_SiteName site) => _skipsMatching(site).isNotEmpty;
 
   Iterable<String> _skipsMatching(_SiteName site) => [
     site.display,
@@ -628,4 +639,42 @@ final class Sanitizer({
     if (site.containerName case final container?)
       '$container.${site.memberName}',
   ].where(skips.contains);
+}
+
+({String path, String error})? _unreadablePartContainer(
+  AnalysisContext context,
+  String partFile,
+) {
+  final seen = <String>{_real(partFile)};
+  var current = partFile;
+  while (true) {
+    final container = _partOfPath(context, current);
+    if (container == null || !seen.add(_real(container))) return null;
+    if (_decodeProblem(container, missingIsFine: true) case final error?) {
+      return (path: container, error: error);
+    }
+    if (!File(container).existsSync()) return null;
+    current = container;
+  }
+}
+
+String? _partOfPath(AnalysisContext context, String file) {
+  final parsed = context.currentSession.getParsedUnit(file);
+  if (parsed is! ParsedUnitResult) return null;
+  for (final directive in parsed.unit.directives) {
+    if (directive is PartOfDirective) {
+      final raw = directive.uri?.stringValue;
+      if (raw == null || raw.isEmpty) return null;
+      final uri = Uri.tryParse(raw);
+      if (uri == null || uri.hasAuthority) return null;
+      if (!uri.hasScheme) {
+        return uri.path.isEmpty
+            ? null
+            : _canonical(p.fromUri(Uri.file(file).resolveUri(uri)));
+      }
+      final path = context.currentSession.uriConverter.uriToPath(uri);
+      return path == null ? null : _canonical(path);
+    }
+  }
+  return null;
 }

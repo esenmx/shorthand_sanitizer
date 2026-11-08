@@ -46,13 +46,13 @@ final class _Candidate({
   required final String owner,
 
   /// `Type.member` as written, for reporting and skip-list matching.
-  required final String display,
+  @override required final String display,
 
   /// The accessed member (`all` in `EdgeInsets.all`).
-  required final String memberName,
+  @override required final String memberName,
 
   /// The declaring type's name — identity check anchor.
-  required final String? containerName,
+  @override required final String? containerName,
 
   /// The declaring library's URI — identity check anchor.
   required final String? libraryUri,
@@ -92,7 +92,7 @@ final class _Candidate({
   /// candidate to have a context type; null when the context already supplies
   /// one.
   final _LiteralHoist? hoist,
-}) {
+}) implements _SiteName {
   _Candidate withHoist(_LiteralHoist value) => .new(
     unitPath: unitPath,
     scopePath: scopePath,
@@ -385,10 +385,10 @@ final class _Attempt(
 typedef _Kept = ({int offset, String display, String reason});
 
 /// What a skip entry can name a site by.
-typedef _SiteName = ({
-  String display,
-  String memberName,
-  String? containerName,
+final class _SiteName({
+  required final String display,
+  required final String memberName,
+  required final String? containerName,
 });
 
 /// [start, end) of a text replaced by [length] characters.
