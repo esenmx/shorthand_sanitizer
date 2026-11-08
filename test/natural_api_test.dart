@@ -302,6 +302,60 @@ void main() {
           check(result.convertedCount).equals(0);
         },
       );
+
+      test(
+        'an unreadable container is reported as unreadable, not an orphan part',
+        () async {
+          const partSource = "part of 'm.dart';\nFit g() => Fit.a;\n";
+          final dir = partFixture('container_unreadable');
+          final m = File(p.join(dir.path, 'lib', 'm.dart'))
+            ..writeAsBytesSync(latin1Comment(library));
+          final part = File(p.join(dir.path, 'lib', 'p.dart'))
+            ..writeAsStringSync(partSource);
+
+          final onlyPart = await Sanitizer(allowErrors: true).run([part.path]);
+          check([
+            for (final (:path, error: _) in onlyPart.unreadableFiles) path,
+          ]).deepEquals([canonical(m.path)]);
+          check(onlyPart.skippedOrphanParts).isEmpty();
+          check(onlyPart.convertedCount).equals(0);
+
+          final both = await Sanitizer(allowErrors: true)
+              .run([p.join(dir.path, 'lib')]);
+          check([for (final (:path, error: _) in both.unreadableFiles) path])
+              .deepEquals([canonical(m.path)]);
+          check(both.skippedOrphanParts).isEmpty();
+          check(both.convertedCount).equals(0);
+          check(part.readAsStringSync()).equals(partSource);
+        },
+      );
+
+      test(
+        'a container it may not read is reported once, not as an orphan part',
+        () async {
+          const partSource = "part of 'm.dart';\nFit g() => Fit.a;\n";
+          final dir = partFixture('container_denied');
+          final m = File(p.join(dir.path, 'lib', 'm.dart'));
+          final part = File(p.join(dir.path, 'lib', 'p.dart'))
+            ..writeAsStringSync(partSource);
+          Process.runSync('chmod', ['000', m.path]);
+          addTearDown(() => Process.runSync('chmod', ['644', m.path]));
+
+          final onlyPart = await Sanitizer(allowErrors: true).run([part.path]);
+          check([
+            for (final (:path, error: _) in onlyPart.unreadableFiles) path,
+          ]).deepEquals([canonical(m.path)]);
+          check(onlyPart.skippedOrphanParts).isEmpty();
+
+          final both = await Sanitizer(allowErrors: true)
+              .run([p.join(dir.path, 'lib')]);
+          check([for (final (:path, error: _) in both.unreadableFiles) path])
+              .deepEquals([canonical(m.path)]);
+          check(both.skippedOrphanParts).isEmpty();
+          check(part.readAsStringSync()).equals(partSource);
+        },
+        testOn: '!windows',
+      );
     });
 
     test('a file the package itself excludes is not read as a skip', () async {
@@ -428,10 +482,17 @@ const Base x = Sub.a;
     const unviable = 'enum Fit { a }\nfinal x = Fit.a;\n';
     const skipListed = 'enum Fit { a }\nFit f() => Fit.a;\n';
 
-    for (final (description, source, skips, count) in [
-      ('a site the verify loop refused', refused, const <String>{}, 1),
-      ('a site the static pre-check ruled out', unviable, const <String>{}, 1),
-      ('a skip-listed site does not count', skipListed, {'Fit.a'}, 0),
+    for (final (description, source, skips, count, skipped) in [
+      ('a site the verify loop refused', refused, const <String>{}, 1, 0),
+      (
+        'a site the static pre-check ruled out',
+        unviable,
+        const <String>{},
+        1,
+        0,
+      ),
+      ('a skip-listed site does not count', skipListed, {'Fit.a'}, 0, 1),
+      ('a skip-listed unviable site does not count', unviable, {'Fit.a'}, 0, 0),
     ]) {
       for (final explain in [false, true]) {
         test('$description, explain: $explain', () async {
@@ -443,6 +504,10 @@ const Base x = Sub.a;
           ).run([p.join(dir.path, 'lib')]);
           check(result.convertedCount).equals(0);
           check(result.revertedCount).equals(count);
+          check(result.skippedByList).equals(skipped);
+          if (explain) {
+            check(result.files.single.reverted).equals(count);
+          }
         });
       }
     }
