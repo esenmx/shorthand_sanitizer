@@ -7,13 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: read
 
 jobs:
   verify:
     name: Verify tag matches pubspec
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Check tag matches pubspec version
@@ -29,6 +29,7 @@ jobs:
     name: Publish to pub.dev
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pub.dev
     permissions:
       id-token: write
@@ -36,17 +37,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dart-lang/setup-dart@v1
-      - name: Check pub.dev for this version
-        id: pub
-        run: |
-          V=$(grep '^version:' pubspec.yaml | awk '{print $2}')
-          if curl -fsS "https://pub.dev/api/packages/shorthand_sanitizer/versions/$V" >/dev/null; then
-            echo "::notice::$V already on pub.dev — nothing to publish"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.pub.outputs.exists == 'false'
-        run: dart pub get
-      - if: steps.pub.outputs.exists == 'false'
-        run: dart pub publish --force
+      - run: dart pub get
+      - run: dart pub publish --force
