@@ -94,22 +94,28 @@ final String _cliSnapshot = () {
       .map((f) => f.lastModifiedSync())
       .reduce((a, b) => a.isAfter(b) ? a : b);
   if (!dill.existsSync() || dill.lastModifiedSync().isBefore(newestSource)) {
-    final tmp = File('${dill.path}.$pid.tmp');
-    final compile = Process.runSync(Platform.resolvedExecutable, [
-      'compile',
-      'kernel',
-      'bin/shorthand.dart',
-      '-o',
-      tmp.path,
-    ]);
-    if (compile.exitCode != 0) {
-      throw StateError('kernel compile failed: ${compile.stderr}');
-    }
+    // Test files run as isolates of one process, so they share `pid`: each
+    // compile needs its own directory, on the same file system for the rename.
+    final scratch = dill.parent.createTempSync('shorthand_test.');
+    final tmp = File(p.join(scratch.path, 'shorthand.dill'));
     try {
-      tmp.renameSync(dill.path);
-    } on FileSystemException {
-      if (!dill.existsSync()) rethrow;
-      if (tmp.existsSync()) tmp.deleteSync();
+      final compile = Process.runSync(Platform.resolvedExecutable, [
+        'compile',
+        'kernel',
+        'bin/shorthand.dart',
+        '-o',
+        tmp.path,
+      ]);
+      if (compile.exitCode != 0) {
+        throw StateError('kernel compile failed: ${compile.stderr}');
+      }
+      try {
+        tmp.renameSync(dill.path);
+      } on FileSystemException {
+        if (!dill.existsSync()) rethrow;
+      }
+    } finally {
+      scratch.deleteSync(recursive: true);
     }
   }
   return dill.path;
