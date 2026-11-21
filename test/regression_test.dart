@@ -25,7 +25,7 @@ Future<String> sanitize(
   ).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
-  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
+  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty;
   return file.readAsStringSync();
 }
 
@@ -218,7 +218,7 @@ void run() {
     });
     await Sanitizer().run([p.join(app.path, 'lib', 'use.dart')]);
     check(analyze(app, 'use.dart'))
-        .not((it) => it.contains('DEPRECATED_MEMBER_USE'));
+        .not(.it()..contains('DEPRECATED_MEMBER_USE'));
   });
 
   test("SS-S4 a library sees its part's earlier write", () async {
@@ -243,8 +243,7 @@ void run() {
     await Sanitizer().run([part.path, lib.path]);
     check(part.readAsStringSync()).contains('take(.cover)');
     check(lib.readAsStringSync()).contains('take(.contain)');
-    check(analyze(pkg, 'z_s4_lib.dart'))
-        .not((it) => it.contains('UNUSED_IMPORT'));
+    check(analyze(pkg, 'z_s4_lib.dart')).not(.it()..contains('UNUSED_IMPORT'));
   });
 
   test(
@@ -413,9 +412,9 @@ void run() {
         ).run([if (!onlyPart) lib.path, part.path]);
         check(lib.readAsStringSync()).equals(libBefore);
         check(part.readAsStringSync()).equals(partBefore);
-        check(result.files.single.kept).every(
-          (it) => it.endsWith('would edit ${tag}_lib.dart, which is $why'),
-        );
+        check(
+          result.files.single.kept,
+        ).every(.it()..endsWith('would edit ${tag}_lib.dart, which is $why'));
       });
     }
 
@@ -707,12 +706,12 @@ part of 'recover_lib.dart';
 final dynamic xs = Fit.cover;
 ''');
       final result = await Sanitizer().run([libFile.path, partFile.path]);
-      check(result.skippedWithErrors).isEmpty();
+      check(result.skippedWithErrors).isEmpty;
       check(result.convertedCount).equals(1);
       check(result.removedImportCount).equals(1);
       check(libFile.readAsStringSync())
         ..contains('takeMode(.on);')
-        ..not((it) => it.contains("import 'mode_only.dart';"));
+        ..not(.it()..contains("import 'mode_only.dart';"));
       check(partFile.readAsStringSync())
           .contains('final dynamic xs = Fit.cover;');
     },

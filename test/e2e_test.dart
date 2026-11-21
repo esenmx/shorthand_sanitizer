@@ -74,14 +74,14 @@ void e2e(
             p.join(root.path, dir),
       ]);
 
-      check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
+      check(because: 'fixture has errors', result.skippedWithErrors).isEmpty;
 
       final surplus = _diagnostics(root);
       diagnosticsBefore.forEach(surplus.remove);
       check(
         because: 'new diagnostics:\n${surplus.join('\n')}',
         surplus,
-      ).isEmpty();
+      ).isEmpty;
       check(_run(root)).equals(runBefore);
       if (converted != null) check(result.convertedCount).equals(converted);
     },

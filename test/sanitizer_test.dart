@@ -18,7 +18,7 @@ Future<String> sanitize(
   final result = await Sanitizer(skips: skips).run([file.path]);
   // A fixture with an analysis error is skipped whole: the assertion would
   // pass without testing anything.
-  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty();
+  check(because: 'fixture has errors', result.skippedWithErrors).isEmpty;
   return file.readAsStringSync();
 }
 
@@ -52,8 +52,8 @@ void main() {
   if (f == Fit.contain) return;
 }
 ''');
-    check(out).not((it) => it.contains('Fit.cover'));
-    check(out).not((it) => it.contains('Fit.contain'));
+    check(out).not(.it()..contains('Fit.cover'));
+    check(out).not(.it()..contains('Fit.contain'));
     check(out).contains('b ? .cover : .contain');
     check(out).contains('use(.cover)');
     check(out).contains('1 => .cover');
@@ -327,7 +327,7 @@ final sink = Sink(Dep.instance);
     final result = await Sanitizer().run([file.path]);
     final out = file.readAsStringSync();
     check(out).contains('Sink(.instance)');
-    check(out).not((it) => it.contains("import 'dep.dart';"));
+    check(out).not(.it()..contains("import 'dep.dart';"));
     check(out).contains("import 'sink.dart';"); // still used, kept
     check(result.removedImportCount).equals(1);
   });
@@ -903,7 +903,7 @@ $rows
 
       check('.pick(t: flagged ? .marked'.allMatches(out).length)
           .equals(clusters);
-      check(out).not((it) => it.contains('Tag.marked : null'));
+      check(out).not(.it()..contains('Tag.marked : null'));
       // The neighbours are genuinely unconvertible and must stay as written.
       check('Numbers.one'.allMatches(out).length).equals(clusters);
       check('Labels.a'.allMatches(out).length).equals(clusters);
@@ -932,9 +932,9 @@ $rows
     write(pkg, 'build/ignored.dart', source);
     final normalFile = write(pkg, 'src/converted.dart', source);
     final result = await Sanitizer().run([pkg.path]);
-    check(result.files.any((f) => f.path.contains('.hidden'))).isFalse();
-    check(result.files.any((f) => f.path.contains('build'))).isFalse();
-    check(result.files.any((f) => f.path == normalFile.path)).isTrue();
+    check(result.files.any((f) => f.path.contains('.hidden'))).isFalse;
+    check(result.files.any((f) => f.path.contains('build'))).isFalse;
+    check(result.files.any((f) => f.path == normalFile.path)).isTrue;
   });
 
   group('static pre-check', () {
@@ -1127,13 +1127,13 @@ void main() {
 }
 ''');
         final plain = await Sanitizer(dryRun: true).run([file.path]);
-        check(plain.files).isEmpty();
+        check(plain.files).isEmpty;
 
         final explained = await Sanitizer(
           dryRun: true,
           explain: true,
         ).run([file.path]);
-        check(explained.files.single.converted).isEmpty();
+        check(explained.files.single.converted).isEmpty;
         check(explained.files.single.kept)
             .deepEquals(['3: Fit.cover kept: no context type']);
       },
@@ -1249,7 +1249,7 @@ void f(bool c) {
       dryRun: true,
       explain: true,
     ).run([file.path]);
-    check(result.skippedWithErrors).isEmpty();
+    check(result.skippedWithErrors).isEmpty;
     check(result.files.single.kept).deepEquals([
       '9: Fit.cover kept: no context type',
       '10: Box.a kept: no context type',
@@ -1334,7 +1334,7 @@ final sink = Sink(Dep.instance);
       await Sanitizer().run([file.path]);
       final out = file.readAsStringSync();
       check(out).startsWith("/// Library doc comment.\nimport 'sink.dart';");
-      check(out).not((it) => it.contains('trailing comment'));
+      check(out).not(.it()..contains('trailing comment'));
       check(out).contains('Sink(.instance)');
     },
   );
@@ -1453,7 +1453,7 @@ void main() {
   test('SS-I3 Sanitizer takes skip entries as given', () async {
     check(() => Sanitizer(skips: {' Fit.cover , contain '}))
         .throws<ArgumentError>()
-        .has((e) => e.name, 'name')
+        .has('name', (e) => e.name)
         .equals('skips');
     final out = await sanitize(
       '''
@@ -1696,7 +1696,7 @@ void main() {
           explain: true,
           dryRun: true,
         ).run([file.path]);
-        check(res.unmatchedSkips).isEmpty();
+        check(res.unmatchedSkips).isEmpty;
         check(res.skippedByList).equals(1);
         check(res.files.single.kept).deepEquals([
           '7: Box.pick kept: skip-listed',
@@ -1829,7 +1829,7 @@ Fit g() => Fit.cover;
                     .run([p.join(dir.path, 'lib')]),
           )
           .throws<GitException>()
-          .has((e) => e.message, 'message')
+          .has('message', (e) => e.message)
           .equals('unknown git revision "nonexistent_ref_xyz"');
 
       // A branch sharing a directory's name (`lib`) must not trigger git's
@@ -1850,8 +1850,8 @@ Fit g() => Fit.cover;
         excludes: ['**/committed.dart'],
         skips: {'Fit.cover'},
       ).run([p.join(dir.path, 'lib')]);
-      check(filteredWarnings.unmatchedExcludes).isEmpty();
-      check(filteredWarnings.unmatchedSkips).isEmpty();
+      check(filteredWarnings.unmatchedExcludes).isEmpty;
+      check(filteredWarnings.unmatchedSkips).isEmpty;
 
       // Running from a parent directory (or parent repo) resolves the nested
       // target's own git repo root.
@@ -1873,14 +1873,14 @@ Fit f() => Fit.cover;
       }, pubGet: false);
       check(() => Sanitizer(changed: true, dryRun: true).run([nonRepo.path]))
           .throws<GitException>()
-          .has((e) => e.message, 'message')
+          .has('message', (e) => e.message)
           .equals('not a git repository: ${nonRepo.path}');
     });
 
     test('changed with since is rejected, on any argument', () {
       check(() => Sanitizer(changed: true, since: 'HEAD'))
           .throws<ArgumentError>()
-          .has((e) => e.message, 'message')
+          .has('message', (e) => e.message)
           .equals('changed and since cannot be combined');
     });
 
@@ -1888,7 +1888,7 @@ Fit f() => Fit.cover;
       test('since "$revision" is misuse, not a git failure', () {
         check(() => Sanitizer(since: revision))
             .throws<ArgumentError>()
-            .has((e) => e.name, 'name')
+            .has('name', (e) => e.name)
             .equals('since');
       });
     }
@@ -2043,7 +2043,7 @@ final geos = [Geo.all(1), Box.all(2)];
       check(res.convertedCount).equals(4);
       check(res.removedImportCount).equals(1);
       check(mainFile.readAsStringSync())
-        ..not((it) => it.contains("import 'box.dart';"))
+        ..not(.it()..contains("import 'box.dart';"))
         ..contains("import 'fit.dart' as f;")
         ..contains("import 'geo.dart';")
         ..contains('final fits = <f.Fit>[.cover, .contain];')
@@ -2234,9 +2234,8 @@ void demo() {
         )
         ..contains('final allDirty = [');
       final kept = res.files.single.kept;
-      check(kept)
-          .any((it) => it.startsWith('9: _OnlyOnce.b kept: introduces '));
-      check(kept).every((it) => it.not((s) => s.contains('11: Fit.d kept')));
+      check(kept).any(.it()..startsWith('9: _OnlyOnce.b kept: introduces '));
+      check(kept).every(.it()..not(.it()..contains('11: Fit.d kept')));
     });
 
     test('recovers a sidelined hoist partner across multiple waves without '

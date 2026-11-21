@@ -161,7 +161,7 @@ void main() {
   test('SS-B11 an invalid --exclude glob is a usage error (exit 64)', () {
     final run = shorthand(['-n', 'lib', '--exclude=[']);
     check(run.exitCode).equals(64);
-    check(run.stderr as String).not((it) => it.contains('Unhandled exception'));
+    check(run.stderr as String).not(.it()..contains('Unhandled exception'));
   });
 
   test('SS-M4 file lines are relative to the working directory', () {
@@ -276,7 +276,7 @@ void main() {
     check(because: '${run.stderr}', run.exitCode).equals(0);
     check(run.stdout as String)
         .endsWith('would convert 1 site(s) in 1 file(s)\n');
-    check(run.stderr as String).not((it) => it.contains('Exception'));
+    check(run.stderr as String).not(.it()..contains('Exception'));
   }, timeout: const .new(.new(minutes: 5)));
 
   test('SS-R4 a file it cannot write is an error (exit 74), not a crash', () {
@@ -287,7 +287,7 @@ void main() {
     final run = shorthand([file.parent.path]);
     check(because: '${run.stderr}', run.exitCode).equals(74);
     check(run.stderr as String).contains('could not write');
-    check(run.stderr as String).not((it) => it.contains('Unhandled exception'));
+    check(run.stderr as String).not(.it()..contains('Unhandled exception'));
     check(file.readAsStringSync()).equals(before);
   }, testOn: '!windows');
 

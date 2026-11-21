@@ -71,7 +71,7 @@ void main() {
           .single
           .isA<Map<String, Object?>>()
         ..['path'].equals(canonical(file))
-        ..['error'].isA<String>().isNotEmpty();
+        ..['error'].isA<String>().isNotEmpty;
     }, testOn: '!windows');
 
     test('the library result counts it as a skip', () async {
@@ -80,7 +80,7 @@ void main() {
         ..parent.createSync()
         ..writeAsBytesSync(latin1Comment(convertible));
       final result = await Sanitizer(dryRun: true).run([file.path]);
-      check(result.hasSkips).isTrue();
+      check(result.hasSkips).isTrue;
       check(result.unreadableFiles.single.path).equals(canonical(file.path));
     });
 
@@ -268,7 +268,7 @@ void main() {
             final result = await Sanitizer(allowErrors: allowErrors)
                 .run([p.join(dir.path, 'lib', 'm.dart')]);
 
-            check(result.hasSkips).isTrue();
+            check(result.hasSkips).isTrue;
             check(mText(dir)).equals(before);
           });
         }
@@ -317,14 +317,14 @@ void main() {
           check([
             for (final (:path, error: _) in onlyPart.unreadableFiles) path,
           ]).deepEquals([canonical(m.path)]);
-          check(onlyPart.skippedOrphanParts).isEmpty();
+          check(onlyPart.skippedOrphanParts).isEmpty;
           check(onlyPart.convertedCount).equals(0);
 
           final both = await Sanitizer(allowErrors: true)
               .run([p.join(dir.path, 'lib')]);
           check([for (final (:path, error: _) in both.unreadableFiles) path])
               .deepEquals([canonical(m.path)]);
-          check(both.skippedOrphanParts).isEmpty();
+          check(both.skippedOrphanParts).isEmpty;
           check(both.convertedCount).equals(0);
           check(part.readAsStringSync()).equals(partSource);
         },
@@ -345,13 +345,13 @@ void main() {
           check([
             for (final (:path, error: _) in onlyPart.unreadableFiles) path,
           ]).deepEquals([canonical(m.path)]);
-          check(onlyPart.skippedOrphanParts).isEmpty();
+          check(onlyPart.skippedOrphanParts).isEmpty;
 
           final both = await Sanitizer(allowErrors: true)
               .run([p.join(dir.path, 'lib')]);
           check([for (final (:path, error: _) in both.unreadableFiles) path])
               .deepEquals([canonical(m.path)]);
-          check(both.skippedOrphanParts).isEmpty();
+          check(both.skippedOrphanParts).isEmpty;
           check(part.readAsStringSync()).equals(partSource);
         },
         testOn: '!windows',
@@ -369,12 +369,12 @@ void main() {
 
       final run = shorthand(['-n', 'lib'], cwd: dir.path);
       check(because: '${run.stderr}', run.exitCode).equals(0);
-      check(run.stderr as String).isEmpty();
+      check(run.stderr as String).isEmpty;
 
       final result = await Sanitizer(dryRun: true)
           .run([p.join(dir.path, 'lib')]);
-      check(result.hasSkips).isFalse();
-      check(result.unreadableFiles).isEmpty();
+      check(result.hasSkips).isFalse;
+      check(result.unreadableFiles).isEmpty;
       check([for (final (:path, reason: _) in result.excluded) path])
           .deepEquals([canonical(old.path)]);
     });
@@ -528,11 +528,11 @@ const Base x = Sub.a;
       check(because: '${run.stderr}', run.exitCode).equals(65);
       final report = jsonDecode(run.stdout as String) as Map<String, Object?>;
       check(report['skippedWithErrors']).isA<List<Object?>>().deepEquals([bad]);
-      check(report['skippedBelowFloor']).isA<List<Object?>>().isEmpty();
-      check(report['skippedUnconfigured']).isA<List<Object?>>().isEmpty();
-      check(report['skippedOrphanParts']).isA<List<Object?>>().isEmpty();
-      check(report['unreadableDirectories']).isA<List<Object?>>().isEmpty();
-      check(report['writeFailures']).isA<List<Object?>>().isEmpty();
+      check(report['skippedBelowFloor']).isA<List<Object?>>().isEmpty;
+      check(report['skippedUnconfigured']).isA<List<Object?>>().isEmpty;
+      check(report['skippedOrphanParts']).isA<List<Object?>>().isEmpty;
+      check(report['unreadableDirectories']).isA<List<Object?>>().isEmpty;
+      check(report['writeFailures']).isA<List<Object?>>().isEmpty;
     });
 
     test('a package below the language floor exits 65 without the gate', () {
@@ -616,7 +616,7 @@ const Base x = Sub.a;
       final gen = canonical(p.join(dir.path, 'lib', 'a.g.dart'));
       final plain = shorthand(['-n', p.join(dir.path, 'lib')]);
       check(because: '${plain.stderr}', plain.exitCode).equals(0);
-      check(plain.stderr as String).isEmpty();
+      check(plain.stderr as String).isEmpty;
 
       final explained = shorthand(['-n', '-e', p.join(dir.path, 'lib')]);
       check(explained.stderr as String)
@@ -740,7 +740,7 @@ const Base x = Sub.a;
         check(
           because: 'entry "$entry"',
           () => Sanitizer(skips: {entry}),
-        ).throws<ArgumentError>().has((e) => e.name, 'name').equals('skips');
+        ).throws<ArgumentError>().has('name', (e) => e.name).equals('skips');
       }
     });
   });
@@ -754,7 +754,7 @@ const Base x = Sub.a;
         final dir = fixture('bad_path', {'notes.txt': ''}, pubGet: false);
         check(() => Sanitizer().run([p.join(dir.path, rel)]))
             .throws<ArgumentError>()
-            .has((e) => e.name, 'name')
+            .has('name', (e) => e.name)
             .equals('paths');
       });
     }
@@ -874,7 +874,7 @@ const Base x = Sub.a;
           .isA<List<Object?>>()
           .single
           .isA<Map<String, Object?>>()
-          .has((f) => f['prunedImports'], 'prunedImports')
+          .has('prunedImports', (f) => f['prunedImports'])
           .isA<List<Object?>>()
           .deepEquals([
             {
@@ -959,7 +959,7 @@ const Base x = Sub.a;
       () async {
         final dir = nested({'example/lib/main.dart': convertible});
         final result = await Sanitizer(dryRun: true).run([dir.path]);
-        check(result.excluded).isEmpty();
+        check(result.excluded).isEmpty;
         check([for (final f in result.files) f.path]).deepEquals([
           canonical(p.join(dir.path, 'example', 'lib', 'main.dart')),
         ]);

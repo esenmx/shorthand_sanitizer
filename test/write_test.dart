@@ -84,7 +84,7 @@ void main() {
 
       final run = limited(['lib']);
 
-      check(because: '${run.stderr}', run.exitCode).not((it) => it.equals(0));
+      check(because: '${run.stderr}', run.exitCode).not(.it()..equals(0));
       check(main.readAsBytesSync()).deepEquals(mainBefore);
       check(part.readAsBytesSync()).deepEquals(partBefore);
 
@@ -116,7 +116,7 @@ void main() {
       check(run.stdout as String).equals('converted 0 site(s) in 0 file(s)\n');
       check(main.readAsStringSync()).equals(_lib);
       check(part.readAsStringSync()).equals(_part);
-      check(_strays(dir)).isEmpty();
+      check(_strays(dir)).isEmpty;
     }, testOn: '!windows');
   });
 
@@ -312,7 +312,7 @@ void main() {
         );
         check(because: errors, exit).equals(74);
         check(errors).contains('changed on disk since it was analyzed');
-        check(file.existsSync()).isFalse();
+        check(file.existsSync()).isFalse;
       },
       testOn: '!windows',
       timeout: changing,
@@ -348,16 +348,13 @@ void main(List<String> args) {
         p.join(dir.path, 'kill.dart'),
         file.path,
       ]);
-      check(
-        because: '${killed.stderr}',
-        killed.exitCode,
-      ).not((it) => it.equals(0));
+      check(because: '${killed.stderr}', killed.exitCode).not(.it()..equals(0));
 
       check(file.readAsStringSync()).equals(original);
       final names = [
         for (final e in file.parent.listSync()) p.basename(e.path),
       ];
-      check(names.where((n) => n.endsWith('.shorthand-backup'))).isEmpty();
+      check(names.where((n) => n.endsWith('.shorthand-backup'))).isEmpty;
       check(names.where((n) => n.endsWith('.shorthand-tmp'))).length.equals(2);
     }, testOn: '!windows');
 
@@ -370,7 +367,7 @@ void main(List<String> args) {
             ..writeAsStringSync('stale'),
       ];
 
-      check(replaceFiles({file.path: (analyzed: 'old', text: 'new')})).isNull();
+      check(replaceFiles({file.path: (analyzed: 'old', text: 'new')})).isNull;
 
       check(file.readAsStringSync()).equals('new');
       for (final backup in stale) {
@@ -397,7 +394,7 @@ void main(List<String> args) {
           },
         );
 
-        check(failure).isNull();
+        check(failure).isNull;
         check(seen).deepEquals([private, private]);
         check(_mode(file.path)).equals(mode);
       }, testOn: '!windows');
@@ -411,7 +408,7 @@ void main(List<String> args) {
 
       final failure = replaceFiles({file.path: (analyzed: 'old', text: 'new')});
 
-      check(failure).isNotNull().has((f) => f.path, 'path').equals(file.path);
+      check(failure).isNotNull().has('path', (f) => f.path).equals(file.path);
       check(file.readAsStringSync()).equals('old');
       check(dir.listSync().map((e) => p.basename(e.path)))
           .deepEquals(['a.dart']);
@@ -430,7 +427,7 @@ void main(List<String> args) {
 
       final failure = replaceFiles({file.path: (analyzed: 'old', text: 'new')});
 
-      check(failure).isNotNull().has((f) => f.path, 'path').equals(file.path);
+      check(failure).isNotNull().has('path', (f) => f.path).equals(file.path);
       check(file.readAsStringSync()).equals('old');
       check(dir.listSync().map((e) => p.basename(e.path)))
           .deepEquals(['a.dart']);
@@ -458,7 +455,7 @@ void main(List<String> args) {
         },
       );
 
-      check(failure).isNull();
+      check(failure).isNull;
       check(seen).deepEquals(['644', '644']);
       check(file.readAsStringSync()).equals('new');
       check(_mode(file.path)).equals('444');
@@ -474,7 +471,7 @@ void main(List<String> args) {
         file.path: (analyzed: 'old', text: 'new'),
       }, write: (path, bytes) {});
 
-      check(failure).isNotNull().has((f) => f.path, 'path').equals(file.path);
+      check(failure).isNotNull().has('path', (f) => f.path).equals(file.path);
       check(file.readAsStringSync()).equals('old');
     }, testOn: '!windows');
 
@@ -525,7 +522,7 @@ void main(List<String> args) {
           },
         );
 
-        check(failure).isNull();
+        check(failure).isNull;
         check(seen).deepEquals([group, group]);
         check(file.readAsStringSync()).equals('new');
         check(_group(file.path)).equals(group);
@@ -594,8 +591,8 @@ void main(List<String> args) {
         path: file.path,
         error: 'changed on disk since it was analyzed',
       ));
-      check(file.existsSync()).isFalse();
-      check(dir.listSync()).isEmpty();
+      check(file.existsSync()).isFalse;
+      check(dir.listSync()).isEmpty;
     });
   });
 
@@ -645,10 +642,7 @@ void main(List<String> args) {
         p.join(dir.path, 'lib', 'main.dart'),
         p.join(dir.path, 'lib', 'p.dart'),
       ]);
-      check(
-        because: '${killed.stderr}',
-        killed.exitCode,
-      ).not((it) => it.equals(0));
+      check(because: '${killed.stderr}', killed.exitCode).not(.it()..equals(0));
       return dir;
     }
 
@@ -662,7 +656,7 @@ void main(List<String> args) {
       final dir = killedAfterFirstRename();
 
       final mainFile = File(p.join(dir.path, 'lib', 'main.dart'));
-      check(mainFile.readAsStringSync()).not((it) => it.equals(main));
+      check(mainFile.readAsStringSync()).not(.it()..equals(main));
       check([
         for (final backup in ending(dir, '.shorthand-backup'))
           backup.readAsStringSync(),
@@ -674,7 +668,7 @@ void main(List<String> args) {
 
       final rerun = shorthand(['lib'], cwd: dir.path);
       check(because: '${rerun.stderr}', rerun.exitCode).equals(65);
-      check(mainFile.readAsStringSync()).not((it) => it.equals(main));
+      check(mainFile.readAsStringSync()).not(.it()..equals(main));
     }, testOn: '!windows');
 
     test('recovers as documented: move each backup over its file', () {
@@ -735,7 +729,7 @@ void main(List<String> args) {
 
         final result = await Sanitizer().run([file]);
 
-        check(result.writeFailures).isEmpty();
+        check(result.writeFailures).isEmpty;
         check(File(file).readAsStringSync()).contains('Fit f() => .a;');
         check(_mode(file)).equals(mode);
       }, testOn: '!windows');
@@ -749,8 +743,8 @@ void main(List<String> args) {
 
       final result = await Sanitizer().run([link.path]);
 
-      check(result.writeFailures).isEmpty();
-      check(FileSystemEntity.isLinkSync(link.path)).isTrue();
+      check(result.writeFailures).isEmpty;
+      check(FileSystemEntity.isLinkSync(link.path)).isTrue;
       check(link.targetSync()).equals(real);
       check(File(real).readAsStringSync()).contains('Fit f() => .a;');
       check(Directory(p.dirname(link.path)).listSync().map((e) => e.path))
@@ -763,7 +757,7 @@ void main(List<String> args) {
       final result = await Sanitizer().run([p.join(dir.path, 'lib')]);
 
       check(result.convertedCount).equals(2);
-      check(_strays(dir)).isEmpty();
+      check(_strays(dir)).isEmpty;
     });
   });
 }
