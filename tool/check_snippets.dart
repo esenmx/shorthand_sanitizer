@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 const String _usage = '''
-Analyzes the ```dart blocks of README.md and skills/*/SKILL.md against this
+Analyzes the ```dart blocks of README.md and skills/**/*.md against this
 package with its analysis_options.yaml and fails on any diagnostic, except
 those that only fire because a block is a fragment. A block whose previous
 non-blank line is <!-- no-compile --> is skipped.
@@ -30,7 +30,7 @@ final RegExp _declaration = RegExp(
   'Future<void> main)',
 );
 
-final RegExp _variable = .new('^(final |const |var |late )');
+final RegExp _variable = RegExp('^(final |const |var |late )');
 
 final class _Snippet(
   final String file,
@@ -84,7 +84,7 @@ _Rendered _render(_Snippet snippet, List<String> imports) {
     }
     emit('}', -1);
   }
-  return .new(snippet, lines, origins);
+  return _Rendered(snippet, lines, origins);
 }
 
 Future<void> main(List<String> args) async {
@@ -116,7 +116,7 @@ Future<void> main(List<String> args) async {
               .listSync(recursive: true)
               .whereType<File>()
               .map((f) => f.path)
-              .where((p) => p.endsWith('SKILL.md'))
+              .where((p) => p.endsWith('.md'))
               .toList()
             ..sort();
       files.addAll(found);
@@ -182,7 +182,7 @@ Future<void> main(List<String> args) async {
       if (previous.trim() == _noCompile) {
         skipped++;
       } else {
-        snippets.add(.new(file, start + 1, body));
+        snippets.add(_Snippet(file, start + 1, body));
       }
     }
   }
@@ -198,7 +198,7 @@ Future<void> main(List<String> args) async {
   final workspace = Directory.systemTemp.createTempSync('check_snippets_');
   try {
     final repo = Directory.current.absolute.path;
-    final dependencies = {
+    final dependencies = <String, String>{
       for (final dep in deps) dep: ' any',
       ?included: ' $includedConstraint',
       if (usesFlutter) 'flutter': '\n    sdk: flutter',

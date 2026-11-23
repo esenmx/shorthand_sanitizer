@@ -6,83 +6,35 @@ license: MIT
 
 # shorthand-sanitizer-usage
 
-`shorthand` = type-resolved sweep; never hand-edit shorthand nits file by file,
-and never regex them (silent rebinds: `Base x = Sub.a` → `.a` binds `Base.a`).
+Type-resolved dot-shorthand sweep; never hand-edit shorthand nits or regex them (silent rebind trap: `Base x = Sub.a` -> `.a` binds `Base.a`). Missing binary -> `dart install shorthand_sanitizer`.
 
 ```bash
-shorthand lib test              # rewrite in place, per-site report
-shorthand lib --dry-run         # preview
-shorthand --changed             # only git-modified/untracked files
-shorthand --since=origin/main   # only files changed since a ref; not both
+shorthand lib test                      # rewrite in place
+shorthand lib --dry-run                 # preview
+shorthand --changed                     # git-modified/untracked only
+shorthand --since=origin/main           # changed since ref (not with --changed)
 shorthand --skip=AsyncValue.error lib
-shorthand --exclude=glob,glob   # skip matching files (/ globs: CWD-relative)
-# also rewrite what the package's own analysis_options.yaml excludes
-shorthand --no-analyzer-excludes
-shorthand --include-generated   # also rewrite generated-marked files
-shorthand --allow-errors        # also rewrite files whose library has errors
-shorthand lib/page.dart -n --explain  # why each remaining site stays prefixed
-# CI gate: 1 = would convert, 65 = a file was skipped
-shorthand lib -n --set-exit-if-changed
-shorthand lib -n --format=json   # machine-readable
+shorthand --exclude=glob,glob           # CWD-relative if glob contains /
+shorthand --no-analyzer-excludes        # ignore analysis_options.yaml excludes
+shorthand --include-generated           # also rewrite generated-marked files
+shorthand --allow-errors                # also rewrite libraries with errors
+shorthand lib/page.dart -n --explain    # why kept sites stayed prefixed
+shorthand lib -n --set-exit-if-changed  # CI gate: 1=would convert, 65=skipped
+shorthand lib -n --format=json
 ```
 
-Missing binary → `dart install shorthand_sanitizer`.
+## Guarantees
 
-## What it guarantees
+- Converts only when `.member` re-resolves to the **same element** with zero new analyzer diagnostics.
+- Stays prefixed: unwitnessed contexts (`Object o = Fit.cover`), sibling namespaces (`Colors.red` in `Color` slot), `Enum.values`, metadata annotations (`@MyAnnot.instance`), unnamed ctors (`Text('Hi')`), silent rebinds (`Base x = Sub.a`), generic typedefs (`typedef IntG = G<int>`), cascade targets, 1-element untyped `[Fit.cover]`, widened `List<Object?>`.
+- Operators split (`Pad.all(1) + Pad.only(2)` -> `Pad.all(1) + .only(2)`). Untyped `List`/`Set` literals hoist `<Type>` when 2+ elements convert with unchanged element type (`[Fit.cover, Fit.contain]` -> `<Fit>[.cover, .contain]`).
+- Licensed rebinds in exact-typed slots (arg, typed decl, ctor field init, return/`yield`, collection elem, index/binary op, compound RHS, param default incl. `??`/`?elem`/`FutureOr<T>`): `static const` alias (`Alignment.topCenter`) and parameter-preserving redirecting factory (`EdgeInsets.all`).
 
-A site converts only when the shorthand resolves to the **same element** with no
-new analyzer diagnostic of any severity — verified by re-resolving the rewritten
-library. Unwitnessed contexts (`Object o = Fit.cover`), sibling-namespace
-statics (`Colors.red` in a `Color` slot), `Enum.values`, metadata annotations
-(`@MyAnnot.instance`), unnamed constructors (`Text('Hi')`), and silent rebinds
-(`Base x = Sub.a`) all stay prefixed. Operator expressions split correctly:
-`Pad.all(1) + Pad.only(2)` → `Pad.all(1) + .only(2)`. Untyped `List` and `Set`
-literals with no outer element context hoist `<Type>` when 2+ elements convert
-and element types stay unchanged (`[Fit.cover, Fit.contain]` →
-`<Fit>[.cover, .contain]`, `{Fit.cover, Fit.contain}` →
-`<Fit>{.cover, .contain}`); 1-element `[Fit.cover]` and widened `List<Object?>`
-slots stay prefixed.
+## After a run & exit codes
 
-Two rebinds are licensed, only in a slot typed exactly as the rebind (argument,
-typed declaration, constructor field initializer, return or `yield`, collection
-element, index or binary operator operand, compound assignment RHS, or parameter
-default, including across `??` RHS, `?element`, and `FutureOr<T>`): a
-`static const` alias (`Alignment.topCenter`) and a parameter-preserving
-redirecting factory (`EdgeInsets.all` in `padding:`). Typedefs with type
-arguments (`typedef IntG = G<int>`) and cascade targets stay prefixed.
-
-## After a run
-
-- Kept prefixes are deliberate — do not "finish the job" by hand. `--explain`
-  names the reason per site.
-- Named constructors and enum values in typed slots (like `padding: .all(8)`)
-  convert automatically.
-- Generated files are skipped by their leading comment marker (build_runner,
-  FlutterFire's `firebase_options.dart`, intl, mockito, pigeon, protoc, slang) —
-  NOT by filename, so handwritten `*.preview.dart` previews are sanitized too. A
-  bullet, a sentence's continuation line, or `generated` further into a sentence
-  is not a marker, but a handwritten `// Generated by hand` still reads as one.
-  `--explain` counts and lists them on stderr.
-- Exit 65 means a file was skipped (analysis errors, language < 3.10, no
-  `dart pub get`, orphan part, unreadable directory, or an unreadable or
-  non-UTF-8 file, which stops its whole library even with `--allow-errors`):
-  read the stderr warnings and fix the cause — never treat the run as clean.
-- Exit 74 means a library's files kept their current bytes, unless the error
-  names a file it could not restore and its backup. A file edited or deleted
-  during the run also gets 74: re-run once editing stops. A process killed
-  between renames can leave a library partly rewritten with no report, and it
-  may then exit 65.
-- A killed run's hidden files: `.*.shorthand-tmp` holds new text or an
-  unfinished copy and can go. `.*.shorthand-backup` always holds a file's
-  complete original bytes and can be the only copy, so never remove one
-  unchecked. Run `dart analyze` first: if the library is clean, the run had
-  finished, so keep the result and delete the backups. Otherwise undo it by
-  moving each backup over its file
-  (`mv lib/.main.dart.123.1.shorthand-backup lib/main.dart`), unless that file
-  was edited since.
-- Warnings for a `--skip` entry that matched no site or an `--exclude` glob that
-  matched no file mean a typo: the file you meant to protect was converted.
-  `--changed` and `--since` runs never give these warnings, since they see only
-  part of the project: there, a typo converts silently, so check the spelling.
-- Every pruned import and every hoisted `<Type>` is named under its file, with
-  any trailing comment deleted alongside the import.
+- Kept prefixes are deliberate — don't hand-edit; use `--explain`. Named ctors & enums in typed slots convert automatically.
+- Generated files skipped by leading comment marker (build_runner, FlutterFire `firebase_options.dart`, intl, mockito, pigeon, protoc, slang), NOT filename (handwritten `*.preview.dart` converts; handwritten `// Generated by hand` triggers marker). `--explain` lists skipped files on stderr.
+- **Exit 65**: file skipped (analysis errors, language <3.10, missing `dart pub get`, orphan part, unreadable/non-UTF-8 file stops whole library even with `--allow-errors`) — read stderr and fix; never treat as clean.
+- **Exit 74**: library kept original bytes unless error names unrestored file+backup (also fires if file edited/deleted mid-run -> re-run when idle; killed mid-rename may leave partial rewrite -> exit 65).
+- **Killed-run hidden files**: `.*.shorthand-tmp` can be deleted. `.*.shorthand-backup` always holds a file's complete original bytes — never remove one unchecked. Run `dart analyze` first; if clean delete backups, else restore (`mv lib/.main.dart.<pid>.<n>.shorthand-backup lib/main.dart`) unless edited since.
+- Unmatched `--skip`/`--exclude` warnings indicate typos (`--changed`/`--since` skip these warnings). Pruned imports & hoisted `<Type>` are reported per file (trailing comments on pruned imports are removed).
