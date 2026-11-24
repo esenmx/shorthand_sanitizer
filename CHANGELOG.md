@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- The `shorthand-sanitizer-usage` skill is condensed for token efficiency and
+  corrected: as a cascade target only a licensed rebind stays prefixed (other
+  cascade targets convert), a generic typedef stays prefixed only where it would
+  change the static type (`G<num> g = IntG.of(1)`), an unreadable directory is
+  listed among the exit 65 causes, and an unmatched `--skip` or `--exclude`
+  warning says the run already converted what it meant to protect.
+
 ## 0.13.0 - 2026-11-18
 
 ### Breaking
