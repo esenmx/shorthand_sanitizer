@@ -5,7 +5,7 @@ executables:
 package:shorthand_sanitizer/shorthand_sanitizer.dart:
   sdkPath (function: String? Function())
   FileResult (class extends Object, final):
-    new (constructor: FileResult Function(String, List<Site>, int, {List<HoistedType> hoistedTypes, List<PrunedImport> prunedImports}))
+    new (constructor: FileResult Function(String, List<Site>, int, {List<HoistedType> hoistedTypes = [], List<PrunedImport> prunedImports = []}))
     converted (getter: List<String>)
     hoistedTypes (getter: List<HoistedType>)
     kept (getter: List<String>)
@@ -58,7 +58,7 @@ package:shorthand_sanitizer/shorthand_sanitizer.dart:
     isGenerated (static method: bool Function(String))
     isRevision (static method: bool Function(String))
     isSkipEntry (static method: bool Function(String))
-    new (constructor: Sanitizer Function({bool allowErrors, bool analyzerExcludes, bool changed, bool dryRun, List<String> excludes, bool explain, String? since, bool skipGenerated, Set<String> skips}))
+    new (constructor: Sanitizer Function({bool allowErrors = false, bool analyzerExcludes = true, bool changed = false, bool dryRun = false, List<String> excludes = [], bool explain = false, String? since, bool skipGenerated = true, Set<String> skips = {}}))
     allowErrors (getter: bool)
     analyzerExcludes (getter: bool)
     changed (getter: bool)
