@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.1 - 2026-11-26
 
 ### Changed
 
@@ -10,6 +10,9 @@
   change the static type (`G<num> g = IntG.of(1)`), an unreadable directory is
   listed among the exit 65 causes, and an unmatched `--skip` or `--exclude`
   warning says the run already converted what it meant to protect.
+- The README is shorter and opens with a demo; the CLI reference (options, exit
+  codes, JSON report) and how it works (what converts, backups, cache) moved to
+  guides under `doc/`.
 
 ## 0.13.0 - 2026-11-18
 

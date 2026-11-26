@@ -8,7 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:shorthand_sanitizer/shorthand_sanitizer.dart';
 import 'package:yaml/yaml.dart';
 
-const _version = '0.13.0';
+const _version = '0.13.1';
 
 const _defaultRoots = [
   'lib',
