@@ -698,7 +698,7 @@ void main(List<String> args) {
 
     for (final (doc, name, keep) in [
       (
-        'README.md',
+        'doc/how-it-works.md',
         '`.<file>.<pid>.<n>.shorthand-backup`',
         'keep it until you have checked',
       ),

@@ -495,7 +495,7 @@ void _warn(
   }
 }
 
-/// The `--format=json` document; its schema is in the README.
+/// The `--format=json` document; its schema is in `doc/cli-reference.md`.
 Map<String, Object?> _json(SanitizeResult result, bool dryRun) => {
   'dryRun': dryRun,
   'converted': result.convertedCount,
